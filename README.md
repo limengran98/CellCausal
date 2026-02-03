@@ -70,7 +70,7 @@ CellScientist/                  <-- 项目根目录 (Project Root)
 │
 └── run_cellscientist.py        <-- (可选) 根目录下的启动脚本，通常调用 cellscientist.pipeline.run_pipeline.main
 
-
+```
 
 ## ⚙️ Experiment Settings & Environment
 
