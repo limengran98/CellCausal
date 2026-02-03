@@ -3,7 +3,7 @@
 """Shared utilities for run_cellscientist.
 
 Contains project-root helpers, IO helpers, streamed subprocess runner,
-and newly added explicit path extraction logic.
+explicit path extraction logic, AND unified resource resolution.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import datetime
 import json
 import os
 import re
+import glob
 import shutil
 import subprocess
 import sys
@@ -115,6 +116,115 @@ def read_head_tail_lines(
 
 
 # =============================================================================
+# UNIFIED RESOURCE RESOLUTION (H5 Path)
+# =============================================================================
+
+def resolve_h5_path_unified(cfg: Dict[str, Any]) -> Optional[str]:
+    """
+    Centralized logic to find the H5 data file.
+    Used by execution_workflow.py and review_workflow.py.
+    """
+    paths_cfg = (cfg.get("paths") or {}) if isinstance(cfg.get("paths"), dict) else {}
+
+    # 1. Explicit Configuration (Highest Priority)
+    explicit_h5 = paths_cfg.get("data_h5_path")
+    if explicit_h5 and os.path.exists(str(explicit_h5)):
+        cand = os.path.abspath(str(explicit_h5))
+        print(f"[DATA] Found Stage 1 Data (Explicit): {cand}", flush=True)
+        return cand
+
+    data_root = paths_cfg.get("data_root")
+    data_fname = paths_cfg.get("data_h5_filename")
+    ds = cfg.get("dataset_name")
+
+    # 2. Construct Search Candidates
+    root_candidates: List[str] = []
+    
+    if data_root:
+        if os.path.isabs(str(data_root)):
+            root_candidates.append(str(data_root))
+        else:
+            root_candidates.append(os.path.abspath(str(data_root)))
+            root_candidates.append(os.path.abspath(os.path.join(project_root(), str(data_root))))
+
+    # Standard Fallbacks
+    root_candidates.append(os.path.join(os.getcwd(), "data"))
+    root_candidates.append(os.path.join(os.path.dirname(os.getcwd()), "data"))
+    root_candidates.append(os.path.join(project_root(), "data"))
+    
+    # Deduplicate while preserving order
+    root_candidates = sorted(list(set(root_candidates)), key=len, reverse=True)
+
+    if data_fname:
+        tried = []
+        for root_abs in root_candidates:
+            if not os.path.exists(root_abs): continue
+
+            # Strategy A: <root>/<dataset>/<file>
+            if ds:
+                cand_a = os.path.join(root_abs, str(ds), str(data_fname))
+                tried.append(cand_a)
+                if os.path.exists(cand_a):
+                    cand = os.path.abspath(cand_a)
+                    print(f"[DATA] Found Stage 1 Data (Dataset Subdir): {cand}", flush=True)
+                    return cand
+
+            # Strategy B: <root>/<file>
+            cand_b = os.path.join(root_abs, str(data_fname))
+            tried.append(cand_b)
+            if os.path.exists(cand_b):
+                cand = os.path.abspath(cand_b)
+                print(f"[DATA] Found Stage 1 Data (Root Dir): {cand}", flush=True)
+                return cand
+            
+            # Strategy C: Recursive
+            try:
+                matches = glob.glob(os.path.join(root_abs, "**", str(data_fname)), recursive=True)
+                if matches:
+                    cand = os.path.abspath(matches[0])
+                    print(f"[DATA] Found Stage 1 Data (Recursive): {cand}", flush=True)
+                    return cand
+            except Exception:
+                pass
+
+        print("[DATA][WARN] Could not resolve data H5 via data_root/filename. Tried:", flush=True)
+        for p in tried:
+            print(f"  - {p}", flush=True)
+
+    # 3. Legacy Fallback (stage1_analysis_dir)
+    s1_dir_str = paths_cfg.get("stage1_analysis_dir")
+    if s1_dir_str:
+        s1_path = os.path.abspath(s1_dir_str)
+        final_ref_dir = s1_path
+
+        # Auto-discovery if path is a parent dir
+        if not os.path.exists(os.path.join(s1_path, "REFERENCE_DATA.h5")):
+            if os.path.isdir(s1_path):
+                subdirs = sorted([
+                    os.path.join(s1_path, d) 
+                    for d in os.listdir(s1_path) 
+                    if os.path.isdir(os.path.join(s1_path, d)) and not d.startswith(".")
+                ])
+                if subdirs:
+                    final_ref_dir = subdirs[-1]
+                    print(f"[DATA] 🔎 Auto-detected latest reference run: {os.path.basename(final_ref_dir)}", flush=True)
+
+        cand_h5 = os.path.join(final_ref_dir, "REFERENCE_DATA.h5")
+        if os.path.exists(cand_h5):
+            print(f"[DATA] Found Stage 1 Data (Legacy Explicit): {cand_h5}", flush=True)
+            return cand_h5
+
+        h5_files = glob.glob(os.path.join(final_ref_dir, "*.h5"))
+        if h5_files:
+            target_h5 = h5_files[0]
+            print(f"[DATA] Found Stage 1 Data (Legacy Auto): {target_h5}", flush=True)
+            return target_h5
+
+    print(f"[DATA][WARN] No .h5 files found via any method.", flush=True)
+    return None
+
+
+# =============================================================================
 # Path Extraction (Robust Strategy)
 # =============================================================================
 
@@ -162,7 +272,21 @@ def extract_best_path_from_log(log_path: str, phase: str, base_dir: str = "", t_
     Extracts the output directory path for the current run.
     """
     
-    # --- Strategy 1: Log Parsing ---
+    # --- Strategy 1: Explicit Pointer File (High Robustness) ---
+    # Run pipeline creates a pointer file in the logs dir or base dir
+    if base_dir:
+        pointer_path = os.path.join(base_dir, "latest_run_pointer.json")
+        if os.path.exists(pointer_path):
+            try:
+                with open(pointer_path, "r") as f:
+                    data = json.load(f)
+                    path = data.get("latest_trial_dir")
+                    if path and os.path.exists(path):
+                        return path
+            except Exception:
+                pass
+
+    # --- Strategy 2: Log Parsing ---
     text = read_text(log_path)
     if text:
         if phase == "Phase 2":
@@ -207,7 +331,7 @@ def extract_best_path_from_log(log_path: str, phase: str, base_dir: str = "", t_
                 dir_path = matches[-1].group(1).strip()
                 if os.path.exists(dir_path): return dir_path
 
-    # --- Strategy 2: Filesystem Fallback ---
+    # --- Strategy 3: Filesystem Fallback ---
     if phase == "Phase 2" and base_dir:
         # Try finding in generate_execution/prompt/prompt_run_*
         prompt_root = os.path.join(base_dir, "prompt")

@@ -23,7 +23,7 @@ from cellscientist.core.external_knowledge_mirothink import retrieve_external_kn
 
 # [UPDATED] Import decoupled execution and error handling functions
 from cellscientist.core.executor_engine import run_notebook_pure, attempt_fix_notebook, dump_error_log
-from cellscientist.pipeline.utils import project_root
+from cellscientist.pipeline.utils import project_root, resolve_h5_path_unified
 
 from cellscientist.core.task_graph import (
     init_task_graph_from_config,
@@ -42,108 +42,15 @@ except ImportError:
     write_experiment_report = None
 
 # =============================================================================
-# 1. Helper: Resource Resolver (H5 Path Logic Ported from Phase 2)
+# 1. Helper: Resource Resolver (Legacy Wrapper)
 # =============================================================================
 
 def _resolve_h5_path(cfg):
     """
     Resolves the absolute path of the STAGE 1 H5 Data.
-    Updated to support project_root/data explicitly.
+    Delegates to the unified utility in pipeline/utils.py to avoid redundancy.
     """
-    paths_cfg = (cfg.get("paths") or {}) if isinstance(cfg.get("paths"), dict) else {}
-
-    explicit_h5 = paths_cfg.get("data_h5_path")
-    if explicit_h5 and os.path.exists(str(explicit_h5)):
-        cand = os.path.abspath(str(explicit_h5))
-        print(f"[DATA] Found Stage 1 Data (Explicit): {cand}")
-        return cand
-
-    data_root = paths_cfg.get("data_root")
-    data_fname = paths_cfg.get("data_h5_filename")
-    ds = cfg.get("dataset_name")
-
-    # 1. Determine Search Roots
-    root_candidates: List[str] = []
-    
-    if data_root:
-        if os.path.isabs(str(data_root)):
-            root_candidates.append(str(data_root))
-        else:
-            root_candidates.append(os.path.abspath(str(data_root)))
-            root_candidates.append(os.path.abspath(os.path.join(project_root(), str(data_root))))
-
-    # Standard Fallbacks
-    root_candidates.append(os.path.join(os.getcwd(), "data"))
-    root_candidates.append(os.path.join(os.path.dirname(os.getcwd()), "data"))
-    root_candidates.append(os.path.join(project_root(), "data"))
-    
-    root_candidates = sorted(list(set(root_candidates)), key=len, reverse=True)
-
-    if data_fname:
-        tried = []
-        for root_abs in root_candidates:
-            if not os.path.exists(root_abs): continue
-
-            # Strategy A: <root>/<dataset>/<file>
-            if ds:
-                cand_a = os.path.join(root_abs, str(ds), str(data_fname))
-                tried.append(cand_a)
-                if os.path.exists(cand_a):
-                    cand = os.path.abspath(cand_a)
-                    print(f"[DATA] Found Stage 1 Data (Dataset Subdir): {cand}")
-                    return cand
-
-            # Strategy B: <root>/<file>
-            cand_b = os.path.join(root_abs, str(data_fname))
-            tried.append(cand_b)
-            if os.path.exists(cand_b):
-                cand = os.path.abspath(cand_b)
-                print(f"[DATA] Found Stage 1 Data (Root Dir): {cand}")
-                return cand
-            
-            # Strategy C: Recursive
-            matches = glob.glob(os.path.join(root_abs, "**", str(data_fname)), recursive=True)
-            if matches:
-                cand = os.path.abspath(matches[0])
-                print(f"[DATA] Found Stage 1 Data (Recursive): {cand}")
-                return cand
-
-        if tried:
-            print("[WARN] Could not resolve data H5 via data_root. Tried:")
-            for p in tried:
-                print(f"  - {p}")
-
-    s1_dir_str = paths_cfg.get("stage1_analysis_dir")
-    if not s1_dir_str:
-        return None
-
-    s1_path = os.path.abspath(s1_dir_str)
-    final_ref_dir = s1_path
-
-    if not os.path.exists(os.path.join(s1_path, "REFERENCE_DATA.h5")):
-        if os.path.isdir(s1_path):
-            subdirs = sorted([
-                os.path.join(s1_path, d) 
-                for d in os.listdir(s1_path) 
-                if os.path.isdir(os.path.join(s1_path, d)) and not d.startswith(".")
-            ])
-            if subdirs:
-                final_ref_dir = subdirs[-1]
-                print(f"[DATA] 🔎 Auto-detected latest reference run: {os.path.basename(final_ref_dir)}")
-
-    cand_h5 = os.path.join(final_ref_dir, "REFERENCE_DATA.h5")
-    if os.path.exists(cand_h5):
-        print(f"[DATA] Found Stage 1 Data (Explicit): {cand_h5}")
-        return cand_h5
-
-    h5_files = glob.glob(os.path.join(final_ref_dir, "*.h5"))
-    if h5_files:
-        target_h5 = h5_files[0]
-        print(f"[DATA] Found Stage 1 Data (Auto-detected): {target_h5}")
-        return target_h5
-
-    print(f"[WARN] No .h5 files found in {final_ref_dir}")
-    return None
+    return resolve_h5_path_unified(cfg)
 
 
 def _inject_llm_env(cfg: dict) -> None:

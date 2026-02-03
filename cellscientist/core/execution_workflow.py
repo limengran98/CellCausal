@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # cellscientist_phase_2.py
@@ -28,110 +27,26 @@ from cellscientist.core.prompt_orchestrator import (
 )
 # [NEW] Import TokenMeter
 from cellscientist.core.llm_client import TokenMeter
-from cellscientist.pipeline.utils import project_root
+# [UPDATED] Import unified H5 resolver
+from cellscientist.pipeline.utils import project_root, resolve_h5_path_unified
 
 def _setup_stage1_resources(cfg: dict, enable_idea: bool = False):
-    paths_cfg = (cfg.get("paths") or {}) if isinstance(cfg.get("paths"), dict) else {}
-
+    """
+    Sets up Stage 1 resources (H5 data path and Idea file).
+    Uses unified logic from pipeline/utils.py to avoid redundancy.
+    """
     # ---------------------------------------------------------------------
-    # [UPDATED] Data Resolver
+    # [UPDATED] Unified data resolver (replaces Phase-1 'design_analysis' dependency)
     # ---------------------------------------------------------------------
-    explicit_h5 = paths_cfg.get("data_h5_path")
-    if explicit_h5 and os.path.exists(str(explicit_h5)):
-        h5_path = os.path.abspath(str(explicit_h5))
+    h5_path = resolve_h5_path_unified(cfg)
+    
+    if h5_path:
         os.environ["STAGE1_H5_PATH"] = h5_path
-        print(f"[SETUP] Data Anchor (Explicit): {h5_path}", flush=True)
-        s1_path = os.path.dirname(h5_path)
-        final_ref_dir = s1_path
-    else:
-        data_root = paths_cfg.get("data_root")
-        data_fname = paths_cfg.get("data_h5_filename")
-        ds = cfg.get("dataset_name")
-        h5_path = None
-        final_ref_dir = None
-
-        # 1. Determine Search Roots
-        root_candidates: List[str] = []
-        
-        # A) Configured data_root
-        if data_root:
-            if os.path.isabs(str(data_root)):
-                root_candidates.append(str(data_root))
-            else:
-                root_candidates.append(os.path.abspath(str(data_root)))
-                root_candidates.append(os.path.abspath(os.path.join(project_root(), str(data_root))))
-
-        # B) Standard Project Structure (fallback)
-        # Looks in: ./data and ../data (relative to script execution)
-        root_candidates.append(os.path.join(os.getcwd(), "data"))
-        root_candidates.append(os.path.join(os.path.dirname(os.getcwd()), "data"))
-        root_candidates.append(os.path.join(project_root(), "data"))
-
-        # Remove duplicates
-        root_candidates = sorted(list(set(root_candidates)), key=len, reverse=True)
-
-        if data_fname:
-            tried: List[str] = []
-            
-            for root_abs in root_candidates:
-                if not os.path.exists(root_abs):
-                    continue
-
-                # Strategy 1: <root>/<dataset>/<file>
-                if ds:
-                    cand_ds = os.path.join(root_abs, str(ds), str(data_fname))
-                    tried.append(cand_ds)
-                    if os.path.exists(cand_ds):
-                        h5_path = os.path.abspath(cand_ds)
-                        break
-
-                # Strategy 2: <root>/<file> (Directly in data folder - Your Case)
-                cand_direct = os.path.join(root_abs, str(data_fname))
-                tried.append(cand_direct)
-                if os.path.exists(cand_direct):
-                    h5_path = os.path.abspath(cand_direct)
-                    break
-                
-                # Strategy 3: Recursive search
-                matches = glob.glob(os.path.join(root_abs, "**", str(data_fname)), recursive=True)
-                if matches:
-                    h5_path = os.path.abspath(matches[0])
-                    break
-
-            if h5_path:
-                os.environ["STAGE1_H5_PATH"] = h5_path
-                print(f"[SETUP] Data Anchor Resolved: {h5_path}", flush=True)
-                final_ref_dir = os.path.dirname(h5_path)
-            else:
-                print("[SETUP][WARN] Could not find data H5. Tried locations:", flush=True)
-                for t in tried:
-                    print(f"  - {t}", flush=True)
-
-        # Legacy Phase-1-compatible path (optional fallback)
-        if not h5_path:
-            s1_dir_str = paths_cfg.get("stage1_analysis_dir")
-            if s1_dir_str:
-                s1_path = os.path.abspath(s1_dir_str)
-                final_ref_dir = s1_path
-                
-                # Search for H5 in legacy dir
-                if os.path.exists(os.path.join(s1_path, "REFERENCE_DATA.h5")):
-                    h5_path = os.path.join(s1_path, "REFERENCE_DATA.h5")
-                elif os.path.isdir(s1_path):
-                     # Check subdirs
-                    subdirs = sorted([os.path.join(s1_path, d) for d in os.listdir(s1_path) if os.path.isdir(os.path.join(s1_path, d))])
-                    if subdirs:
-                        final_ref_dir = subdirs[-1]
-                        h5s = glob.glob(os.path.join(final_ref_dir, "*.h5"))
-                        if h5s: h5_path = h5s[0]
-
-            if h5_path:
-                os.environ["STAGE1_H5_PATH"] = h5_path
-                print(f"[SETUP] Data Anchor (Legacy): {h5_path}", flush=True)
-
+    
     # Idea loading relative to the resolved H5 path
     if enable_idea:
-        base_dir = os.path.dirname(h5_path) if h5_path else (final_ref_dir or os.getcwd())
+        # Try finding idea.json next to the H5 file first
+        base_dir = os.path.dirname(h5_path) if h5_path else os.getcwd()
         idea_path = os.path.join(base_dir, "idea.json")
         
         if os.path.exists(idea_path):
@@ -151,16 +66,10 @@ def _setup_stage1_resources(cfg: dict, enable_idea: bool = False):
 
 def _inject_api_key(cfg: dict):
     """Ensure API Key is loaded into environment for llm_utils to find."""
-    llm = cfg.get("llm", {})
-    key = llm.get("api_key")
-    base = llm.get("base_url")
-    
+    key = cfg.get("llm", {}).get("api_key")
     if key:
         os.environ["OPENAI_API_KEY"] = key
-    if base:
-        os.environ["OPENAI_BASE_URL"] = base
-        
-    print(f"[SETUP] LLM Config: URL={os.environ.get('OPENAI_BASE_URL', 'default')}, Key={'***' if key else 'None'}", flush=True)
+        print(f"[SETUP] API Key Injected: ...{key[-4:]}", flush=True)
 
 def _check_success(metrics: dict, threshold: float, metric_key: str) -> Tuple[bool, float]:
     if not metrics:
@@ -246,6 +155,16 @@ def _atomic_write_json(path: str, data: dict):
 def _get_save_root(cfg: Dict[str, Any]) -> str:
     # Follow prompt_orchestrator's logic
     return (cfg.get("prompt_branch", {}) or {}).get("save_root", (cfg.get("paths", {}) or {}).get("design_execution_root", os.getcwd()))
+
+def _write_latest_pointer(save_root: str, best_dir: str):
+    """Writes a pointer file so Phase 3 can robustly find the output."""
+    pointer_path = os.path.join(save_root, "latest_run_pointer.json")
+    try:
+        with open(pointer_path, "w") as f:
+            json.dump({"latest_trial_dir": os.path.abspath(best_dir)}, f, indent=2)
+        print(f"[LOOP] Wrote Phase 2 pointer to: {pointer_path}", flush=True)
+    except Exception as e:
+        print(f"[LOOP][WARN] Failed to write pointer file: {e}", flush=True)
 
 def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
     exp_cfg = cfg.get("experiment", {}) or {}
@@ -368,6 +287,8 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
                 if success and iter_trial_dir:
                     print(f"\n🎉 [SUCCESS] Criteria Met! Archiving and stopping.", flush=True)
                     archived_dir = _archive_run(iter_trial_dir)
+                    # [ROBUSTNESS] Write pointer
+                    _write_latest_pointer(out_root, archived_dir)
                     _write_summary(final=True)
                     return
 
@@ -416,6 +337,8 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
         if best_trial_dir and os.path.exists(best_trial_dir):
             print(f"[LOOP] Archiving BEST run found (Score: {best_score:.4f}).", flush=True)
             archived_dir = _archive_run(best_trial_dir)
+            # [ROBUSTNESS] Write pointer
+            _write_latest_pointer(out_root, archived_dir)
         else:
             print("[LOOP] ❌ No valid runs completed successfully to archive.", flush=True)
 
