@@ -22,8 +22,8 @@ pip install -r requirements.txt
 CellScientist/                  <-- Project Root
 │
 ├── data/                       <-- Data Storage Directory (Inferred from H5 path fix)
-│   └── BBBC036/
-│       └── BBBC036_smiles_split.h5
+│
+├── results/                    <-- Output Directory (Automatically generated)
 │
 ├── configs/                    <-- Configuration Files Directory (Inferred from run_pipeline.py)
 │   ├── pipeline_config.json
@@ -39,7 +39,6 @@ CellScientist/                  <-- Project Root
 │   ├── autofix.yml
 │   └── idea.yml
 │
-├── results/                    <-- Output Directory (Automatically generated)
 │
 ├── cellscientist/              <-- Package Root
 │   ├── __init__.py
