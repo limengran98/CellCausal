@@ -1,0 +1,61 @@
+{
+  "dataset_name": "BBBC036",
+  "split_name": "smiles",
+  "paths": {
+    "baseline_source_dir": "../baseline/${dataset_name}",
+    "data_root": "../data",
+    "data_h5_filename": "${dataset_name}_${split_name}_split.h5",
+    "data_h5_path": null,
+    "design_execution_root": "../results/${dataset_name}/generate_execution",
+    "literature_dir": "../results/${dataset_name}/literature",
+    "literature_knowledge_json": "../results/${dataset_name}/literature/domain_knowledge.json"
+  },
+  "llm": {
+    "model": "gemini-3-pro-all",
+    "base_url": "https://vip.yi-zhan.top/v1",
+    "api_key": "sk-00fKNXuFU5uFWIgC31666619E0044b78B64fB614904aCd9d",
+    "max_tokens": 40000,
+    "temperature": 0.5,
+    "timeout": 600
+  },
+  "experiment": {
+    "primary_metric": "PCC",
+    "max_iterations": 3,
+    "success_threshold": 0.5
+  },
+  "prompt_branch": {
+    "output_type": "notebook",
+    "prompt_file": "prompts/pipeline_prompt.yaml",
+    "idea_file": "idea.json",
+    "save_root": "../results/${dataset_name}/generate_execution",
+    "temperature": 0.7,
+    "max_tokens": 40000
+  },
+  "exec": {
+    "timeout_seconds": 360000,
+    "max_fix_rounds": 5,
+    "enable_llm_autofix": true,
+    "enable_hypergraph_viz": true,
+    "viz_format": "mermaid",
+    "cuda_device_id": 3
+  },
+  "literature": {
+    "enabled": true,
+
+    "serper_api_key": "YOUR_SERPER_API_KEY",
+    "serper_base_url": "https://google.serper.dev",
+
+    "scrape": true,
+    "jina_api_key": "YOUR_JINA_API_KEY",
+    "jina_base_url": "https://r.jina.ai",
+
+    "use_llm_summarizer": true,
+    "max_papers": 8,
+    "max_abstract_chars": 1200,
+    "prompt_max_chars": 6000,
+
+    "task_keywords": "cell painting perturbation modeling",
+    "query": ""
+  }
+
+}
