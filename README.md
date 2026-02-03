@@ -19,18 +19,18 @@ pip install -r requirements.txt
 ## 📂 Project Structure
 
 ```
-CellScientist/                  <-- 项目根目录 (Project Root)
+CellScientist/                  <-- Project Root
 │
-├── data/                       <-- 数据存放目录 (根据 H5 path fix 推断)
+├── data/                       <-- Data Storage Directory (Inferred from H5 path fix)
 │   └── BBBC036/
 │       └── BBBC036_smiles_split.h5
 │
-├── configs/                    <-- 配置文件目录 (根据 run_pipeline.py 推断)
+├── configs/                    <-- Configuration Files Directory (Inferred from run_pipeline.py)
 │   ├── pipeline_config.json
 │   ├── experiment_config.json
 │   └── review_config.json
 │
-├── prompts/                    <-- Prompt YAML 存放目录
+├── prompts/                    <-- Prompt YAML Storage Directory
 │   ├── pipeline_prompt.yaml
 │   ├── review_optimize.yaml
 │   ├── experiment_report.yaml
@@ -39,36 +39,36 @@ CellScientist/                  <-- 项目根目录 (Project Root)
 │   ├── autofix.yml
 │   └── idea.yml
 │
-├── results/                    <-- 输出目录 (自动生成)
+├── results/                    <-- Output Directory (Automatically generated)
 │
-├── cellscientist/              <-- 主包 (Package Root)
+├── cellscientist/              <-- Package Root
 │   ├── __init__.py
 │   │
-│   ├── core/                   <-- 核心逻辑层 (Phase 2 & 3 implementation)
+│   ├── core/                   <-- Core Logic Layer (Phase 2 & 3 implementation)
 │   │   ├── __init__.py
-│   │   ├── config_loader.py    <-- 加载配置，解析变量
-│   │   ├── llm_client.py       <-- TokenMeter, LLM 调用封装
-│   │   ├── execution_workflow.py  <-- Phase 2 入口 (Design & Execute)
-│   │   ├── review_workflow.py     <-- Phase 3 入口 (Review & Optimize)
-│   │   ├── prompt_orchestrator.py <-- 协调生成、执行、分析
-│   │   ├── prompt_generator.py    <-- 生成 Notebook 内容
-│   │   ├── prompt_executor.py     <-- 包含 GraphExecutor 类
-│   │   ├── executor_engine.py     <-- 纯执行引擎 (Review 阶段用)
-│   │   ├── notebook_autofix.py    <-- 自动修复逻辑
-│   │   ├── experiment_report.py   <-- 生成实验报告
-│   │   ├── task_graph.py          <-- 任务图管理 (Review 阶段用)
+│   │   ├── config_loader.py    <-- Configuration loader and variable parser
+│   │   ├── llm_client.py       <-- TokenMeter and LLM call wrapper
+│   │   ├── execution_workflow.py  <-- Phase 2 Entry (Design & Execute)
+│   │   ├── review_workflow.py     <-- Phase 3 Entry (Review & Optimize)
+│   │   ├── prompt_orchestrator.py <-- Coordinator for generation, execution, and analysis
+│   │   ├── prompt_generator.py    <-- Notebook content generator
+│   │   ├── prompt_executor.py     <-- Contains GraphExecutor class
+│   │   ├── executor_engine.py     <-- Pure execution engine (Used in Review phase)
+│   │   ├── notebook_autofix.py    <-- Auto-fix logic
+│   │   ├── experiment_report.py   <-- Experiment report generator
+│   │   ├── task_graph.py          <-- Task graph management (Used in Review phase)
 │   │   └── external_knowledge_mirothink.py
 │   │
-│   └── pipeline/               <-- 管道编排层 (Runner logic)
+│   └── pipeline/               <-- Pipeline Orchestration Layer (Runner logic)
 │       ├── __init__.py
-│       ├── run_pipeline.py     <-- 统一入口 (run_cellscientist.py 的重构版)
-│       ├── config.py           <-- 管道配置合并逻辑
-│       ├── metrics.py          <-- 指标提取与记分板 (Regex fix applied here)
-│       ├── report.py           <-- 最终总结报告生成
-│       ├── advanced_metrics.py <-- 高级指标分析
-│       └── utils.py            <-- 路径查找、日志流式处理
+│       ├── run_pipeline.py     <-- Unified entry (Refactored version of run_cellscientist.py)
+│       ├── config.py           <-- Pipeline configuration merging logic
+│       ├── metrics.py          <-- Metric extraction and scoreboard (Regex fix applied here)
+│       ├── report.py           <-- Final summary report generation
+│       ├── advanced_metrics.py <-- Advanced metrics analysis
+│       └── utils.py            <-- Path discovery and log streaming utilities
 │
-└── run_cellscientist.py        <-- (可选) 根目录下的启动脚本，通常调用 cellscientist.pipeline.run_pipeline.main
+└── run_cellscientist.py         <-- Root-level startup script, typically calls cellscientist.pipeline.run_pipeline.main
 
 ```
 
