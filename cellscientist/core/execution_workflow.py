@@ -356,7 +356,13 @@ def main():
 
     def _add_common(p):
         p.add_argument("--prompt-file", type=str)
-        p.add_argument("--use-idea", action="store_true")
+        p.add_argument(
+        "--use-idea",
+        dest="use_idea",
+        action="store_true",
+        default=True,
+        help="Enable idea mode (default: ON)"
+    )
 
     cmd_run = sub.add_parser("run")
     _add_common(cmd_run)
@@ -371,7 +377,7 @@ def main():
     cfg = load_full_config(args.config)
     _inject_api_key(cfg)
 
-    use_idea = getattr(args, "use_idea", False)
+    use_idea = getattr(args, "use_idea", True)
 
     if args.cmd == "run":
         run_loop(cfg, args.prompt_file, use_idea)

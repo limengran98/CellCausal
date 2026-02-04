@@ -544,6 +544,7 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
                 "semantic_gradient_analysis": semantic_gradient_text,
                 "task_graph_state": task_graph_state_text or "{}"
             }
+
             # [NEW] External knowledge retrieval (optional)
             # Uses MiroThink-derived Serper search + Jina Reader scraping. Controlled by cfg["literature"]["enabled"].
             try:
@@ -551,12 +552,15 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
                     cfg=cfg,
                     context_text=(immutable_context_content or "") + "\n\n" + (mutable_content or ""),
                     stage="review",
+                    workspace_dir=workspace,
+                    tag=f"iter_{iteration}",
                 )
                 ctx["external_knowledge_md"] = knowledge_pack_to_markdown(
                     pack,
                     max_chars=int(((cfg.get("literature") or {}) if isinstance(cfg.get("literature"), dict) else {}).get("prompt_max_chars", 6000) or 6000),
                 )
-            except Exception:
+            except Exception as e:
+                print(f"[REVIEW][LIT][WARN] External knowledge retrieval failed: {e}", flush=True)
                 ctx["external_knowledge_md"] = ""
 
             if "system" in p_data:

@@ -115,6 +115,19 @@ def phase_generate(
 
     # Ensure split buckets exist from the start
     dirs = _ensure_result_folders(trial_dir)
+
+
+    # [NEW] Mirror debug_prompt artifacts (including external knowledge snapshots) into the trial
+    # intermediate bucket so the 'workbench' can show them next to notebooks/metrics.
+    try:
+        if os.path.exists(debug_dir):
+            dbg_dst = os.path.join(dirs["intermediate"], "debug_prompt")
+            os.makedirs(dbg_dst, exist_ok=True)
+            # Python 3.8+ supports dirs_exist_ok
+            shutil.copytree(debug_dir, dbg_dst, dirs_exist_ok=True)
+            print(f"[ORCH] 🧾 Copied debug_prompt artifacts to: {dbg_dst}", flush=True)
+    except Exception as e:
+        print(f"[ORCH][WARN] Failed to copy debug_prompt artifacts: {e}", flush=True)
     
     nb_path = os.path.join(trial_dir, "notebook_prompt.ipynb")
     with open(nb_path, "w", encoding="utf-8") as f:

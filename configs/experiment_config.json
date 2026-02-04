@@ -2,13 +2,12 @@
   "dataset_name": "BBBC036",
   "split_name": "smiles",
   "paths": {
-    "baseline_source_dir": "../baseline/${dataset_name}",
-    "data_root": "../data",
+    "data_root": "./data",
     "data_h5_filename": "${dataset_name}_${split_name}_split.h5",
     "data_h5_path": null,
-    "design_execution_root": "../results/${dataset_name}/generate_execution",
-    "literature_dir": "../results/${dataset_name}/literature",
-    "literature_knowledge_json": "../results/${dataset_name}/literature/domain_knowledge.json"
+    "design_execution_root": "./results/${dataset_name}/generate_execution",
+    "literature_dir": "./results/${dataset_name}/literature",
+    "literature_knowledge_json": "./results/${dataset_name}/literature/domain_knowledge.json"
   },
   "llm": {
     "model": "gemini-3-pro-all",
@@ -27,7 +26,7 @@
     "output_type": "notebook",
     "prompt_file": "prompts/pipeline_prompt.yaml",
     "idea_file": "idea.json",
-    "save_root": "../results/${dataset_name}/generate_execution",
+    "save_root": "./results/${dataset_name}/generate_execution",
     "temperature": 0.7,
     "max_tokens": 40000
   },

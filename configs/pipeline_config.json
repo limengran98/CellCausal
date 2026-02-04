@@ -5,7 +5,7 @@
     "cuda_visible_devices": null
   },
   "llm": {
-    "model": "gemini-3-flash-preview",
+    "model": "gemini-3-pro-all",
     "temperature": null,
     "max_tokens": null
   },

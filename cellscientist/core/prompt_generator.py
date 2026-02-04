@@ -346,17 +346,26 @@ def generate_notebook_content(
     spec_content = {k: v for k, v in spec.items() if k != "system"}
     spec_dump_raw = yaml.safe_dump(spec_content, sort_keys=False)
     spec_dump = _inject_vars(spec_dump_raw)
+
     # [NEW] Optional external knowledge retrieval (MiroThink-derived).
     # Controlled by cfg['literature']['enabled']. Uses Serper for search and (optionally) Jina Reader for scraping.
     external_knowledge_md = ""
     try:
-        pack = retrieve_external_knowledge(cfg, context_text=spec_dump, stage="design")
+        pack = retrieve_external_knowledge(
+            cfg,
+            context_text=spec_dump,
+            stage="design",
+            workspace_dir=debug_dir,
+            tag="design",
+        )
         external_knowledge_md = knowledge_pack_to_markdown(
             pack,
             max_chars=int(((cfg.get("literature") or {}) if isinstance(cfg.get("literature"), dict) else {}).get("prompt_max_chars", 6000) or 6000),
         )
-    except Exception:
+    except Exception as e:
+        print(f"[GEN][LIT][WARN] External knowledge retrieval failed: {e}", flush=True)
         external_knowledge_md = ""
+
 
     external_knowledge_section = ""
     if external_knowledge_md:
@@ -413,8 +422,23 @@ Follow these rules strictly:
 {external_knowledge_section}
 """
         print("[GEN] 💻 Generating Code (Freestyle/No-Idea)...", flush=True)
-
     messages = [{"role": "system", "content": sys_txt}, {"role": "user", "content": full_user_content}]
+
+
+    # [NEW] Persist the exact prompts sent to the LLM for transparency/debugging.
+    # This is especially useful to verify that the EXTERNAL KNOWLEDGE section was injected.
+    try:
+        with open(os.path.join(debug_dir, "prompt_system.txt"), "w", encoding="utf-8") as f:
+            f.write(sys_txt or "")
+        with open(os.path.join(debug_dir, "prompt_user.txt"), "w", encoding="utf-8") as f:
+            f.write(full_user_content or "")
+        if external_knowledge_md:
+            with open(os.path.join(debug_dir, "external_knowledge_design.md"), "w", encoding="utf-8") as f:
+                f.write(external_knowledge_md)
+        print(f"[GEN] 🧾 Debug prompts saved under: {debug_dir}", flush=True)
+    except Exception as e:
+        print(f"[GEN][WARN] Failed to save debug prompts: {e}", flush=True)
+
     pb = cfg.get("prompt_branch", {}) or {}
 
     strict_json_only = bool(pb.get("strict_json_only", True))
