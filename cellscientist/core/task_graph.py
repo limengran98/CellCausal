@@ -88,7 +88,7 @@ def init_task_graph_from_config(optimization_hierarchy: List[str]) -> Dict[str, 
         edges.append({"from": "T0", "to": tid, "type": "decomposes_to"})
 
     return {
-        "version": 1,
+        "version": 2,
         "tasks": tasks,
         "edges": edges,
         "iteration_map": {},
@@ -270,19 +270,31 @@ def update_after_iteration(
     executed_notebook_path: Optional[str] = None,
     metrics_path: Optional[str] = None,
     reflection: Optional[str] = None,
+    *,
+    observation: Optional[Dict[str, Any]] = None,
+    intervention: Optional[Dict[str, Any]] = None,
+    evidence: Optional[Dict[str, Any]] = None,
+    trace_path: Optional[str] = None,
 ) -> None:
-    """
-    Write evidence back to tasks and maintain iteration_map.
-    Simple dynamics:
-      - If improved: decrease uncertainty slightly; bump priority down a bit.
-      - If not improved: bump uncertainty; keep priority or raise slightly.
+    """Update task-graph after an iteration and record a causal chain.
+
+    Backward compatibility:
+    - Existing consumers may only rely on per-task `evidence` arrays and `iteration_map`.
+    - This function now also writes a structured causal chain into
+      `state['iteration_chains'][f'iter_{iteration}']`.
+
+    Causal chain fields:
+    - observation: what we saw before/after execution (errors, baselines, etc.)
+    - evidence: what information supported the decision (external knowledge, files)
+    - intervention: what we changed (edits, patches)
+    - outcome: what happened (status, score, artifact paths)
     """
     tasks = state.setdefault("tasks", {})
     it_key = f"iter_{iteration}"
     state.setdefault("iteration_map", {})[it_key] = list(active_task_ids or [])
 
-    ev = {
-        "iteration": iteration,
+    # outcome is always defined from the run results
+    outcome = {
         "improved": bool(improved),
         "score": float(score) if score is not None else None,
         "target_metric": target_metric,
@@ -291,6 +303,22 @@ def update_after_iteration(
         "reflection": reflection,
         "ts": _now_iso(),
     }
+
+    chain = {
+        "iteration": int(iteration),
+        "active_tasks": list(active_task_ids or []),
+        "observation": observation or {},
+        "evidence": evidence or {},
+        "intervention": intervention or {},
+        "outcome": outcome,
+        "trace_path": trace_path,
+        "ts": _now_iso(),
+    }
+    state.setdefault("iteration_chains", {})[it_key] = chain
+
+    # Keep per-task evidence for existing prompt summaries
+    ev = dict(outcome)
+    ev["chain_ref"] = it_key
 
     for tid in active_task_ids or []:
         if tid not in tasks:
@@ -312,6 +340,7 @@ def update_after_iteration(
             t["priority"] = min(1.0, pri + 0.01)
 
         t["updated_at"] = _now_iso()
+
 
 
 def to_prompt_summary(state: Dict[str, Any], max_tasks: int = 12) -> str:

@@ -1,11 +1,11 @@
 {
   "dataset_name": "BBBC036",
   "common": {
-    "cuda_device_id": 1,
+    "cuda_device_id": 0,
     "cuda_visible_devices": null
   },
   "llm": {
-    "model": "gemini-3-pro-all",
+    "model": "gemini-3-flash-preview",
     "temperature": null,
     "max_tokens": null
   },

@@ -310,7 +310,12 @@ def _summarize_if_needed(cfg: Dict[str, Any], text: str, title: str, url: str, m
                 max_tokens=1200,
                 timeout=120,
             )
-            return summary.strip()
+            summary = (summary or "").strip()
+            # If the gateway returns HTTP 200 but empty content (seen with some
+            # third-party OpenAI-compatible endpoints), fall back to truncation
+            # instead of silently returning an empty excerpt.
+            if summary:
+                return summary
         except Exception:
             pass
 

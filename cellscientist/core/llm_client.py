@@ -374,6 +374,85 @@ def _post_request(url: str, headers: dict, payload: dict, timeout: int = 600, re
     raise RuntimeError(f"LLM Request failed after {retries} retries. URL: {url}. Last error: {last_err}")
 
 
+def _extract_text_from_response(data: dict) -> str:
+    """Best-effort extraction of assistant text.
+
+    Some providers claim OpenAI-compatibility but return different shapes (e.g.
+    Gemini-style 'candidates', or OpenAI completion 'text'). We keep this helper
+    conservative: if we can't confidently find text, return ''.
+    """
+    try:
+        # OpenAI chat
+        choices = data.get("choices")
+        if isinstance(choices, list) and choices:
+            c0 = choices[0] or {}
+            msg = c0.get("message") or {}
+            content = msg.get("content")
+
+            # content can be a string OR a list of parts
+            if isinstance(content, str):
+                return content.strip()
+            if isinstance(content, list):
+                parts = []
+                for p in content:
+                    if isinstance(p, str):
+                        parts.append(p)
+                    elif isinstance(p, dict):
+                        t = p.get("text") or p.get("content")
+                        if isinstance(t, str):
+                            parts.append(t)
+                return "\n".join([p for p in parts if p]).strip()
+
+            # Some servers return completion-style text
+            t = c0.get("text")
+            if isinstance(t, str):
+                return t.strip()
+
+            # Streaming delta fallback (shouldn't happen with stream=False but safe)
+            delta = c0.get("delta") or {}
+            dcontent = delta.get("content")
+            if isinstance(dcontent, str):
+                return dcontent.strip()
+
+        # Gemini-style
+        candidates = data.get("candidates")
+        if isinstance(candidates, list) and candidates:
+            c0 = candidates[0] or {}
+            content = (c0.get("content") or {})
+            parts = content.get("parts")
+            if isinstance(parts, list):
+                out = []
+                for p in parts:
+                    if isinstance(p, dict) and isinstance(p.get("text"), str):
+                        out.append(p["text"])
+                return "\n".join(out).strip()
+
+        # Generic fallbacks
+        if isinstance(data.get("output_text"), str):
+            return str(data.get("output_text")).strip()
+    except Exception:
+        return ""
+
+    return ""
+
+
+def _dump_llm_response_if_needed(data: dict, kind: str = "empty") -> None:
+    """Dump raw response JSON for debugging when env var is set.
+
+    Set LLM_DUMP_DIR to a directory to enable.
+    """
+    try:
+        dump_dir = os.environ.get("LLM_DUMP_DIR", "").strip()
+        if not dump_dir:
+            return
+        os.makedirs(dump_dir, exist_ok=True)
+        fn = f"llm_{kind}_{int(time.time())}.json"
+        with open(os.path.join(dump_dir, fn), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
 # =============================================================================
 # 4) Chat Functions (Merged)
 # =============================================================================
@@ -440,10 +519,17 @@ def chat_text(
             except Exception:
                 pass
 
-        content = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content")
-        content = (content or "").strip()
+        # Some servers return different response shapes; extract robustly.
+        if isinstance(data, dict) and isinstance(data.get("error"), dict):
+            # Many OpenAI-ish gateways return HTTP 200 with an embedded error.
+            err = data.get("error") or {}
+            print(f"[LLM] ⚠️ API error field: {str(err)[:200]}", flush=True)
+
+        content = _extract_text_from_response(data)
         if content:
             return content
+
+        _dump_llm_response_if_needed(data, kind="empty_text")
 
         print(f"[LLM] ⚠️ Warning: Received empty content from API (Attempt {attempt+1}/3).", flush=True)
         time.sleep(0.8 + 0.8 * attempt)
@@ -510,9 +596,14 @@ def chat_json(
             duration = time.time() - t0
             TokenMeter.record(data, duration, str(resolved.get("model")))
 
-            content = ((((data.get("choices") or [{}])[0]).get("message") or {}).get("content") or "").strip()
+            if isinstance(data, dict) and isinstance(data.get("error"), dict):
+                err = data.get("error") or {}
+                print(f"[LLM] ⚠️ API error field: {str(err)[:200]}", flush=True)
+
+            content = _extract_text_from_response(data)
             if not content:
                 print(f"[LLM] ⚠️ Empty JSON content (Attempt {attempt+1}/{max_retries}).", flush=True)
+                _dump_llm_response_if_needed(data, kind="empty_json")
                 time.sleep(0.8 + 0.8 * attempt)
                 continue
 

@@ -20,6 +20,7 @@ from cellscientist.core.config_loader import load_full_config
 # [UPDATED] Import TokenMeter here
 from cellscientist.core.llm_client import chat_json, resolve_llm_config, TokenMeter
 from cellscientist.core.external_knowledge_mirothink import retrieve_external_knowledge, knowledge_pack_to_markdown
+from cellscientist.core.task_logger import get_task_logger
 
 # [UPDATED] Import decoupled execution and error handling functions
 from cellscientist.core.executor_engine import run_notebook_pure, attempt_fix_notebook, dump_error_log
@@ -682,6 +683,14 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
 
     review_cfg = cfg.get("review", {}) or {}
     target_metric = review_cfg.get("target_metric", "PCC")
+
+    # [TRACE] Structured task trace (causal traceability)
+    tlog = get_task_logger(workspace_dir)
+    try:
+        tlog.log_step('review.start', 'Begin review/optimization loop', workspace_dir=os.path.abspath(workspace_dir), base_notebook=os.path.abspath(base_nb_path), target_metric=target_metric)
+        tlog.log_artifact('notebook_base', base_nb_path, 'Baseline notebook')
+    except Exception:
+        pass
     
     # [FIX] Read direction
     direction = review_cfg.get("direction", "maximize").lower() 
@@ -764,6 +773,10 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             # [TELEM] Reset Meter for this iteration
             TokenMeter.get_and_reset()
             iter_started = time.time()
+            try:
+                tlog.log_step('review.iter_start', 'Iteration start', iteration=i, best_score=float(best_score_so_far), target_metric=str(target_metric))
+            except Exception:
+                pass
 
             nb = nbformat.read(best_nb_path, as_version=4)
             mutable_indices = identify_mutable_cells(nb, cfg)
@@ -787,6 +800,27 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             if not suggestion or "edits" not in suggestion:
                 print("[WARN] Invalid LLM response. Skipping.")
                 continue
+
+            # [TRACE] Persist suggestion for causal traceability
+            suggestion_path = os.path.join(workspace_dir, f"suggestion_iter_{i}.json")
+            try:
+                with open(suggestion_path, 'w', encoding='utf-8') as f:
+                    json.dump(suggestion, f, indent=2, ensure_ascii=False)
+                tlog.log_artifact('suggestion', suggestion_path, 'LLM suggestion (edits/strategy)')
+            except Exception:
+                pass
+
+            # [TRACE] External knowledge artifacts (latest pointers)
+            lit_dir = os.path.join(workspace_dir, 'external_knowledge')
+            lit_md = os.path.join(lit_dir, 'external_knowledge_review.md')
+            lit_json = os.path.join(lit_dir, 'external_knowledge_review.json')
+            try:
+                if os.path.exists(lit_md):
+                    tlog.log_artifact('external_knowledge_md', lit_md, 'External knowledge (review)')
+                if os.path.exists(lit_json):
+                    tlog.log_artifact('external_knowledge_json', lit_json, 'External knowledge (review)')
+            except Exception:
+                pass
 
             # Apply decomposition updates (compat with different signatures)
             try:
@@ -851,6 +885,11 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             candidate_nb_path = os.path.join(workspace_dir, f"notebook_iter_{i}.ipynb")
             nbformat.write(nb_next, candidate_nb_path)
 
+            try:
+                tlog.log_artifact('candidate_notebook', candidate_nb_path, f'Candidate notebook for iter {i}')
+            except Exception:
+                pass
+
             print(f"[EXEC] Running Candidate {i}...")
 
             executed_nb_path, success = execute_and_recover(
@@ -871,6 +910,23 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 generated_metrics = os.path.join(workspace_dir, "metrics.json")
                 if os.path.exists(generated_metrics):
                     shutil.copy(generated_metrics, iter_metrics_path)
+
+                try:
+                    tlog.log_artifact('iter_metrics', iter_metrics_path, f'Iteration metrics {i}', compute_hash=False)
+                except Exception:
+                    pass
+
+                # External knowledge artifacts (latest)
+                try:
+                    lit_dir = os.path.join(workspace_dir, 'external_knowledge')
+                    lit_md = os.path.join(lit_dir, 'external_knowledge_review.md')
+                    lit_json = os.path.join(lit_dir, 'external_knowledge_review.json')
+                    if os.path.exists(lit_md):
+                        tlog.log_artifact('external_knowledge_md', lit_md, f'External knowledge (iter {i})', compute_hash=False)
+                    if os.path.exists(lit_json):
+                        tlog.log_artifact('external_knowledge_json', lit_json, f'External knowledge json (iter {i})', compute_hash=False)
+                except Exception:
+                    pass
 
                 candidate_score = get_candidate_metric_value(iter_metrics_path, target_metric)
                 
@@ -913,6 +969,28 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                         executed_notebook_path=executed_nb_path,
                         metrics_path=iter_metrics_path,
                         reflection=suggestion.get('reflection_on_history', None),
+                        observation={
+                            'decision_type': decision_tag,
+                            'focus_area': focus_tag,
+                            'semantic_gradient_analysis': sem_grad,
+                            'baseline_score': comparison_baseline,
+                            'best_score_so_far': best_score_so_far,
+                        },
+                        intervention={
+                            'applied_edits': [
+                                {
+                                    'cell_index': e.get('cell_index'),
+                                    'reason': e.get('reason') or '',
+                                } for e in (suggestion.get('edits', []) or [])
+                            ],
+                            'applied_count': applied_count,
+                            'candidate_notebook_path': candidate_nb_path,
+                        },
+                        evidence={
+                            'external_knowledge_latest_md': os.path.join(workspace_dir, 'external_knowledge', 'external_knowledge_review.md'),
+                            'external_knowledge_latest_json': os.path.join(workspace_dir, 'external_knowledge', 'external_knowledge_review.json'),
+                        },
+                        trace_path=getattr(tlog, 'trace_path', None),
                     )
                 except TypeError:
                     try:
@@ -941,6 +1019,11 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                     "task_names": [t.get("name") for t in suggestion.get("active_tasks", [])],
                     "usage": usage_stats # [TELEM] Save cost data
                 })
+
+                try:
+                    tlog.log_step('review.iter_end', 'Iteration complete', iteration=i, status=status, score=float(candidate_score))
+                except Exception:
+                    pass
 
                 # Save history immediately
                 try:

@@ -30,39 +30,74 @@ from cellscientist.core.llm_client import TokenMeter
 # [UPDATED] Import unified H5 resolver
 from cellscientist.pipeline.utils import project_root, resolve_h5_path_unified
 
-def _setup_stage1_resources(cfg: dict, enable_idea: bool = False):
-    """
-    Sets up Stage 1 resources (H5 data path and Idea file).
-    Uses unified logic from pipeline/utils.py to avoid redundancy.
+def _setup_stage1_resources(cfg: dict, enable_idea: bool = False, spec_path: Optional[str] = None):
+    """Sets up Stage-1 resources (H5 data path and Idea file).
+
+    - Resolves H5 path via unified resolver.
+    - If idea mode is enabled and no idea.json is present, auto-generates one
+      from the current technical spec (Phase-1 is not available).
+
+    Environment variables:
+      - STAGE1_H5_PATH
+      - STAGE1_IDEA_PATH (only when enable_idea=True)
     """
     # ---------------------------------------------------------------------
-    # [UPDATED] Unified data resolver (replaces Phase-1 'design_analysis' dependency)
+    # Unified data resolver (replaces Phase-1 'design_analysis' dependency)
     # ---------------------------------------------------------------------
     h5_path = resolve_h5_path_unified(cfg)
-    
+
     if h5_path:
         os.environ["STAGE1_H5_PATH"] = h5_path
-    
-    # Idea loading relative to the resolved H5 path
-    if enable_idea:
-        # Try finding idea.json next to the H5 file first
-        base_dir = os.path.dirname(h5_path) if h5_path else os.getcwd()
-        idea_path = os.path.join(base_dir, "idea.json")
-        
-        if os.path.exists(idea_path):
-            os.environ["STAGE1_IDEA_PATH"] = idea_path
-            print(f"[SETUP] Idea File: {idea_path}", flush=True)
-        else:
-            custom_idea = cfg.get("prompt_branch", {}).get("idea_file")
-            if custom_idea and os.path.exists(custom_idea):
-                os.environ["STAGE1_IDEA_PATH"] = os.path.abspath(custom_idea)
-                print(f"[SETUP] Config Idea File: {os.environ['STAGE1_IDEA_PATH']}", flush=True)
-            else:
-                print("[SETUP][WARN] --use-idea ON but no idea.json found.", flush=True)
-    else:
+
+    # ---------------------------------------------------------------------
+    # Idea file setup (optional)
+    # ---------------------------------------------------------------------
+    if not enable_idea:
         if "STAGE1_IDEA_PATH" in os.environ:
             del os.environ["STAGE1_IDEA_PATH"]
         print("[SETUP] Idea Mode: OFF", flush=True)
+        return
+
+    # Idea loading relative to the resolved H5 path
+    base_dir = os.path.dirname(h5_path) if h5_path else os.getcwd()
+    idea_path = os.path.join(base_dir, "idea.json")
+
+    # 1) Use existing file next to H5 if present
+    if os.path.exists(idea_path):
+        os.environ["STAGE1_IDEA_PATH"] = idea_path
+        print(f"[SETUP] Idea File: {idea_path}", flush=True)
+        return
+
+    # 2) Use config-specified file
+    custom_idea = cfg.get("prompt_branch", {}).get("idea_file")
+    if custom_idea and os.path.exists(custom_idea):
+        os.environ["STAGE1_IDEA_PATH"] = os.path.abspath(custom_idea)
+        print(f"[SETUP] Config Idea File: {os.environ['STAGE1_IDEA_PATH']}", flush=True)
+        return
+
+    # 3) Auto-generate idea.json (Phase-1 not available)
+    try:
+        from cellscientist.core.idea_generator import generate_idea_json
+
+        # Choose a writable directory.
+        gen_dir = base_dir
+        if not os.path.isdir(gen_dir) or not os.access(gen_dir, os.W_OK):
+            # fall back to design_execution_root (always inside results tree)
+            gen_dir = os.path.join(cfg.get('paths', {}).get('design_execution_root', os.getcwd()), 'idea_cache')
+        os.makedirs(gen_dir, exist_ok=True)
+
+        gen_path = os.path.join(gen_dir, 'idea.json')
+        written = generate_idea_json(cfg, spec_path or "", gen_path)
+
+        if written and os.path.exists(written):
+            os.environ["STAGE1_IDEA_PATH"] = os.path.abspath(written)
+            print(f"[SETUP] 🧠 Auto-generated idea.json: {os.environ['STAGE1_IDEA_PATH']}", flush=True)
+            return
+
+    except Exception as e:
+        print(f"[SETUP][WARN] Failed to auto-generate idea.json: {e}", flush=True)
+
+    print("[SETUP][WARN] --use-idea ON but no idea.json found.", flush=True)
 
 def _inject_api_key(cfg: dict):
     """Ensure API Key is loaded into environment for llm_utils to find."""
@@ -251,7 +286,7 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
             criteria_met = False
 
             try:
-                _setup_stage1_resources(cfg, use_idea)
+                _setup_stage1_resources(cfg, use_idea, spec_path=p_path)
                 res = run_full_pipeline(cfg, p_path, run_name=run_name)
 
                 iter_trial_dir = res.get("trial_dir")

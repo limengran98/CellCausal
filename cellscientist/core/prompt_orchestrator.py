@@ -7,6 +7,7 @@ from .prompt_generator import generate_notebook_content
 from .prompt_executor import run_notebook_with_autofix
 from ..pipeline.utils import export_notebook_as_py, safe_copy
 from .experiment_report import write_experiment_report
+from .task_logger import get_task_logger
 
 # Import Visualization Tool
 try:
@@ -116,6 +117,11 @@ def phase_generate(
     # Ensure split buckets exist from the start
     dirs = _ensure_result_folders(trial_dir)
 
+    # [TRACE] Structured task trace
+    tlog = get_task_logger(trial_dir)
+    tlog.log_step('phase_generate.start', 'Begin notebook generation', spec_path=os.path.abspath(spec_path), run_name=run_name or '')
+    tlog.log_artifact('spec', spec_path, 'Technical specification')
+
 
     # [NEW] Mirror debug_prompt artifacts (including external knowledge snapshots) into the trial
     # intermediate bucket so the 'workbench' can show them next to notebooks/metrics.
@@ -126,12 +132,21 @@ def phase_generate(
             # Python 3.8+ supports dirs_exist_ok
             shutil.copytree(debug_dir, dbg_dst, dirs_exist_ok=True)
             print(f"[ORCH] 🧾 Copied debug_prompt artifacts to: {dbg_dst}", flush=True)
+            try:
+                tlog.log_artifact('debug_prompt', dbg_dst, 'Mirrored debug_prompt artifacts')
+            except Exception:
+                pass
     except Exception as e:
         print(f"[ORCH][WARN] Failed to copy debug_prompt artifacts: {e}", flush=True)
     
     nb_path = os.path.join(trial_dir, "notebook_prompt.ipynb")
     with open(nb_path, "w", encoding="utf-8") as f:
         nbformat.write(nb, f)
+
+    try:
+        tlog.log_artifact('notebook', nb_path, 'Generated notebook prompt')
+    except Exception:
+        pass
 
     # Immediately snapshot to final_keep
     safe_copy(nb_path, dirs["final"], "notebook_prompt.ipynb")
@@ -146,9 +161,18 @@ def phase_generate(
     safe_copy(nb_path.replace(".ipynb", ".py"), dirs["final"], "notebook_prompt.py")
         
     if strategy_md:
-        with open(os.path.join(trial_dir, "research_strategy.md"), "w", encoding="utf-8") as f:
+        strat_path = os.path.join(trial_dir, 'research_strategy.md')
+        with open(strat_path, 'w', encoding='utf-8') as f:
             f.write(strategy_md)
+        try:
+            tlog.log_artifact('strategy', strat_path, 'Synthesized research strategy')
+        except Exception:
+            pass
 
+    try:
+        tlog.log_step('phase_generate.end', 'Generation complete', trial_dir=os.path.abspath(trial_dir))
+    except Exception:
+        pass
     print(f"[ORCH] Generation Complete. Trial: {trial_dir}", flush=True)
     return {"trial_dir": trial_dir, "notebook_path": nb_path}
 
@@ -162,6 +186,10 @@ def phase_execute(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[
     if not os.path.exists(nb_path):
         raise RuntimeError(f"Notebook not found: {nb_path}")
         
+    # [TRACE] Structured task trace
+    tlog = get_task_logger(tdir)
+    tlog.log_step('phase_execute.start', 'Begin notebook execution', trial_dir=os.path.abspath(tdir))
+
     # Run
     dirs = _ensure_result_folders(tdir)
     final_exec = run_notebook_with_autofix(nb_path, tdir, cfg)
@@ -207,6 +235,15 @@ def phase_execute(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[
         # Snapshot metrics immediately
         safe_copy(m_path, dirs["final"], "metrics.json")
         
+    try:
+        if final_exec:
+            tlog.log_artifact('notebook_exec', final_exec, 'Executed notebook')
+        if os.path.exists(m_path):
+            tlog.log_artifact('metrics', m_path, 'Execution metrics')
+        tlog.log_step('phase_execute.end', 'Execution complete', has_metrics=bool(metrics))
+    except Exception:
+        pass
+
     return {"trial_dir": tdir, "exec_notebook": final_exec, "metrics": metrics}
 
 def phase_analyze(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[str, Any]:
@@ -214,7 +251,8 @@ def phase_analyze(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[
     tdir = trial_dir or _get_latest_trial(cfg)
     if not tdir:
         raise RuntimeError("No trial directory found.")
-    
+    tlog = get_task_logger(tdir)
+    tlog.log_step('phase_analyze.start', 'Begin report generation', trial_dir=os.path.abspath(tdir))
     m_path = os.path.join(tdir, "metrics.json")
     if not os.path.exists(m_path):
         print(f"[ORCH] No metrics.json in {tdir}. Skipping report.", flush=True)
@@ -228,9 +266,17 @@ def phase_analyze(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[
         
         report_path = write_experiment_report(tdir, metrics, cfg, primary_metric=pm)
         print(f"[ORCH] Report written: {report_path}", flush=True)
+        try:
+            tlog.log_artifact('report', report_path, 'Experiment report')
+        except Exception:
+            pass
         # Snapshot report and any analysis errors immediately
         safe_copy(report_path, dirs["final"], "experiment_report.md")
         safe_copy(os.path.join(tdir, "analysis_llm_error_traceback.txt"), dirs["final"], "analysis_llm_error_traceback.txt")
+        try:
+            tlog.log_step('phase_analyze.end', 'Report generation complete')
+        except Exception:
+            pass
         return {"report_path": report_path}
     except Exception as e:
         print(f"[ORCH] Analysis failed: {e}", flush=True)
