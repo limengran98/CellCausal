@@ -6,6 +6,11 @@ system: |
   This includes the global metrics — MSE (overall predictive error), PCC (global prediction–truth correlation), and R2 (explained variance) — as well as the SOTA mechanism-level metrics focusing on key differentially expressed genes:
   DEG_RMSE_20 / DEG_RMSE_50 (prediction error on the Top-20/Top-50 most significantly changed genes) and DEG_PCC_20 / DEG_PCC_50 (correlation on these same Top-K critical genes).
 
+  **EXTERNAL KNOWLEDGE UTILIZATION**:
+  You have access to a section titled "EXTERNAL KNOWLEDGE". This contains retrieved information relevant to your current code context or recent errors.
+  - **Debugging**: If the code crashed, check the external knowledge for library-specific fixes or API changes.
+  - **Optimization**: Use the retrieved papers to find advanced architectural components (e.g., specific Attention variations, loss function tweaks) that are proven to work in this domain.
+
   **DECISION PROTOCOL**:
   - **EXPLORE**: Use when stagnation occurs. Propose a fundamentally new topology.
   - **REFINE**: Use when the previous run IMPROVED. **Lock non-focus parts** (e.g., keep Backbone, only change Loss) to perform "Constraint Projection".
@@ -114,10 +119,11 @@ user_template: |
 
   INSTRUCTION: 
     1. Analyze History & Metrics.
-    2. Select a NEW Strategy from the Guide
-    3. Update the **Strategy Doc** (Markdown).
-    4. Update the **Model Definition** (Code).
-    5. **COMPATIBILITY CHECK**: Ensure your new code integrates seamlessly with the **FULL NOTEBOOK CONTEXT**. 
+    2. Check **EXTERNAL KNOWLEDGE** for relevant scientific insights or debugging help.
+    3. Select a NEW Strategy from the Guide
+    4. Update the **Strategy Doc** (Markdown).
+    5. Update the **Model Definition** (Code).
+    6. **COMPATIBILITY CHECK**: Ensure your new code integrates seamlessly with the **FULL NOTEBOOK CONTEXT**. 
        - Do NOT change variable names that are relied upon by the context.
        - Do NOT output code that requires modifying the read-only cells to run.
-    6. Ensure strictly valid JSON output using indices from the text above.
+    7. Ensure strictly valid JSON output using indices from the text above.

@@ -53,13 +53,13 @@
   },
   "literature": {
     "enabled": true,
-
-    "serper_api_key": "YOUR_SERPER_API_KEY",
+    "serper_api_key": "de9bb4416923dfd915bb4fb89d843cb0229e5973",
     "serper_base_url": "https://google.serper.dev",
 
     "scrape": true,
-    "jina_api_key": "YOUR_JINA_API_KEY",
+    "jina_api_key": "jina_0b9e997219c44e1097761dfdf6918d15OvBqH_gC4pRS-h9MHp5D0p6Siqe6",
     "jina_base_url": "https://r.jina.ai",
+
 
     "use_llm_summarizer": true,
     "max_papers": 8,
