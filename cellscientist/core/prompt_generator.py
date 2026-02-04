@@ -350,6 +350,7 @@ def generate_notebook_content(
     # [NEW] Optional external knowledge retrieval (MiroThink-derived).
     # Controlled by cfg['literature']['enabled']. Uses Serper for search and (optionally) Jina Reader for scraping.
     external_knowledge_md = ""
+    external_knowledge_section = ""
     try:
         pack = retrieve_external_knowledge(
             cfg,
@@ -362,19 +363,21 @@ def generate_notebook_content(
             pack,
             max_chars=int(((cfg.get("literature") or {}) if isinstance(cfg.get("literature"), dict) else {}).get("prompt_max_chars", 6000) or 6000),
         )
-    except Exception as e:
-        print(f"[GEN][LIT][WARN] External knowledge retrieval failed: {e}", flush=True)
-        external_knowledge_md = ""
-
-
-    external_knowledge_section = ""
-    if external_knowledge_md:
-        external_knowledge_section = f"""
+        # [DIAGNOSTIC] Explicitly warn if no items found
+        if not pack.items:
+            external_knowledge_section = "\n> [WARN] External knowledge search executed but returned NO results. Check logs/API key.\n"
+        elif not external_knowledge_md.strip():
+            external_knowledge_section = "\n> [WARN] External knowledge search executed but Markdown generation failed.\n"
+        else:
+            external_knowledge_section = f"""
 ================================================================================
 # EXTERNAL KNOWLEDGE (retrieved standards / papers / notes)
 ================================================================================
 {external_knowledge_md}
 """
+    except Exception as e:
+        print(f"[GEN][LIT][WARN] External knowledge retrieval failed: {e}", flush=True)
+        external_knowledge_section = f"\n> [ERROR] External knowledge retrieval failed: {e}\n"
 
 
     raw_ideas = _load_ideas_if_available()

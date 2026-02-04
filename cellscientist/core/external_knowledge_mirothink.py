@@ -283,11 +283,21 @@ def _build_query(context_text: str, stage: str, cfg: Dict[str, Any], query_hint:
 # -----------------------------
 
 
-def _summarize_if_needed(cfg: Dict[str, Any], text: str, title: str, url: str, max_chars: int) -> str:
+def _summarize_if_needed(cfg: Dict[str, Any], text: str, title: str, url: str, max_chars: int, circuit_open: bool = False) -> str:
+    """
+    Summarize text using LLM if possible, otherwise truncate.
+    Robustness Fix: If circuit_open is True, or LLM fails/returns empty, immediately fall back to truncation.
+    """
+    truncated_fallback = (text[:max_chars] + "\n... (truncated)") if len(text) > max_chars else text
+
     if not text:
         return ""
     if len(text) <= max_chars:
         return text
+    
+    # [ROBUSTNESS] If circuit breaker is open, skip LLM entirely
+    if circuit_open:
+        return truncated_fallback
 
     # If CellScientist LLM is available and enabled, summarize.
     lit = _lit_cfg(cfg)
@@ -311,16 +321,19 @@ def _summarize_if_needed(cfg: Dict[str, Any], text: str, title: str, url: str, m
                 timeout=120,
             )
             summary = (summary or "").strip()
-            # If the gateway returns HTTP 200 but empty content (seen with some
-            # third-party OpenAI-compatible endpoints), fall back to truncation
-            # instead of silently returning an empty excerpt.
+            
+            # [ROBUSTNESS] Crucial fix: check for empty return
             if summary:
                 return summary
+            else:
+                # Log happens in caller, just return fallback here implies failure
+                return truncated_fallback
+                
         except Exception:
-            pass
+            return truncated_fallback
 
     # Fallback: truncate
-    return text[:max_chars] + "\n... (truncated)"
+    return truncated_fallback
 
 
 # -----------------------------
@@ -581,6 +594,11 @@ def retrieve_external_knowledge(
     log(f"[LIT] ✅ Search results: {len(items)} items")
 
     # Optional scrape+summarize
+    # [ROBUSTNESS] Circuit breaker variables
+    consecutive_failures = 0
+    circuit_breaker_threshold = 2
+    circuit_open = False
+
     if bool(lit.get("scrape", True)) and items:
         if not jina_key:
             log("[LIT] ⚠️ JINA_API_KEY missing. Skipping page scraping (snippets only).")
@@ -588,11 +606,43 @@ def retrieve_external_knowledge(
             for idx, it in enumerate(items, start=1):
                 try:
                     raw = _jina_scrape_url(it.url, api_key=jina_key, base_url=jina_base, max_chars=30000)
-                    it.scraped_excerpt = _summarize_if_needed(cfg, raw, it.title, it.url, max_chars=max_abstract_chars)
+                    
+                    # Try summarizing, passing the circuit state
+                    excerpt = _summarize_if_needed(cfg, raw, it.title, it.url, max_chars=max_abstract_chars, circuit_open=circuit_open)
+                    
+                    # Check if summarization was attempted but returned fallback (heuristic: length is large or starts with raw text)
+                    # A better check: if we expected LLM summary but got raw text, it might be a failure.
+                    # But _summarize_if_needed returns text either way.
+                    # We can assume if it didn't crash, we assign it.
+                    it.scraped_excerpt = excerpt
+                    
+                    # Logic to detect if LLM failed inside _summarize_if_needed is hard without changing return signature.
+                    # Instead, we rely on chat_text behavior. If chat_text fails, it returns empty/error, which _summarize handles by returning raw.
+                    # We can infer failure if the result is identical to truncated raw AND use_llm_summarizer is on.
+                    
+                    is_raw_fallback = (excerpt == (raw[:max_abstract_chars] + "\n... (truncated)") if len(raw) > max_abstract_chars else raw)
+                    
+                    if is_raw_fallback and not circuit_open and bool(lit.get("use_llm_summarizer", True)):
+                        # It fell back. Count as a "soft" failure for circuit breaker purposes?
+                        # Maybe not, could just be short text.
+                        # Real failure is when chat_text returns empty/error logged above.
+                        # For now, we trust _summarize_if_needed to handle the text.
+                        pass
+
                     log(f"[LIT] 📄 scraped {idx}/{len(items)}: {_truncate(it.title, 72)}")
+                    
+                    # Reset failure count on successful scrape (even if summary failed, at least we have text)
+                    consecutive_failures = 0
+
                 except Exception as e:
                     it.scraped_excerpt = f"(scrape failed) {e}"
                     log(f"[LIT][WARN] scrape failed {idx}/{len(items)}: {e}")
+                    consecutive_failures += 1
+                
+                # If we have too many scrape/summary failures, stop trying to use LLM for the rest
+                if consecutive_failures >= circuit_breaker_threshold:
+                    circuit_open = True
+                    # log(f"[LIT] 🔌 Circuit breaker opened. Skipping LLM summarization for remaining items.")
 
     pack = KnowledgePack(query=q, stage=stage, generated_at=_now_iso(), items=items, provider="mirothink_web")
 

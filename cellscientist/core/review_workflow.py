@@ -303,13 +303,21 @@ def find_best_phase2_trial(cfg, explicit_path=None):
     if os.path.exists(os.path.join(gen_root, "metrics.json")):
         return gen_root
 
+    # [FIX] Look for both flattened workspaces and legacy prompt folder
     prompt_root = os.path.join(os.path.abspath(gen_root), "prompt")
-    if not os.path.exists(prompt_root):
-        raise FileNotFoundError(f"Generation root not found or invalid: {prompt_root}")
+    
+    search_paths = []
+    if os.path.exists(os.path.abspath(gen_root)):
+        search_paths.extend(glob.glob(os.path.join(os.path.abspath(gen_root), "workspace_*")))
+        search_paths.extend(glob.glob(os.path.join(os.path.abspath(gen_root), "prompt_run_*")))
+    
+    if os.path.exists(prompt_root):
+        search_paths.extend(glob.glob(os.path.join(prompt_root, "prompt_run_*")))
+        search_paths.extend(glob.glob(os.path.join(prompt_root, "workspace_*")))
 
-    runs = sorted(glob.glob(os.path.join(prompt_root, "prompt_run_*")), reverse=True)
+    runs = sorted(list(set(search_paths)), reverse=True)
 
-    print(f"[INIT] Searching for Phase 2 results in: {prompt_root}")
+    print(f"[INIT] Searching for Phase 2 results in: {gen_root}")
     for run in runs:
         nb_path = os.path.join(run, "notebook_prompt_exec.ipynb")
         metrics_path = os.path.join(run, "metrics.json")
@@ -579,6 +587,18 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
         {"role": "system", "content": sys_prompt},
         {"role": "user", "content": user_prompt}
     ]
+
+    # [NEW] Snapshot the prompts for traceability
+    try:
+        debug_iter_dir = os.path.join(workspace, "intermediate", "debug_review", f"iter_{iteration}")
+        os.makedirs(debug_iter_dir, exist_ok=True)
+        with open(os.path.join(debug_iter_dir, "review_prompt_system.txt"), "w", encoding="utf-8") as f:
+            f.write(sys_prompt)
+        with open(os.path.join(debug_iter_dir, "review_prompt_user.txt"), "w", encoding="utf-8") as f:
+            f.write(user_prompt)
+        print(f"[REVIEW] 🧾 Saved prompt snapshot to: {debug_iter_dir}", flush=True)
+    except Exception as e:
+        print(f"[REVIEW][WARN] Failed to save prompt snapshot: {e}", flush=True)
 
     print(f"[REVIEW] Requesting optimization (Iter {iteration})...")
 
@@ -913,18 +933,6 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
 
                 try:
                     tlog.log_artifact('iter_metrics', iter_metrics_path, f'Iteration metrics {i}', compute_hash=False)
-                except Exception:
-                    pass
-
-                # External knowledge artifacts (latest)
-                try:
-                    lit_dir = os.path.join(workspace_dir, 'external_knowledge')
-                    lit_md = os.path.join(lit_dir, 'external_knowledge_review.md')
-                    lit_json = os.path.join(lit_dir, 'external_knowledge_review.json')
-                    if os.path.exists(lit_md):
-                        tlog.log_artifact('external_knowledge_md', lit_md, f'External knowledge (iter {i})', compute_hash=False)
-                    if os.path.exists(lit_json):
-                        tlog.log_artifact('external_knowledge_json', lit_json, f'External knowledge json (iter {i})', compute_hash=False)
                 except Exception:
                     pass
 

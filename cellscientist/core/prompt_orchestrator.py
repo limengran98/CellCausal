@@ -23,17 +23,40 @@ def _get_save_root(cfg: Dict[str, Any]) -> str:
     return cfg.get("prompt_branch", {}).get("save_root", cfg["paths"]["design_execution_root"])
 
 def _get_latest_trial(cfg: Dict[str, Any]) -> Optional[str]:
-    root = os.path.join(_get_save_root(cfg), "prompt")
+    """
+    Robust discovery of the latest trial directory.
+    Priority:
+    1. Direct 'workspace_*' or 'prompt_run_*' in save_root (New flattened structure).
+    2. Legacy 'prompt/prompt_run_*' (Backward compatibility).
+    """
+    root = _get_save_root(cfg)
     if not os.path.exists(root): return None
-    # Filter for directories starting with prompt_ or workspace_
-    subs = sorted([p for p in os.listdir(root) if os.path.isdir(os.path.join(root, p))])
-    if subs:
-        return os.path.join(root, subs[-1])
-    return None
+    
+    # 1. Search in root
+    candidates = []
+    for p in os.listdir(root):
+        full_p = os.path.join(root, p)
+        if os.path.isdir(full_p) and (p.startswith("workspace_") or p.startswith("prompt_run_")):
+            candidates.append(full_p)
+            
+    # 2. Search in legacy 'prompt' subdir
+    legacy_root = os.path.join(root, "prompt")
+    if os.path.exists(legacy_root):
+        for p in os.listdir(legacy_root):
+            full_p = os.path.join(legacy_root, p)
+            if os.path.isdir(full_p) and (p.startswith("workspace_") or p.startswith("prompt_run_")):
+                candidates.append(full_p)
+    
+    if not candidates:
+        return None
+        
+    # Sort by modification time, newest first
+    candidates.sort(key=lambda x: os.path.getmtime(x))
+    return candidates[-1]
 
 def _audit_intermediate_files(trial_dir: str):
     """
-    [NEW] Force audit and print files in intermediate directory to ensure visibility of the process.
+    Force audit and print files in intermediate directory to ensure visibility of the process.
     """
     inter_dir = os.path.join(trial_dir, "intermediate")
     print(f"\n[ORCH] 🔎 Auditing Intermediate Results in: {inter_dir}", flush=True)
@@ -64,14 +87,7 @@ def _audit_intermediate_files(trial_dir: str):
 
 
 def _ensure_result_folders(trial_dir: str) -> Dict[str, str]:
-    """Create and return the canonical result folders for a trial.
-
-    User requirement:
-    - Save outputs immediately as they are generated.
-    - Keep two buckets:
-        1) final_keep/    : always-up-to-date “best / latest” artifacts (overwritten)
-        2) intermediate/  : verbose run artifacts / checkpoints produced by notebooks
-    """
+    """Create and return the canonical result folders for a trial."""
     final_dir = os.path.join(trial_dir, "final_keep")
     inter_dir = os.path.join(trial_dir, "intermediate")
     os.makedirs(final_dir, exist_ok=True)
@@ -88,56 +104,48 @@ def phase_generate(
     run_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """Phase 1: Generate Notebook."""
-    # [FIX] Make debug_prompt directory unique to avoid collisions between concurrent processes
+    
+    out_root = _get_save_root(cfg)
     ts_now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     pid = os.getpid()
-    debug_folder_name = f"debug_prompt_{ts_now}_{pid}"
-    
-    debug_dir = os.path.join(cfg["paths"]["design_execution_root"], debug_folder_name)
-    out_root = _get_save_root(cfg)
-    
-    nb, _user_prompt, strategy_md = generate_notebook_content(cfg, spec_path, debug_dir)
-    
-    # [MODIFIED] Logic for directory naming
+
+    # [REFACTOR] 1. Determine Trial Directory FIRST
     if run_name:
         # Loop mode: Use fixed workspace
-        trial_dir = os.path.join(out_root, "prompt", run_name)
+        trial_dir = os.path.join(out_root, run_name)
         # Clean up previous run data if exists to avoid mixing
         if os.path.exists(trial_dir):
             try:
                 shutil.rmtree(trial_dir)
+                print(f"[ORCH] 🧹 Cleaned up previous workspace: {trial_dir}", flush=True)
             except OSError as e:
                 print(f"[ORCH][WARN] Failed to clean workspace {trial_dir}: {e}", flush=True)
     else:
-        # Standard mode: Timestamp + PID for safety
-        trial_dir = os.path.join(out_root, "prompt", f"prompt_run_{ts_now}_{pid}")
+        # Standard mode: Timestamp + PID for safety (No 'prompt' subdir nesting)
+        trial_dir = os.path.join(out_root, f"prompt_run_{ts_now}_{pid}")
         
     os.makedirs(trial_dir, exist_ok=True)
-
-    # Ensure split buckets exist from the start
+    
+    # [REFACTOR] 2. Create structure immediately
     dirs = _ensure_result_folders(trial_dir)
+    
+    # [REFACTOR] 3. Define Debug Dir INSIDE intermediate (No external redundancy)
+    debug_dir = os.path.join(dirs["intermediate"], "debug_prompt")
+    os.makedirs(debug_dir, exist_ok=True)
 
     # [TRACE] Structured task trace
     tlog = get_task_logger(trial_dir)
     tlog.log_step('phase_generate.start', 'Begin notebook generation', spec_path=os.path.abspath(spec_path), run_name=run_name or '')
     tlog.log_artifact('spec', spec_path, 'Technical specification')
 
-
-    # [NEW] Mirror debug_prompt artifacts (including external knowledge snapshots) into the trial
-    # intermediate bucket so the 'workbench' can show them next to notebooks/metrics.
+    # [GENERATE] Write artifacts directly into the trial's debug_dir
+    nb, _user_prompt, strategy_md = generate_notebook_content(cfg, spec_path, debug_dir)
+    
+    print(f"[ORCH] 🧾 Debug artifacts written to: {debug_dir}", flush=True)
     try:
-        if os.path.exists(debug_dir):
-            dbg_dst = os.path.join(dirs["intermediate"], "debug_prompt")
-            os.makedirs(dbg_dst, exist_ok=True)
-            # Python 3.8+ supports dirs_exist_ok
-            shutil.copytree(debug_dir, dbg_dst, dirs_exist_ok=True)
-            print(f"[ORCH] 🧾 Copied debug_prompt artifacts to: {dbg_dst}", flush=True)
-            try:
-                tlog.log_artifact('debug_prompt', dbg_dst, 'Mirrored debug_prompt artifacts')
-            except Exception:
-                pass
-    except Exception as e:
-        print(f"[ORCH][WARN] Failed to copy debug_prompt artifacts: {e}", flush=True)
+        tlog.log_artifact('debug_prompt', debug_dir, 'Debug prompt artifacts')
+    except Exception:
+        pass
     
     nb_path = os.path.join(trial_dir, "notebook_prompt.ipynb")
     with open(nb_path, "w", encoding="utf-8") as f:
@@ -221,7 +229,7 @@ def phase_execute(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[
         if viz_out.get("mermaid"):
             print(f"[ORCH] Viz saved: {viz_out['mermaid']}", flush=True)
             
-    # [NEW] Audit Intermediate Files
+    # Audit Intermediate Files
     _audit_intermediate_files(tdir)
     
     # Load Metrics
@@ -285,7 +293,7 @@ def phase_analyze(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[
 def run_full_pipeline(
     cfg: Dict[str, Any], 
     spec_path: str,
-    run_name: Optional[str] = None # [NEW] Pass down run_name
+    run_name: Optional[str] = None # Pass down run_name
 ) -> Dict[str, Any]:
     
     print("[ORCH] === STEP 1: GENERATE ===", flush=True)
