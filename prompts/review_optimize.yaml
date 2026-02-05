@@ -129,4 +129,12 @@ user_template: |
        - Do NOT change variable names that are relied upon by the context.
        - Do NOT output code that requires modifying the read-only cells to run.
     8. Ensure strictly valid JSON output using indices from the text above.
+<<<<<<< HEAD
     9. **MANDATORY**: Include `used_evidence_ids` field with the Evidence IDs you referenced (e.g., ["B1", "L3"]).
+=======
+<<<<<<< HEAD
+    9. **MANDATORY**: Include `used_evidence_ids` field with the Evidence IDs you referenced (e.g., ["B1", "L3"]).
+=======
+    9. **MANDATORY**: Include `used_evidence_ids` field with the Evidence IDs you referenced (e.g., ["B1", "L3"]).
+>>>>>>> 929e0e1 (Update: 2026-02-05 13:27)
+>>>>>>> dc5f51f
