@@ -31,15 +31,21 @@ CellCausal/                         <-- Project Root
 ├── cellscientist/                  # 📦 CORE PACKAGE: Main logic implementation
 │   │
 │   ├── core/                       # 🧠 INTELLIGENCE LAYER: AI Workflows
-│   │   ├── execution_workflow.py     # Phase 2 Entry: Design ideas & execute experiments
-│   │   ├── review_workflow.py        # Phase 3 Entry: Analyze results & optimize code
-│   │   ├── prompt_orchestrator.py    # Master Controller: Manages agent state & tasks
-│   │   ├── prompt_generator.py       # Code Gen: Creates executable Jupyter notebooks
-│   │   ├── executor_engine.py        # Sandbox: Executes generated code safely
-│   │   ├── task_graph.py             # Dependency Manager: Handles complex task DAGs
-│   │   ├── llm_client.py             # LLM Interface: Handles API calls & token counting
-│   │   ├── notebook_autofix.py       # Self-Healing: Automatically fixes coding errors
-│   │   └── external_knowledge_*.py   # RAG: Retrieves external biological context
+│   │   ├── __init__.py                  # Package init
+│   │   ├── config_loader.py             # Load/merge config + ${VAR} expansion
+│   │   ├── llm_client.py                # LLM client + token metering
+│   │   ├── idea_generator.py            # Idea/hypothesis generation
+│   │   ├── execution_workflow.py        # Phase 2 entry: design & execute
+│   │   ├── review_workflow.py           # Phase 3 entry: review & optimize
+│   │   ├── prompt_orchestrator.py       # Orchestrate prompts/tasks across phases
+│   │   ├── prompt_generator.py          # Generate notebook/code content
+│   │   ├── prompt_executor.py           # GraphExecutor + prompt execution
+│   │   ├── executor_engine.py           # Execution engine used by review
+│   │   ├── notebook_autofix.py          # Auto-fix loop for failing notebooks
+│   │   ├── experiment_report.py         # Experiment report generator
+│   │   ├── task_graph.py                # Task DAG + dependency handling
+│   │   ├── task_logger.py               # Task-level logging utilities
+│   │   └── external_knowledge_mirothink.py # External knowledge integration
 │   │
 │   └── pipeline/                   # 🔧 INFRASTRUCTURE LAYER: Support systems
 │       ├── config.py                 # Config Manager: Merges JSON configs & CLI args
