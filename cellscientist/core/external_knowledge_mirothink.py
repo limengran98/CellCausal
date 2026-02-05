@@ -193,6 +193,41 @@ def _serper_google_search(
     return data
 
 
+def _serper_error_payload(data: Any) -> Optional[str]:
+    """Detect common 'HTTP 200 but error in JSON payload' patterns."""
+    if not isinstance(data, dict):
+        return None
+    # Common gateway formats
+    if isinstance(data.get("error"), (str, dict)):
+        return str(data.get("error"))
+    if "errors" in data:
+        return str(data.get("errors"))
+    if "message" in data and ("statusCode" in data or "status" in data):
+        return f"{data.get('message')} (status={data.get('statusCode') or data.get('status')})"
+    return None
+
+
+def _fallback_queries(original_q: str, cfg: Dict[str, Any], stage: str) -> List[str]:
+    """Generate a small set of safer retry queries if the first query yields 0 results."""
+    lit = _lit_cfg(cfg)
+    base_kw = (lit.get("task_keywords") or "").strip()
+    stage_kw = "design draft" if stage == "design" else "review feedback"
+    academic_bias = ' (paper OR arxiv OR "journal" OR doi OR pubmed OR "technical report" OR "specification")'
+
+    generic = "perturbation response prediction drug gene expression"
+    q2 = " ".join([p for p in [base_kw, generic, stage_kw] if p]).strip() + academic_bias
+    q3 = " ".join([p for p in [base_kw, generic] if p]).strip() + academic_bias
+
+    out: List[str] = []
+    for q in [original_q, q2, q3]:
+        q = (q or "").strip()
+        if not q:
+            continue
+        if q not in out:
+            out.append(q)
+    return out
+
+
 # -----------------------------
 # Jina Reader Scrape (from MiroThinker searching_sogou_mcp_server.py)
 # -----------------------------
@@ -247,30 +282,81 @@ def _build_query(context_text: str, stage: str, cfg: Dict[str, Any], query_hint:
     base_kw = (lit.get("task_keywords") or "").strip()
     stage_kw = "design draft" if stage == "design" else "review feedback"
 
-    # A light heuristic: use hint if supplied; else take first ~12 keywords from context.
+    # Users can override with cfg["literature"]["query"].
+    forced = (lit.get("query") or "").strip()
+    if forced:
+        return forced
+
+    # A light heuristic: use hint if supplied; else take keywords from context.
+    # Robustness: aggressively filter placeholder/config tokens (e.g., dataset_name, STAGE1_H5_PATH).
+    term_limit = int(lit.get("query_term_limit", 12) or 12)
+    stop = {
+        # common placeholders
+        "dataset_name",
+        "dataset",
+        "resources",
+        "resource",
+        "h5_file",
+        "h5",
+        "path",
+        "paths",
+        "stage1_h5_path",
+        "stage2_h5_path",
+        "stage3_h5_path",
+        "idea_file",
+        "idea_json",
+        "prompt",
+        "prompts",
+        "yaml",
+        "json",
+        "config",
+        "configs",
+        "workspace",
+        "workdir",
+        "output",
+        "outputs",
+        "intermediate",
+        "debug",
+        # env-like
+        "stage1",
+        "stage2",
+        "stage3",
+        "staging",
+    }
+
+    def _is_noise_token(t: str) -> bool:
+        tl = t.lower()
+        if tl in stop:
+            return True
+        # env vars / placeholders (ALL_CAPS_WITH_UNDERSCORES)
+        if t.isupper() and "_" in t:
+            return True
+        if tl.endswith("_path") or tl.endswith("_file") or tl.endswith("_dir"):
+            return True
+        # too generic / likely template variable
+        if "${" in t or "}" in t or "{" in t:
+            return True
+        return False
+
     if query_hint and query_hint.strip():
         hint = query_hint.strip()
     else:
-        # naive keyword extraction: keep alphanum tokens, length>=4, unique
         import re
 
-        toks = re.findall(r"[A-Za-z][A-Za-z0-9_\-]{3,}", context_text or "")
-        uniq = []
+        toks = re.findall(r"[A-Za-z][A-Za-z0-9_\-]{2,}", context_text or "")
+        uniq: List[str] = []
         seen = set()
         for t in toks:
+            if _is_noise_token(t):
+                continue
             tl = t.lower()
             if tl in seen:
                 continue
             seen.add(tl)
             uniq.append(t)
-            if len(uniq) >= 12:
+            if len(uniq) >= term_limit:
                 break
         hint = " ".join(uniq)
-
-    # Users can override with cfg["literature"]["query"].
-    forced = (lit.get("query") or "").strip()
-    if forced:
-        return forced
 
     # Prefer academic-ish results by adding common anchors.
     academic_bias = ' (paper OR arxiv OR "journal" OR doi OR pubmed OR "technical report" OR "specification")'
@@ -509,7 +595,8 @@ def retrieve_external_knowledge(
 
     # Cache handling
     cache_days = int(lit.get("cache_days", 30) or 30)
-    max_papers = int(lit.get("max_papers", 12) or 12)
+    # Robustness: clamp to >=1 to avoid slicing organic[:0] -> empty pack.
+    max_papers = max(1, int(lit.get("max_papers", 12) or 12))
     max_abstract_chars = int(lit.get("max_abstract_chars", 1200) or 1200)
     md_max_chars = int(lit.get("artifact_md_max_chars", 12000) or 12000)
 
@@ -532,6 +619,7 @@ def retrieve_external_knowledge(
             cached = _read_json(cache_path)
             pack = _pack_from_json(cached)
             log(f"[LIT] ♻️ Using cached results (use_existing_only=true): {cache_path}")
+            log(f"[LIT] ✅ Search results: {len(pack.items)} items (cached)")
             _persist_everywhere(pack)
             return pack
         pack = KnowledgePack(
@@ -554,44 +642,92 @@ def retrieve_external_knowledge(
                 if datetime.now(gen_time.tzinfo) - gen_time <= timedelta(days=cache_days):
                     pack = _pack_from_json(cached)
                     log(f"[LIT] ♻️ Using cached results: {cache_path}")
-                    _persist_everywhere(pack)
-                    return pack
+                    log(f"[LIT] ✅ Search results: {len(pack.items)} items (cached)")
+                    # Robustness: do not silently return an empty cached pack.
+                    # If cache is fresh but empty (often due to old/invalid cache schema or a bad earlier query), refresh search.
+                    if len(pack.items) > 0:
+                        _persist_everywhere(pack)
+                        return pack
+                    log("[LIT][WARN] Cache is fresh but contains 0 items. Refreshing search...")
         except Exception:
             pass
 
-    # Search
+    # Search (with small fallback set)
     gl = (lit.get("search_gl") or "us").strip()
     hl = (lit.get("search_hl") or "en").strip()
     location = lit.get("search_location")
     tbs = lit.get("search_tbs")
 
-    try:
-        data = _serper_google_search(
-            q=q,
-            gl=gl,
-            hl=hl,
-            location=location,
-            num=max(3, min(10, max_papers)),
-            tbs=tbs,
-            api_key=serper_key,
-            base_url=serper_base,
-        )
-    except Exception as e:
-        pack = KnowledgePack(query=q, stage=stage, generated_at=_now_iso(), items=[EvidenceItem(title="Search failed", url="", snippet=str(e))])
-        log(f"[LIT] ❌ Search failed: {e}")
-        _persist_everywhere(pack)
-        return pack
-
-    organic = data.get("organic") or []
+    data: Dict[str, Any] = {}
     items: List[EvidenceItem] = []
-    for r in organic[:max_papers]:
-        title = str(r.get("title") or "")
-        url = str(r.get("link") or r.get("url") or "")
-        snippet = str(r.get("snippet") or "")
-        published = str(r.get("date") or "")
-        items.append(EvidenceItem(title=title, url=url, snippet=snippet, source=_domain(url), published=published))
+    used_q = q
 
+    for attempt_q in _fallback_queries(q, cfg, stage):
+        used_q = attempt_q
+        try:
+            data = _serper_google_search(
+                q=attempt_q,
+                gl=gl,
+                hl=hl,
+                location=location,
+                num=max(3, min(30, max_papers)),
+                tbs=tbs,
+                api_key=serper_key,
+                base_url=serper_base,
+            )
+        except Exception as e:
+            log(f"[LIT][WARN] Search failed for query (attempt): {e}")
+            continue
+
+        err = _serper_error_payload(data)
+        if err:
+            # Make the failure visible; do not silently return empty.
+            log(f"[LIT] ❌ Serper error payload detected: {err}")
+            pack = KnowledgePack(
+                query=attempt_q,
+                stage=stage,
+                generated_at=_now_iso(),
+                items=[EvidenceItem(title="Search provider error", url="", snippet=err, source="serper")],
+                provider="mirothink_web",
+            )
+            _persist_everywhere(pack)
+            return pack
+
+        organic = data.get("organic") or []
+        items = []
+        for r in organic[:max_papers]:
+            title = str(r.get("title") or "")
+            url = str(r.get("link") or r.get("url") or "")
+            snippet = str(r.get("snippet") or "")
+            published = str(r.get("date") or "")
+            items.append(EvidenceItem(title=title, url=url, snippet=snippet, source=_domain(url), published=published))
+
+        if items:
+            break
+
+    # Log results (even if 0) with the actually used query
+    if used_q != q:
+        log(f"[LIT] 🔁 Fallback query used: {_truncate(used_q, 160)}")
     log(f"[LIT] ✅ Search results: {len(items)} items")
+
+    # Robustness/observability: if no results, optionally inject a visible stub item
+    # so downstream prompt injection is still non-empty and debuggable.
+    emit_stub = bool(lit.get("emit_noresult_stub", True))
+    if not items and emit_stub:
+        items = [
+            EvidenceItem(
+                title="No search results",
+                url="",
+                snippet=(
+                    "Search returned 0 results. "
+                    "This may indicate an overly noisy query, a provider issue, or missing/invalid SERPER_API_KEY. "
+                    f"Query used: {used_q}"
+                ),
+                source="serper",
+                published="",
+                scraped_excerpt="",
+            )
+        ]
 
     # Optional scrape+summarize
     # [ROBUSTNESS] Circuit breaker variables
@@ -604,33 +740,19 @@ def retrieve_external_knowledge(
             log("[LIT] ⚠️ JINA_API_KEY missing. Skipping page scraping (snippets only).")
         else:
             for idx, it in enumerate(items, start=1):
+                # Skip scraping for stub/no-url entries
+                if not (it.url or "").startswith(("http://", "https://")):
+                    continue
                 try:
                     raw = _jina_scrape_url(it.url, api_key=jina_key, base_url=jina_base, max_chars=30000)
-                    
+
                     # Try summarizing, passing the circuit state
                     excerpt = _summarize_if_needed(cfg, raw, it.title, it.url, max_chars=max_abstract_chars, circuit_open=circuit_open)
-                    
-                    # Check if summarization was attempted but returned fallback (heuristic: length is large or starts with raw text)
-                    # A better check: if we expected LLM summary but got raw text, it might be a failure.
-                    # But _summarize_if_needed returns text either way.
-                    # We can assume if it didn't crash, we assign it.
+
                     it.scraped_excerpt = excerpt
-                    
-                    # Logic to detect if LLM failed inside _summarize_if_needed is hard without changing return signature.
-                    # Instead, we rely on chat_text behavior. If chat_text fails, it returns empty/error, which _summarize handles by returning raw.
-                    # We can infer failure if the result is identical to truncated raw AND use_llm_summarizer is on.
-                    
-                    is_raw_fallback = (excerpt == (raw[:max_abstract_chars] + "\n... (truncated)") if len(raw) > max_abstract_chars else raw)
-                    
-                    if is_raw_fallback and not circuit_open and bool(lit.get("use_llm_summarizer", True)):
-                        # It fell back. Count as a "soft" failure for circuit breaker purposes?
-                        # Maybe not, could just be short text.
-                        # Real failure is when chat_text returns empty/error logged above.
-                        # For now, we trust _summarize_if_needed to handle the text.
-                        pass
 
                     log(f"[LIT] 📄 scraped {idx}/{len(items)}: {_truncate(it.title, 72)}")
-                    
+
                     # Reset failure count on successful scrape (even if summary failed, at least we have text)
                     consecutive_failures = 0
 
@@ -638,16 +760,18 @@ def retrieve_external_knowledge(
                     it.scraped_excerpt = f"(scrape failed) {e}"
                     log(f"[LIT][WARN] scrape failed {idx}/{len(items)}: {e}")
                     consecutive_failures += 1
-                
+
                 # If we have too many scrape/summary failures, stop trying to use LLM for the rest
                 if consecutive_failures >= circuit_breaker_threshold:
                     circuit_open = True
                     # log(f"[LIT] 🔌 Circuit breaker opened. Skipping LLM summarization for remaining items.")
 
-    pack = KnowledgePack(query=q, stage=stage, generated_at=_now_iso(), items=items, provider="mirothink_web")
+    # Note: store the actual query used (fallback may have been applied)
+    pack = KnowledgePack(query=used_q, stage=stage, generated_at=_now_iso(), items=items, provider="mirothink_web")
 
-    # Persist cache
-    if cache_path and literature_dir:
+    # Persist cache only if we have real URL results; do not cache stub-only packs.
+    has_real_results = any((it.url or "").startswith(("http://", "https://")) for it in items)
+    if cache_path and literature_dir and has_real_results:
         try:
             _write_json(cache_path, _json_safe_pack(pack))
             log(f"[LIT] 💾 Cached: {cache_path}")
@@ -659,16 +783,41 @@ def retrieve_external_knowledge(
 
 
 def _pack_from_json(d: Dict[str, Any]) -> KnowledgePack:
-    try:
-        items = [EvidenceItem(**it) for it in (d.get("items") or [])]
-    except Exception:
-        items = []
+    """Parse a cached JSON pack with schema tolerance.
+
+    Over time, different runs may store slightly different keys (e.g. Serper returns
+    `link` vs `url`; older caches may use `name` instead of `title`). We therefore
+    parse items defensively to avoid returning an empty pack due to minor schema drift.
+    """
+    raw_items = d.get("items") or []
+    items: List[EvidenceItem] = []
+    if isinstance(raw_items, list):
+        for it in raw_items:
+            if not isinstance(it, dict):
+                continue
+            title = str(it.get("title") or it.get("name") or it.get("heading") or "")
+            url = str(it.get("url") or it.get("link") or it.get("href") or "")
+            snippet = str(it.get("snippet") or it.get("summary") or it.get("description") or "")
+            source = str(it.get("source") or it.get("domain") or _domain(url) or "")
+            published = str(it.get("published") or it.get("date") or "")
+            scraped_excerpt = str(it.get("scraped_excerpt") or it.get("excerpt") or it.get("notes") or "")
+            items.append(
+                EvidenceItem(
+                    title=title,
+                    url=url,
+                    snippet=snippet,
+                    source=source,
+                    published=published,
+                    scraped_excerpt=scraped_excerpt,
+                )
+            )
+
     return KnowledgePack(
-        query=d.get("query") or "",
-        stage=d.get("stage") or "",
-        generated_at=d.get("generated_at") or _now_iso(),
+        query=str(d.get("query") or ""),
+        stage=str(d.get("stage") or ""),
+        generated_at=str(d.get("generated_at") or _now_iso()),
         items=items,
-        provider=d.get("provider") or "mirothink_web",
+        provider=str(d.get("provider") or "mirothink_web"),
     )
 
 
