@@ -69,6 +69,7 @@ system: |
       "semantic_gradient_analysis": "Analyze the 'DATA FEEDBACK' section. E.g., 'MSE improved but PCC dropped, implying scaling issues.'",
       "decision_type": "EXPLORE" or "REFINE",
       "focus_area": "Architecture" or "Fusion" or "Loss" or "All",
+      "used_evidence_ids": ["B1", "L3", ...],
       "subtasks_to_update": ["Optional list of sub-task names you will update this iteration (e.g. 'Model Architecture')"],
       "new_subtasks": [
         {
@@ -120,10 +121,12 @@ user_template: |
   INSTRUCTION: 
     1. Analyze History & Metrics.
     2. Check **EXTERNAL KNOWLEDGE** for relevant scientific insights or debugging help.
-    3. Select a NEW Strategy from the Guide
-    4. Update the **Strategy Doc** (Markdown).
-    5. Update the **Model Definition** (Code).
-    6. **COMPATIBILITY CHECK**: Ensure your new code integrates seamlessly with the **FULL NOTEBOOK CONTEXT**. 
+    3. Identify which evidence items (e.g., [B1], [L3]) you consulted and include their IDs in `used_evidence_ids`.
+    4. Select a NEW Strategy from the Guide
+    5. Update the **Strategy Doc** (Markdown).
+    6. Update the **Model Definition** (Code).
+    7. **COMPATIBILITY CHECK**: Ensure your new code integrates seamlessly with the **FULL NOTEBOOK CONTEXT**. 
        - Do NOT change variable names that are relied upon by the context.
        - Do NOT output code that requires modifying the read-only cells to run.
-    7. Ensure strictly valid JSON output using indices from the text above.
+    8. Ensure strictly valid JSON output using indices from the text above.
+    9. **MANDATORY**: Include `used_evidence_ids` field with the Evidence IDs you referenced (e.g., ["B1", "L3"]).
