@@ -1,15 +1,14 @@
-# CellScientist
+# CellCausist
 
-CellScientist is an autonomous AI agent framework designed for Virtual Cell Modeling (VCM). It employs a Dual-Space Bilevel Optimization strategy to align symbolic scientific hypotheses with computational code implementation.
+CellCausist is an autonomous AI agent framework designed for Virtual Cell Modeling (VCM).
 
-The system operates through a structured Task Hypergraph, performing evolutionary optimization to discover robust biological models.
 
 ## 🛠️ Installation
 
 ```bash
-conda create --name CellScientist python=3.11.14
-conda activate CellScientist
-cd CellScientist
+conda create --name CellCausist python=3.11.14
+conda activate CellCausist
+cd CellCausist
 pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 torchaudio==2.0.2+cu118 -f [https://download.pytorch.org/whl/cu118/torch_stable.html](https://download.pytorch.org/whl/cu118/torch_stable.html)
 pip install torch-scatter torch-sparse torch-cluster torch-spline-conv -f [https://data.pyg.org/whl/torch-2.0.1+cu118.html](https://data.pyg.org/whl/torch-2.0.1+cu118.html)
 pip install -r requirements.txt
@@ -19,7 +18,7 @@ pip install -r requirements.txt
 ## 📂 Project Structure
 
 ```
-CellScientist/                  <-- Project Root
+CellCausist/                  <-- Project Root
 │
 ├── data/                       <-- Data Storage Directory (Inferred from H5 path fix)
 │
@@ -93,7 +92,7 @@ The Dual-Space Bilevel Optimization is controlled via hierarchical configs:
 
 ### Cost Efficiency
 
-CellScientist minimizes cost through a **Contextual Memory** mechanism that reduces token load by ~60% in later iterations.
+CellCausist minimizes cost through a **Contextual Memory** mechanism that reduces token load by ~60% in later iterations.
 
 * **Average Run (3-5 iterations):** $1.00 - $2.00 USD
 * **Complex Run (10 iterations):** < $5.00 USD
