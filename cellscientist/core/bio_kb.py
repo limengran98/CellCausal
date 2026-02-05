@@ -24,6 +24,7 @@ import requests
 # Module-level constants
 MAX_MECHANISMS_PER_MOLECULE = 5  # Limit mechanisms to avoid excessive API calls
 MAX_TARGETS_FOR_PATHWAYS = 3  # Limit targets queried for pathways to manage rate limits
+MAX_PATHWAYS_PER_TARGET = 5  # Limit pathways retrieved per target
 
 
 # -----------------------------
@@ -152,7 +153,7 @@ def _extract_smiles_from_h5(h5_path: str) -> tuple[List[str], str]:
 
 
 def extract_smiles(cfg: Dict[str, Any]) -> tuple[List[str], str]:
-    """Extract SMILES with priority: config > H5 > fail with placeholder
+    """Extract SMILES with priority: config > H5 > placeholder
     
     Returns:
         (smiles_list, source_description)
@@ -241,7 +242,10 @@ def _query_chembl_targets(smiles: str, inchikey: str, cache_dir: str, log: Calla
                         mech_resp = requests.get(mech_url, timeout=10)
                         if mech_resp.status_code == 200:
                             mech_data = mech_resp.json()
-                            for mech in mech_data.get("mechanisms", [])[:MAX_MECHANISMS_PER_MOLECULE]:
+                            all_mechanisms = mech_data.get("mechanisms", [])
+                            if len(all_mechanisms) > MAX_MECHANISMS_PER_MOLECULE:
+                                log(f"[BIOKB] Truncating mechanisms: {len(all_mechanisms)} -> {MAX_MECHANISMS_PER_MOLECULE}")
+                            for mech in all_mechanisms[:MAX_MECHANISMS_PER_MOLECULE]:
                                 target_name = mech.get("target_chembl_id")
                                 if target_name:
                                     targets.append(target_name)
@@ -291,7 +295,10 @@ def _query_reactome_pathways(targets: List[str], cache_dir: str, log: Callable[[
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, list):
-                    for pathway in data[:5]:  # Limit to 5 pathways per target
+                    all_pathways = data
+                    if len(all_pathways) > MAX_PATHWAYS_PER_TARGET:
+                        log(f"[BIOKB] Truncating pathways for {target}: {len(all_pathways)} -> {MAX_PATHWAYS_PER_TARGET}")
+                    for pathway in all_pathways[:MAX_PATHWAYS_PER_TARGET]:
                         if isinstance(pathway, dict):
                             name = pathway.get("displayName") or pathway.get("name")
                             if name:

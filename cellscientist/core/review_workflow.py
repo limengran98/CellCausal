@@ -497,7 +497,7 @@ def classify_failure_type(history_summary, curr_metrics_obj, last_error=None):
     score = last_iter.get("score", -999)
     if score != -999 and score != float('inf'):
         sem_grad = last_iter.get("semantic_gradient", "")
-        if "direction" in sem_grad.lower() or "inconsisten" in sem_grad.lower():
+        if "direction" in sem_grad.lower() or "inconsistent" in sem_grad.lower():
             return "F3", "perturbation response direction consistency validation biological interpretation"
     
     # F2: Metric Issues (not improving, converging badly)
@@ -898,9 +898,9 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 continue
             
             # [NEW] Validate used_evidence_ids (mandatory tracking)
-            used_evidence_ids = suggestion.get("used_evidence_ids", [])
-            if not used_evidence_ids or not isinstance(used_evidence_ids, list):
-                print("[WARN] Missing or empty 'used_evidence_ids' field. Skipping this iteration for evidence traceability.")
+            # Allow empty list if no external knowledge was consulted
+            if "used_evidence_ids" not in suggestion or not isinstance(suggestion.get("used_evidence_ids"), list):
+                print("[WARN] Missing or invalid 'used_evidence_ids' field. Skipping this iteration for evidence traceability.")
                 # Save incomplete suggestion for debugging
                 incomplete_path = os.path.join(workspace_dir, f"suggestion_iter_{i}_incomplete.json")
                 try:
@@ -911,7 +911,11 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                     pass
                 continue
             
-            print(f"[REVIEW] ✅ Evidence IDs used: {used_evidence_ids}")
+            used_evidence_ids = suggestion.get("used_evidence_ids", [])
+            if used_evidence_ids:
+                print(f"[REVIEW] ✅ Evidence IDs used: {used_evidence_ids}")
+            else:
+                print(f"[REVIEW] ⚠️ No external evidence consulted (empty evidence list)")
             suggestion["used_evidence_ids"] = used_evidence_ids  # Ensure it's in the saved suggestion
 
             # [TRACE] Persist suggestion for causal traceability

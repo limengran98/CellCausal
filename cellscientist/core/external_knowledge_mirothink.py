@@ -581,7 +581,7 @@ def retrieve_external_knowledge(
     # ============================================================
     biokb_items: List[EvidenceItem] = []
     bio_kb_cfg = lit.get("bio_kb", {}) if isinstance(lit, dict) else {}
-    biokb_enabled = bool(bio_kb_cfg.get("enabled", True))  # Default enabled
+    biokb_enabled = bool(bio_kb_cfg.get("enabled", False))  # Default disabled for backward compatibility
     
     if biokb_enabled and generate_biokb_semantic_table:
         try:
@@ -843,10 +843,11 @@ def retrieve_external_knowledge(
     
     # TIER 4: Only inject up to inject_max items total
     # Priority: BioKB first, then Web (sorted by relevance if needed)
+    # TODO: Implement relevance-based sorting for better prioritization
     all_items = biokb_items + web_items
     inject_max = int(lit.get("inject_max_items", 5) or 5)
     
-    # For now, simple truncation; could add relevance sorting later
+    # For now, simple truncation; see TODO above for future enhancement
     if len(all_items) > inject_max:
         log(f"[LIT] ✂️ Injecting {inject_max}/{len(all_items)} items (inject limit)")
         all_items = all_items[:inject_max]
