@@ -64,6 +64,18 @@ try:
 except Exception:  # pragma: no cover
     chat_text = None  # type: ignore
 
+# Optional: BioKB module for semantic enrichment
+try:
+    from .bio_kb import (
+        generate_biokb_semantic_table,
+        persist_biokb_semantic_table,
+        biokb_table_to_evidence_items,
+    )
+except Exception:  # pragma: no cover
+    generate_biokb_semantic_table = None  # type: ignore
+    persist_biokb_semantic_table = None  # type: ignore
+    biokb_table_to_evidence_items = None  # type: ignore
+
 
 # -----------------------------
 # Data structures
@@ -77,6 +89,7 @@ class EvidenceItem:
     source: str = ""  # domain or provider
     published: str = ""  # best-effort
     scraped_excerpt: str = ""  # optional short excerpt / summary
+    eid: str = ""  # Evidence ID (e.g., "B1", "L3")
 
 
 @dataclass
@@ -556,12 +569,6 @@ def retrieve_external_knowledge(
     if not enabled:
         return KnowledgePack(query="", stage=stage, generated_at=_now_iso(), items=[], provider="disabled")
 
-    # Resolve keys (do NOT log secrets)
-    serper_key = (lit.get("serper_api_key") or os.environ.get("SERPER_API_KEY") or "").strip()
-    serper_base = (lit.get("serper_base_url") or os.environ.get("SERPER_BASE_URL") or "https://google.serper.dev").strip()
-    jina_key = (lit.get("jina_api_key") or os.environ.get("JINA_API_KEY") or "").strip()
-    jina_base = (lit.get("jina_base_url") or os.environ.get("JINA_BASE_URL") or "https://r.jina.ai").strip()
-
     # Determine artifact directories
     paths = cfg.get("paths") if isinstance(cfg, dict) else {}
     paths = paths if isinstance(paths, dict) else {}
@@ -569,216 +576,299 @@ def retrieve_external_knowledge(
     literature_dir = os.path.abspath(literature_dir) if literature_dir else ""
     workspace_out = os.path.join(os.path.abspath(workspace_dir), "external_knowledge") if workspace_dir else ""
 
-    if not serper_key:
-        log("[LIT] ❌ SERPER_API_KEY missing. External search is disabled for this run.")
-        pack = KnowledgePack(
-            query="",
-            stage=stage,
-            generated_at=_now_iso(),
-            items=[
-                EvidenceItem(
-                    title="SERPER_API_KEY missing",
-                    url="",
-                    snippet="Set SERPER_API_KEY or cfg['literature']['serper_api_key'].",
-                )
-            ],
-            provider="mirothink_web",
-        )
-        if literature_dir:
-            _persist_pack_artifacts(pack, cfg, stage, literature_dir, tag=tag, log=log)
-        if workspace_out:
-            _persist_pack_artifacts(pack, cfg, stage, workspace_out, tag=tag, log=log)
-        return pack
-
-    # Build query
-    q = _build_query(context_text=context_text, stage=stage, cfg=cfg, query_hint=query_hint)
-
-    # Cache handling
-    cache_days = int(lit.get("cache_days", 30) or 30)
-    # Robustness: clamp to >=1 to avoid slicing organic[:0] -> empty pack.
-    max_papers = max(1, int(lit.get("max_papers", 12) or 12))
-    max_abstract_chars = int(lit.get("max_abstract_chars", 1200) or 1200)
-    md_max_chars = int(lit.get("artifact_md_max_chars", 12000) or 12000)
-
-    cache_dir = os.path.join(literature_dir, "cache") if literature_dir else ""
-    cache_key = _sha1(json.dumps({"q": q, "stage": stage, "max": max_papers}, ensure_ascii=False))
-    cache_path = os.path.join(cache_dir, f"{cache_key}.json") if cache_dir else ""
-
-    log(f"[LIT] 🔎 stage={stage} | query={_truncate(q, 160)} | cache_days={cache_days} | max_papers={max_papers}")
-
-    def _persist_everywhere(pack: KnowledgePack) -> None:
-        if literature_dir:
-            _persist_pack_artifacts(pack, cfg, stage, literature_dir, tag=tag, md_max_chars=md_max_chars, log=log)
-        if workspace_out:
-            _persist_pack_artifacts(pack, cfg, stage, workspace_out, tag=tag, md_max_chars=md_max_chars, log=log)
-        _append_domain_knowledge(cfg, pack, log)
-
-    # Respect "use_existing_only"
-    if cache_path and lit.get("use_existing_only", False):
-        if os.path.exists(cache_path):
-            cached = _read_json(cache_path)
-            pack = _pack_from_json(cached)
-            log(f"[LIT] ♻️ Using cached results (use_existing_only=true): {cache_path}")
-            log(f"[LIT] ✅ Search results: {len(pack.items)} items (cached)")
-            _persist_everywhere(pack)
-            return pack
-        pack = KnowledgePack(
-            query=q,
-            stage=stage,
-            generated_at=_now_iso(),
-            items=[EvidenceItem(title="Cache miss", url="", snippet="use_existing_only=true but cache not found")],
-        )
-        log(f"[LIT] ⚠️ Cache miss while use_existing_only=true: {cache_path}")
-        _persist_everywhere(pack)
-        return pack
-
-    # Fresh-enough cache
-    if cache_path and os.path.exists(cache_path):
+    # ============================================================
+    # PHASE 1: Build BioKB Pack (if enabled)
+    # ============================================================
+    biokb_items: List[EvidenceItem] = []
+    bio_kb_cfg = lit.get("bio_kb", {}) if isinstance(lit, dict) else {}
+    biokb_enabled = bool(bio_kb_cfg.get("enabled", False))  # Default disabled for backward compatibility
+    
+    if biokb_enabled and generate_biokb_semantic_table:
         try:
-            cached = _read_json(cache_path)
-            ts = cached.get("generated_at") or ""
-            if ts:
-                gen_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                if datetime.now(gen_time.tzinfo) - gen_time <= timedelta(days=cache_days):
-                    pack = _pack_from_json(cached)
-                    log(f"[LIT] ♻️ Using cached results: {cache_path}")
-                    log(f"[LIT] ✅ Search results: {len(pack.items)} items (cached)")
-                    # Robustness: do not silently return an empty cached pack.
-                    # If cache is fresh but empty (often due to old/invalid cache schema or a bad earlier query), refresh search.
-                    if len(pack.items) > 0:
-                        _persist_everywhere(pack)
-                        return pack
-                    log("[LIT][WARN] Cache is fresh but contains 0 items. Refreshing search...")
-        except Exception:
-            pass
-
-    # Search (with small fallback set)
-    gl = (lit.get("search_gl") or "us").strip()
-    hl = (lit.get("search_hl") or "en").strip()
-    location = lit.get("search_location")
-    tbs = lit.get("search_tbs")
-
-    data: Dict[str, Any] = {}
-    items: List[EvidenceItem] = []
-    used_q = q
-
-    for attempt_q in _fallback_queries(q, cfg, stage):
-        used_q = attempt_q
-        try:
-            data = _serper_google_search(
-                q=attempt_q,
-                gl=gl,
-                hl=hl,
-                location=location,
-                num=max(3, min(30, max_papers)),
-                tbs=tbs,
-                api_key=serper_key,
-                base_url=serper_base,
-            )
+            log("[LIT] 🧬 Building BioKB pack...")
+            semantic_table = generate_biokb_semantic_table(cfg, stage, log)
+            
+            # Persist semantic table
+            if workspace_out:
+                persist_biokb_semantic_table(semantic_table, workspace_dir, log)
+            if literature_dir:
+                persist_biokb_semantic_table(semantic_table, literature_dir, log)
+            
+            # Convert to evidence items
+            biokb_items_raw = biokb_table_to_evidence_items(semantic_table)
+            for item_dict in biokb_items_raw:
+                biokb_items.append(EvidenceItem(
+                    title=item_dict["title"],
+                    url=item_dict["url"],
+                    snippet=item_dict["snippet"],
+                    source=item_dict["source"],
+                    published=item_dict["published"],
+                    scraped_excerpt=item_dict["scraped_excerpt"],
+                    eid=item_dict["eid"]
+                ))
+            
+            log(f"[LIT] ✅ BioKB pack: {len(biokb_items)} evidence items")
         except Exception as e:
-            log(f"[LIT][WARN] Search failed for query (attempt): {e}")
-            continue
-
-        err = _serper_error_payload(data)
-        if err:
-            # Make the failure visible; do not silently return empty.
-            log(f"[LIT] ❌ Serper error payload detected: {err}")
-            pack = KnowledgePack(
-                query=attempt_q,
-                stage=stage,
-                generated_at=_now_iso(),
-                items=[EvidenceItem(title="Search provider error", url="", snippet=err, source="serper")],
-                provider="mirothink_web",
-            )
-            _persist_everywhere(pack)
-            return pack
-
-        organic = data.get("organic") or []
-        items = []
-        for r in organic[:max_papers]:
-            title = str(r.get("title") or "")
-            url = str(r.get("link") or r.get("url") or "")
-            snippet = str(r.get("snippet") or "")
-            published = str(r.get("date") or "")
-            items.append(EvidenceItem(title=title, url=url, snippet=snippet, source=_domain(url), published=published))
-
-        if items:
-            break
-
-    # Log results (even if 0) with the actually used query
-    if used_q != q:
-        log(f"[LIT] 🔁 Fallback query used: {_truncate(used_q, 160)}")
-    log(f"[LIT] ✅ Search results: {len(items)} items")
-
-    # Robustness/observability: if no results, optionally inject a visible stub item
-    # so downstream prompt injection is still non-empty and debuggable.
-    emit_stub = bool(lit.get("emit_noresult_stub", True))
-    if not items and emit_stub:
-        items = [
-            EvidenceItem(
-                title="No search results",
+            log(f"[LIT][WARN] BioKB generation failed: {e}")
+            # Add placeholder to make failure visible
+            biokb_items.append(EvidenceItem(
+                title="BioKB Generation Failed",
                 url="",
-                snippet=(
-                    "Search returned 0 results. "
-                    "This may indicate an overly noisy query, a provider issue, or missing/invalid SERPER_API_KEY. "
-                    f"Query used: {used_q}"
-                ),
-                source="serper",
-                published="",
-                scraped_excerpt="",
-            )
-        ]
+                snippet=f"BioKB module encountered an error: {str(e)[:200]}",
+                source="biokb",
+                eid="B0"
+            ))
 
-    # Optional scrape+summarize
-    # [ROBUSTNESS] Circuit breaker variables
-    consecutive_failures = 0
-    circuit_breaker_threshold = 2
-    circuit_open = False
+    # ============================================================
+    # PHASE 2: Build Web Literature Pack
+    # ============================================================
+    
+    # Resolve keys (do NOT log secrets)
+    serper_key = (lit.get("serper_api_key") or os.environ.get("SERPER_API_KEY") or "").strip()
+    serper_base = (lit.get("serper_base_url") or os.environ.get("SERPER_BASE_URL") or "https://google.serper.dev").strip()
+    jina_key = (lit.get("jina_api_key") or os.environ.get("JINA_API_KEY") or "").strip()
+    jina_base = (lit.get("jina_base_url") or os.environ.get("JINA_BASE_URL") or "https://r.jina.ai").strip()
 
-    if bool(lit.get("scrape", True)) and items:
-        if not jina_key:
-            log("[LIT] ⚠️ JINA_API_KEY missing. Skipping page scraping (snippets only).")
+    web_items: List[EvidenceItem] = []
+    
+    if not serper_key:
+        log("[LIT] ⚠️ SERPER_API_KEY missing. Web search disabled (BioKB only).")
+        web_items.append(EvidenceItem(
+            title="SERPER_API_KEY missing",
+            url="",
+            snippet="Set SERPER_API_KEY or cfg['literature']['serper_api_key'].",
+            eid="L0"
+        ))
+    else:
+        # Build query
+        q = _build_query(context_text=context_text, stage=stage, cfg=cfg, query_hint=query_hint)
+
+        # Cache handling + Hierarchical limits
+        cache_days = int(lit.get("cache_days", 30) or 30)
+        # Hierarchical limits (with backward compatibility)
+        max_papers = max(1, int(lit.get("max_papers", 12) or 12))  # Broad search limit
+        deepread_max = int(lit.get("deepread_max_items") or min(max_papers, 8))
+        summarize_max = int(lit.get("summarize_max_items") or min(deepread_max, 6))
+        inject_max = int(lit.get("inject_max_items", 5) or 5)
+        
+        max_abstract_chars = int(lit.get("max_abstract_chars", 1200) or 1200)
+        md_max_chars = int(lit.get("artifact_md_max_chars", 12000) or 12000)
+
+        cache_dir = os.path.join(literature_dir, "cache") if literature_dir else ""
+        cache_key = _sha1(json.dumps({"q": q, "stage": stage, "max": max_papers}, ensure_ascii=False))
+        cache_path = os.path.join(cache_dir, f"{cache_key}.json") if cache_dir else ""
+
+        log(f"[LIT] 🔎 stage={stage} | query={_truncate(q, 160)}")
+        log(f"[LIT] 📊 Hierarchical limits: broad={max_papers}, deepread={deepread_max}, summarize={summarize_max}, inject={inject_max}")
+
+        def _persist_everywhere(pack: KnowledgePack) -> None:
+            if literature_dir:
+                _persist_pack_artifacts(pack, cfg, stage, literature_dir, tag=tag, md_max_chars=md_max_chars, log=log)
+            if workspace_out:
+                _persist_pack_artifacts(pack, cfg, stage, workspace_out, tag=tag, md_max_chars=md_max_chars, log=log)
+            _append_domain_knowledge(cfg, pack, log)
+
+        # Respect "use_existing_only"
+        if cache_path and lit.get("use_existing_only", False):
+            if os.path.exists(cache_path):
+                cached = _read_json(cache_path)
+                cached_pack = _pack_from_json(cached)
+                log(f"[LIT] ♻️ Using cached results (use_existing_only=true): {cache_path}")
+                log(f"[LIT] ✅ Search results: {len(cached_pack.items)} items (cached)")
+                web_items = cached_pack.items
+            else:
+                log(f"[LIT] ⚠️ Cache miss while use_existing_only=true: {cache_path}")
+                web_items.append(EvidenceItem(
+                    title="Cache miss",
+                    url="",
+                    snippet="use_existing_only=true but cache not found",
+                    eid="L0"
+                ))
         else:
-            for idx, it in enumerate(items, start=1):
-                # Skip scraping for stub/no-url entries
-                if not (it.url or "").startswith(("http://", "https://")):
-                    continue
+            # Fresh-enough cache
+            use_cached = False
+            if cache_path and os.path.exists(cache_path):
                 try:
-                    raw = _jina_scrape_url(it.url, api_key=jina_key, base_url=jina_base, max_chars=30000)
+                    cached = _read_json(cache_path)
+                    ts = cached.get("generated_at") or ""
+                    if ts:
+                        gen_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        if datetime.now(gen_time.tzinfo) - gen_time <= timedelta(days=cache_days):
+                            cached_pack = _pack_from_json(cached)
+                            log(f"[LIT] ♻️ Using cached results: {cache_path}")
+                            log(f"[LIT] ✅ Search results: {len(cached_pack.items)} items (cached)")
+                            if len(cached_pack.items) > 0:
+                                web_items = cached_pack.items
+                                use_cached = True
+                            else:
+                                log("[LIT][WARN] Cache is fresh but contains 0 items. Refreshing search...")
+                except Exception:
+                    pass
 
-                    # Try summarizing, passing the circuit state
-                    excerpt = _summarize_if_needed(cfg, raw, it.title, it.url, max_chars=max_abstract_chars, circuit_open=circuit_open)
+            if not use_cached:
+                # Search (with small fallback set)
+                gl = (lit.get("search_gl") or "us").strip()
+                hl = (lit.get("search_hl") or "en").strip()
+                location = lit.get("search_location")
+                tbs = lit.get("search_tbs")
 
-                    it.scraped_excerpt = excerpt
+                data: Dict[str, Any] = {}
+                used_q = q
 
-                    log(f"[LIT] 📄 scraped {idx}/{len(items)}: {_truncate(it.title, 72)}")
+                for attempt_q in _fallback_queries(q, cfg, stage):
+                    used_q = attempt_q
+                    try:
+                        data = _serper_google_search(
+                            q=attempt_q,
+                            gl=gl,
+                            hl=hl,
+                            location=location,
+                            num=max(3, min(30, max_papers)),
+                            tbs=tbs,
+                            api_key=serper_key,
+                            base_url=serper_base,
+                        )
+                    except Exception as e:
+                        log(f"[LIT][WARN] Search failed for query (attempt): {e}")
+                        continue
 
-                    # Reset failure count on successful scrape (even if summary failed, at least we have text)
-                    consecutive_failures = 0
+                    err = _serper_error_payload(data)
+                    if err:
+                        log(f"[LIT] ❌ Serper error payload detected: {err}")
+                        web_items.append(EvidenceItem(
+                            title="Search provider error",
+                            url="",
+                            snippet=err,
+                            source="serper",
+                            eid="L0"
+                        ))
+                        break
 
-                except Exception as e:
-                    it.scraped_excerpt = f"(scrape failed) {e}"
-                    log(f"[LIT][WARN] scrape failed {idx}/{len(items)}: {e}")
-                    consecutive_failures += 1
+                    organic = data.get("organic") or []
+                    for idx, r in enumerate(organic[:max_papers], 1):
+                        title = str(r.get("title") or "")
+                        url = str(r.get("link") or r.get("url") or "")
+                        snippet = str(r.get("snippet") or "")
+                        published = str(r.get("date") or "")
+                        web_items.append(EvidenceItem(
+                            title=title,
+                            url=url,
+                            snippet=snippet,
+                            source=_domain(url),
+                            published=published,
+                            eid=""  # Will assign L* IDs later
+                        ))
 
-                # If we have too many scrape/summary failures, stop trying to use LLM for the rest
-                if consecutive_failures >= circuit_breaker_threshold:
-                    circuit_open = True
-                    # log(f"[LIT] 🔌 Circuit breaker opened. Skipping LLM summarization for remaining items.")
+                    if web_items:
+                        break
 
-    # Note: store the actual query used (fallback may have been applied)
-    pack = KnowledgePack(query=used_q, stage=stage, generated_at=_now_iso(), items=items, provider="mirothink_web")
+                # Log results
+                if used_q != q:
+                    log(f"[LIT] 🔁 Fallback query used: {_truncate(used_q, 160)}")
+                log(f"[LIT] ✅ Search results: {len(web_items)} items")
 
-    # Persist cache only if we have real URL results; do not cache stub-only packs.
-    has_real_results = any((it.url or "").startswith(("http://", "https://")) for it in items)
-    if cache_path and literature_dir and has_real_results:
-        try:
-            _write_json(cache_path, _json_safe_pack(pack))
-            log(f"[LIT] 💾 Cached: {cache_path}")
-        except Exception as e:
-            log(f"[LIT][WARN] Failed to write cache: {e}")
+                # Robustness: emit stub if no results
+                emit_stub = bool(lit.get("emit_noresult_stub", True))
+                if not web_items and emit_stub:
+                    web_items.append(EvidenceItem(
+                        title="No search results",
+                        url="",
+                        snippet=f"Search returned 0 results. Query used: {used_q}",
+                        source="serper",
+                        eid="L0"
+                    ))
 
-    _persist_everywhere(pack)
+                # Optional scrape+summarize (TIER 2: deepread_max)
+                circuit_breaker_threshold = 2
+                consecutive_failures = 0
+                circuit_open = False
+
+                if bool(lit.get("scrape", True)) and web_items:
+                    if not jina_key:
+                        log("[LIT] ⚠️ JINA_API_KEY missing. Skipping page scraping (snippets only).")
+                    else:
+                        # Only scrape up to deepread_max items
+                        items_with_urls = [it for it in web_items if (it.url or "").startswith(("http://", "https://"))]
+                        items_to_scrape = items_with_urls[:deepread_max]
+                        log(f"[LIT] 📄 Scraping {len(items_to_scrape)}/{len(web_items)} items (deepread limit)")
+                        
+                        for idx, it in enumerate(items_to_scrape, start=1):
+                            try:
+                                raw = _jina_scrape_url(it.url, api_key=jina_key, base_url=jina_base, max_chars=30000)
+
+                                # TIER 3: Only summarize up to summarize_max
+                                if idx <= summarize_max:
+                                    excerpt = _summarize_if_needed(cfg, raw, it.title, it.url, max_chars=max_abstract_chars, circuit_open=circuit_open)
+                                else:
+                                    # Truncate without summarization
+                                    excerpt = (raw[:max_abstract_chars] + "\n... (truncated)") if len(raw) > max_abstract_chars else raw
+
+                                it.scraped_excerpt = excerpt
+                                log(f"[LIT] 📄 scraped {idx}/{len(items_to_scrape)}: {_truncate(it.title, 72)}")
+                                consecutive_failures = 0
+
+                            except Exception as e:
+                                it.scraped_excerpt = f"(scrape failed) {e}"
+                                log(f"[LIT][WARN] scrape failed {idx}/{len(items_to_scrape)}: {e}")
+                                consecutive_failures += 1
+
+                            if consecutive_failures >= circuit_breaker_threshold:
+                                circuit_open = True
+
+                # Cache if we have real results
+                has_real_results = any((it.url or "").startswith(("http://", "https://")) for it in web_items)
+                if cache_path and literature_dir and has_real_results:
+                    try:
+                        # Create temporary pack for caching
+                        temp_pack = KnowledgePack(
+                            query=used_q,
+                            stage=stage,
+                            generated_at=_now_iso(),
+                            items=web_items,
+                            provider="mirothink_web"
+                        )
+                        _write_json(cache_path, _json_safe_pack(temp_pack))
+                        log(f"[LIT] 💾 Cached: {cache_path}")
+                    except Exception as e:
+                        log(f"[LIT][WARN] Failed to write cache: {e}")
+
+    # ============================================================
+    # PHASE 3: Merge BioKB + Web Items
+    # ============================================================
+    
+    # Assign L* IDs to web items (if not already assigned)
+    for idx, item in enumerate(web_items, 1):
+        if not item.eid:
+            item.eid = f"L{idx}"
+    
+    # TIER 4: Only inject up to inject_max items total
+    # Priority: BioKB first, then Web (sorted by relevance if needed)
+    # TODO: Implement relevance-based sorting for better prioritization
+    all_items = biokb_items + web_items
+    inject_max = int(lit.get("inject_max_items", 5) or 5)
+    
+    # For now, simple truncation; see TODO above for future enhancement
+    if len(all_items) > inject_max:
+        log(f"[LIT] ✂️ Injecting {inject_max}/{len(all_items)} items (inject limit)")
+        all_items = all_items[:inject_max]
+    
+    # Build final pack
+    provider = "biokb+mirothink_web" if biokb_items else "mirothink_web"
+    pack = KnowledgePack(
+        query=q if web_items else "",
+        stage=stage,
+        generated_at=_now_iso(),
+        items=all_items,
+        provider=provider
+    )
+    
+    # Persist final pack
+    if literature_dir:
+        _persist_pack_artifacts(pack, cfg, stage, literature_dir, tag=tag, md_max_chars=md_max_chars, log=log)
+    if workspace_out:
+        _persist_pack_artifacts(pack, cfg, stage, workspace_out, tag=tag, md_max_chars=md_max_chars, log=log)
+    _append_domain_knowledge(cfg, pack, log)
+    
     return pack
 
 
@@ -801,6 +891,7 @@ def _pack_from_json(d: Dict[str, Any]) -> KnowledgePack:
             source = str(it.get("source") or it.get("domain") or _domain(url) or "")
             published = str(it.get("published") or it.get("date") or "")
             scraped_excerpt = str(it.get("scraped_excerpt") or it.get("excerpt") or it.get("notes") or "")
+            eid = str(it.get("eid") or "")  # Evidence ID
             items.append(
                 EvidenceItem(
                     title=title,
@@ -809,6 +900,7 @@ def _pack_from_json(d: Dict[str, Any]) -> KnowledgePack:
                     source=source,
                     published=published,
                     scraped_excerpt=scraped_excerpt,
+                    eid=eid,
                 )
             )
 
@@ -829,12 +921,14 @@ def knowledge_pack_to_markdown(pack: KnowledgePack, max_chars: int = 6000) -> st
     lines.append(f"**Stage**: {pack.stage} | **Generated**: {pack.generated_at} | **Provider**: {pack.provider}")
     lines.append("")
     for idx, it in enumerate(pack.items, start=1):
+        # Display Evidence ID if available
+        eid_prefix = f"[{it.eid}] " if it.eid else ""
         title = it.title or "(untitled)"
         url = it.url or ""
         if url:
-            lines.append(f"{idx}. [{title}]({url})")
+            lines.append(f"{idx}. {eid_prefix}[{title}]({url})")
         else:
-            lines.append(f"{idx}. {title}")
+            lines.append(f"{idx}. {eid_prefix}{title}")
         meta = " | ".join([p for p in [it.source, it.published] if p])
         if meta:
             lines.append(f"   - {meta}")
