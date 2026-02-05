@@ -62,9 +62,9 @@
 
 
     "use_llm_summarizer": true,
-    "max_papers": 8,
-    "max_abstract_chars": 1200,
-    "prompt_max_chars": 6000,
+    "max_papers": 15,
+    "max_abstract_chars": 3000,
+    "prompt_max_chars": 60000,
 
     "task_keywords": "cell painting perturbation modeling",
     "query": ""
