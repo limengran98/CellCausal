@@ -454,6 +454,73 @@ def get_baseline_metric_value(metrics_path, metric_name="PCC"):
 # 6. LLM Logic (Enhanced for Context & Memory)
 # =============================================================================
 
+def classify_failure_type(history_summary, curr_metrics_obj, last_error=None):
+    """Classify the failure type based on history and current state
+    
+    Returns:
+        tuple: (failure_type, query_hint)
+        failure_type: F1-F5 classification
+        query_hint: Specific query template for this failure type
+    """
+    if not history_summary:
+        return "F0", None  # First iteration, no failure
+    
+    last_iter = history_summary[-1]
+    status = last_iter.get("status", "").upper()
+    
+    # F1: Execution Error (CRASH)
+    if status == "CRASH" or last_error:
+        error_msg = str(last_error) if last_error else last_iter.get("critique", "")
+        
+        # Check for common error types
+        if any(kw in error_msg.upper() for kw in ["IMPORTERROR", "MODULENOTFOUND", "IMPORT"]):
+            hint = "python ImportError fix module installation package manager"
+        elif any(kw in error_msg.upper() for kw in ["KEYERROR", "ATTRIBUTEERROR", "NAMEERROR"]):
+            hint = "python KeyError AttributeError debugging variable scope"
+        elif any(kw in error_msg.upper() for kw in ["OOM", "OUT OF MEMORY", "MEMORY"]):
+            hint = "python out of memory optimization batch size tensor management"
+        elif any(kw in error_msg.upper() for kw in ["NAN", "INF", "INVALID"]):
+            hint = "python NaN inf numerical stability machine learning"
+        elif any(kw in error_msg.upper() for kw in ["SHAPE", "DIMENSION", "SIZE MISMATCH"]):
+            hint = "python tensor shape mismatch PyTorch dimension error"
+        else:
+            hint = f"{error_msg[:100]} fix debugging python issue"
+        
+        return "F1", hint
+    
+    # F4: Mechanism Conflict (check if we have BioKB evidence and results contradict)
+    # This is a simplified heuristic - in practice would need more sophisticated analysis
+    if "mechanism" in last_iter.get("critique", "").lower() or "conflict" in last_iter.get("critique", "").lower():
+        return "F4", "perturbation mechanism pathway compensation MAPK PI3K p53 EMT biological validation"
+    
+    # F3: Direction Error
+    score = last_iter.get("score", -999)
+    if score != -999 and score != float('inf'):
+        sem_grad = last_iter.get("semantic_gradient", "")
+        if "direction" in sem_grad.lower() or "inconsisten" in sem_grad.lower():
+            return "F3", "perturbation response direction consistency validation biological interpretation"
+    
+    # F2: Metric Issues (not improving, converging badly)
+    if status == "FAILED":
+        # Check if metrics are present but poor
+        try:
+            if curr_metrics_obj:
+                return "F2", "cell painting perturbation modeling metric optimization baseline evaluation performance"
+        except Exception:
+            pass
+    
+    # F5: Data Issues (check for keywords in history)
+    critique = last_iter.get("critique", "")
+    if any(kw in critique.lower() for kw in ["batch effect", "leakage", "data split", "distribution", "overfitting"]):
+        return "F5", "data preprocessing batch effect normalization cross-validation split strategy"
+    
+    # Default to F2 if failed but unclear why
+    if status == "FAILED":
+        return "F2", "cell painting perturbation modeling metric optimization baseline evaluation"
+    
+    return "F0", None
+
+
 def _expand_vars(text, context):
     if not text:
         return ""
@@ -463,6 +530,7 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
     """
     Generates optimization suggestions.
     Builds a richer history context including strategies, decisions and reflections.
+    Implements failure type classification and targeted query hints.
     """
     mutable_content = ""
     immutable_context_content = ""
@@ -489,6 +557,9 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
         else:
             if cell.cell_type == "code":
                 immutable_context_content += f"\n# --- CELL INDEX {idx} (READ-ONLY CONTEXT) ---\n{src}\n"
+    
+    # Classify failure type for targeted external knowledge retrieval
+    failure_type, query_hint = classify_failure_type(history_summary, current_metrics)
 
     history_text = ""
     if not history_summary:
@@ -556,11 +627,16 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
 
             # [NEW] External knowledge retrieval (optional)
             # Uses MiroThink-derived Serper search + Jina Reader scraping. Controlled by cfg["literature"]["enabled"].
+            # Pass query_hint based on failure type classification
+            if failure_type != "F0" and query_hint:
+                print(f"[REVIEW] Failure type: {failure_type}, using targeted query hint", flush=True)
+            
             try:
                 pack = retrieve_external_knowledge(
                     cfg=cfg,
                     context_text=(immutable_context_content or "") + "\n\n" + (mutable_content or ""),
                     stage="review",
+                    query_hint=query_hint,  # Pass the failure-specific query hint
                     workspace_dir=workspace,
                     tag=f"iter_{iteration}",
                 )
@@ -820,6 +896,23 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             if not suggestion or "edits" not in suggestion:
                 print("[WARN] Invalid LLM response. Skipping.")
                 continue
+            
+            # [NEW] Validate used_evidence_ids (mandatory tracking)
+            used_evidence_ids = suggestion.get("used_evidence_ids", [])
+            if not used_evidence_ids or not isinstance(used_evidence_ids, list) or len(used_evidence_ids) == 0:
+                print("[WARN] Missing or empty 'used_evidence_ids' field. Skipping this iteration for evidence traceability.")
+                # Save incomplete suggestion for debugging
+                incomplete_path = os.path.join(workspace_dir, f"suggestion_iter_{i}_incomplete.json")
+                try:
+                    with open(incomplete_path, 'w', encoding='utf-8') as f:
+                        json.dump(suggestion, f, indent=2, ensure_ascii=False)
+                    print(f"[WARN] Incomplete suggestion saved to: {incomplete_path}")
+                except Exception:
+                    pass
+                continue
+            
+            print(f"[REVIEW] ✅ Evidence IDs used: {used_evidence_ids}")
+            suggestion["used_evidence_ids"] = used_evidence_ids  # Ensure it's in the saved suggestion
 
             # [TRACE] Persist suggestion for causal traceability
             suggestion_path = os.path.join(workspace_dir, f"suggestion_iter_{i}.json")
@@ -964,6 +1057,39 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 _log_tree_visual(workspace_dir, i, strategy_tag, decision_tag, focus_tag, status, candidate_score)
 
                 write_review_log(workspace_dir, i, suggestion, candidate_score, best_score_so_far, comparison_baseline, status)
+                
+                # [NEW] Gate Decision: Persist decision and rollback logic
+                gate_decision = {
+                    "iteration": i,
+                    "primary_metric": target_metric,
+                    "direction": direction,
+                    "candidate_score": candidate_score,
+                    "prev_best_score": best_score_so_far,
+                    "baseline_score": comparison_baseline,
+                    "status": status,
+                    "improved": (status == "IMPROVED"),
+                    "reason": "",
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                if status == "IMPROVED":
+                    gate_decision["reason"] = f"Candidate score {candidate_score:.4f} is better than previous best {best_score_so_far:.4f}"
+                    gate_decision["action"] = "ACCEPT"
+                elif status == "CRASH":
+                    gate_decision["reason"] = "Execution failed with errors"
+                    gate_decision["action"] = "REJECT_CRASH"
+                else:
+                    gate_decision["reason"] = f"Candidate score {candidate_score:.4f} did not improve over previous best {best_score_so_far:.4f}"
+                    gate_decision["action"] = "REJECT_NO_IMPROVEMENT"
+                
+                # Save gate decision
+                gate_path = os.path.join(workspace_dir, f"gate_decision_iter_{i}.json")
+                try:
+                    with open(gate_path, 'w', encoding='utf-8') as f:
+                        json.dump(gate_decision, f, indent=2, ensure_ascii=False)
+                    print(f"[GATE] 📋 Decision saved: {gate_path} | Action: {gate_decision['action']}")
+                except Exception as e:
+                    print(f"[WARN] Failed to save gate decision: {e}")
 
                 # Update task graph with evidence (compat)
                 try:
