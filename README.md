@@ -1,14 +1,14 @@
-# CellCausist
+# CellMechanist
 
-CellCausist is an autonomous AI agent framework designed for Virtual Cell Modeling (VCM).
+CellMechanist is an autonomous AI agent framework designed for Virtual Cell Modeling (VCM).
 
 
 ## 🛠️ Installation
 
 ```bash
-conda create --name CellCausist python=3.11.14
-conda activate CellCausist
-cd CellCausist
+conda create --name CellMechanist python=3.11.14
+conda activate CellMechanist
+cd CellMechanist
 pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 torchaudio==2.0.2+cu118 -f [https://download.pytorch.org/whl/cu118/torch_stable.html](https://download.pytorch.org/whl/cu118/torch_stable.html)
 pip install torch-scatter torch-sparse torch-cluster torch-spline-conv -f [https://data.pyg.org/whl/torch-2.0.1+cu118.html](https://data.pyg.org/whl/torch-2.0.1+cu118.html)
 pip install -r requirements.txt
@@ -18,7 +18,7 @@ pip install -r requirements.txt
 ## 📂 Project Structure
 
 ```
-CellCausist/                  <-- Project Root
+CellMechanist/                  <-- Project Root
 │
 ├── data/                       <-- Data Storage Directory (Inferred from H5 path fix)
 │
@@ -92,7 +92,7 @@ The Dual-Space Bilevel Optimization is controlled via hierarchical configs:
 
 ### Cost Efficiency
 
-CellCausist minimizes cost through a **Contextual Memory** mechanism that reduces token load by ~60% in later iterations.
+CellMechanist minimizes cost through a **Contextual Memory** mechanism that reduces token load by ~60% in later iterations.
 
 * **Average Run (3-5 iterations):** $1.00 - $2.00 USD
 * **Complex Run (10 iterations):** < $5.00 USD
