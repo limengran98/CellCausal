@@ -500,8 +500,4 @@ def biokb_table_to_evidence_items(table: BioKBSemanticTable) -> List[Dict[str, A
         }
         items.append(item)
     
-<<<<<<< HEAD
     return items
-=======
-    return items
->>>>>>> 929e0e1 (Update: 2026-02-05 13:27)
