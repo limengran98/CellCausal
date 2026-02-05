@@ -39,8 +39,6 @@ from .utils import (
     safe_read_json,
     project_root,
 )
-# [UPDATED] Use centralized parsing logic
-from .metrics import phase2_iters_detail_from_log, phase3_iters_from_history_state
 
 
 FINAL_REPORT_DIRNAME = "finall_results"  # keep user's requested spelling
@@ -297,6 +295,80 @@ def chat_text(messages: List[Dict[str, Any]], llm_cfg: Dict[str, Any]) -> str:
 
 
 # =============================================================================
+# Selecting best runs + iteration extraction
+# =============================================================================
+
+
+def phase2_iters_detail_from_log(log_text: str, metric: str) -> List[Dict[str, Any]]:
+    iters: Dict[int, Dict[str, Any]] = {}
+    cur_iter: Optional[int] = None
+    bug_markers = [
+        "Notebook Generation Failed",
+        "LLM_GEN_FAILURE",
+        "CRITICAL PARSE FAILURE",
+        "[GRAPH] ❌",
+        "Error in Node",
+        "Initiating Adaptive Fix",
+        "[FIX]",
+        "Traceback",
+        "Exception:",
+    ]
+
+    for ln in (log_text or "").splitlines():
+        m = re.search(r"ITERATION\s+(\d+)/(\d+)", ln)
+        if m:
+            cur_iter = int(m.group(1))
+            iters.setdefault(cur_iter, {"iter": cur_iter, "bug": False, "score": None, "notes": []})
+            continue
+
+        if cur_iter is None:
+            continue
+
+        rec = iters.setdefault(cur_iter, {"iter": cur_iter, "bug": False, "score": None, "notes": []})
+
+        if any(x in ln for x in bug_markers):
+            rec["bug"] = True
+
+        mm = re.search(rf"\[CHECK\].*?\b{re.escape(metric)}\s*:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", ln)
+        if mm:
+            try:
+                rec["score"] = float(mm.group(1))
+            except Exception:
+                pass
+
+        if "prompt_run_" in ln or "Saved" in ln or "SUCCESS" in ln or "FAIL" in ln:
+            if len(rec["notes"]) < 6:
+                rec["notes"].append(ln.strip())
+
+    return [iters[k] for k in sorted(iters.keys())]
+
+
+def phase3_iters_from_history_state(workspace_dir: str) -> List[Dict[str, Any]]:
+    p = os.path.join(workspace_dir, "history_state.json")
+    hist = safe_read_json(p)
+    if not isinstance(hist, list):
+        return []
+    out = []
+    for rec in hist:
+        if not isinstance(rec, dict):
+            continue
+        out.append(
+            {
+                "iter": rec.get("iter"),
+                "decision": rec.get("decision"),
+                "focus": rec.get("focus"),
+                "strategy": rec.get("strategy"),
+                "status": rec.get("status"),
+                "score": rec.get("score"),
+                "reflection": rec.get("reflection"),
+                "semantic_gradient": rec.get("semantic_gradient"),
+                "tasks": rec.get("task_names") or rec.get("tasks"),
+            }
+        )
+    return out
+
+
+# =============================================================================
 # Main entry: generate final report
 # =============================================================================
 
@@ -330,6 +402,8 @@ def generate_final_report(
     print(f"📝 Generating Final Report in: {final_dir}")
 
     # Locate key artifacts
+    # Phase 1 (Design Analysis) is intentionally removed from the unified pipeline.
+    # Keep placeholder variables for prompt compatibility, but leave content empty.
     phase1_summary_path = ""
 
     # [FIX] Use explicit paths instead of searching based on time
@@ -364,6 +438,7 @@ def generate_final_report(
         export_notebook_as_py(best_nb_dst, os.path.join(final_dir, "best_code.py"))
 
     # Also copy key inputs for convenience
+    
     if best_p2_dir:
         safe_copy(os.path.join(best_p2_dir, "metrics.json"), final_dir, "phase2_best_metrics.json")
         safe_copy(phase2_report_path, final_dir, "phase2_best_experiment_report.md")
@@ -378,7 +453,7 @@ def generate_final_report(
     for _k, lp in (phase_logs or {}).items():
         safe_copy(lp, final_dir, os.path.basename(lp))
 
-    # Build iteration tables using robust parser from metrics.py
+    # Build iteration tables
     p2_log_text = read_text(phase_logs.get("Phase 2", ""))
     p2_iters = phase2_iters_detail_from_log(p2_log_text, metric)
     p3_iters = phase3_iters_from_history_state(p3_ws) if p3_ws else []
@@ -452,7 +527,15 @@ def generate_final_report_and_exports(
     stage_map: Dict[str, Dict[str, Any]],
     pipe_cfg: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
-    """Compatibility wrapper used by the unified runner."""
+    """Compatibility wrapper used by the unified runner.
+
+    The original runners code invoked a higher-level helper that packaged configs,
+    log paths, and explicit artifact locations. During refactor, the core report
+    generator was separated into `generate_final_report(...)`.
+
+    This wrapper reconstructs the same inputs without re-introducing Phase-1
+    dependencies.
+    """
 
     ds_name = str(pipeline_summary.get("dataset") or "")
     logs_dir = str(pipeline_summary.get("logs_dir") or "")
@@ -468,7 +551,7 @@ def generate_final_report_and_exports(
 
     stage2_cfg = (stage_map.get("Phase 2", {}) or {}).get("_loaded_cfg") or {}
     stage3_cfg = (stage_map.get("Phase 3", {}) or {}).get("_loaded_cfg") or {}
-    stage1_cfg: Dict[str, Any] = {}
+    stage1_cfg: Dict[str, Any] = {}  # Phase 1 removed
 
     # Timings (best-effort)
     stage_timings = {}
