@@ -21,6 +21,11 @@ from typing import Any, Callable, Dict, List, Optional, Set
 import requests
 
 
+# Module-level constants
+MAX_MECHANISMS_PER_MOLECULE = 5  # Limit mechanisms to avoid excessive API calls
+MAX_TARGETS_FOR_PATHWAYS = 3  # Limit targets queried for pathways to manage rate limits
+
+
 # -----------------------------
 # Data structures
 # -----------------------------
@@ -31,9 +36,9 @@ class BioKBSemanticEntry:
     smiles: str
     canonical_smiles: str = ""
     inchikey: str = ""
-    targets: List[str] = None
-    pathways: List[str] = None
-    processes: List[str] = None
+    targets: Optional[List[str]] = None
+    pathways: Optional[List[str]] = None
+    processes: Optional[List[str]] = None
     source: str = "biokb"
     
     def __post_init__(self):
@@ -236,7 +241,7 @@ def _query_chembl_targets(smiles: str, inchikey: str, cache_dir: str, log: Calla
                         mech_resp = requests.get(mech_url, timeout=10)
                         if mech_resp.status_code == 200:
                             mech_data = mech_resp.json()
-                            for mech in mech_data.get("mechanisms", [])[:5]:  # Limit to 5
+                            for mech in mech_data.get("mechanisms", [])[:MAX_MECHANISMS_PER_MOLECULE]:
                                 target_name = mech.get("target_chembl_id")
                                 if target_name:
                                     targets.append(target_name)
@@ -279,7 +284,7 @@ def _query_reactome_pathways(targets: List[str], cache_dir: str, log: Callable[[
         base_url = "https://reactome.org/ContentService"
         
         # For each target, query pathways (limit queries)
-        for target in targets[:3]:  # Limit to 3 targets to avoid too many requests
+        for target in targets[:MAX_TARGETS_FOR_PATHWAYS]:
             # Try to query by gene name (best-effort)
             url = f"{base_url}/data/query/{target}/pathways"
             resp = requests.get(url, timeout=10)
@@ -471,9 +476,9 @@ def biokb_table_to_evidence_items(table: BioKBSemanticTable) -> List[Dict[str, A
             f"**Canonical SMILES**: {entry.canonical_smiles or 'N/A'}\n"
             f"**InChIKey**: {entry.inchikey or 'N/A'}\n\n"
             f"**Predicted Targets** ({len(entry.targets)}):\n"
-            f"{chr(10).join('- ' + t for t in entry.targets[:10])}\n\n"
+            f"{'\n'.join('- ' + t for t in entry.targets[:10])}\n\n"
             f"**Associated Pathways** ({len(entry.pathways)}):\n"
-            f"{chr(10).join('- ' + p for p in entry.pathways[:10])}\n\n"
+            f"{'\n'.join('- ' + p for p in entry.pathways[:10])}\n\n"
             f"**Biological Processes**: {', '.join(entry.processes)}\n"
         )
         

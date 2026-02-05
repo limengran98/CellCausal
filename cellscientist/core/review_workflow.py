@@ -899,7 +899,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             
             # [NEW] Validate used_evidence_ids (mandatory tracking)
             used_evidence_ids = suggestion.get("used_evidence_ids", [])
-            if not used_evidence_ids or not isinstance(used_evidence_ids, list) or len(used_evidence_ids) == 0:
+            if not used_evidence_ids or not isinstance(used_evidence_ids, list):
                 print("[WARN] Missing or empty 'used_evidence_ids' field. Skipping this iteration for evidence traceability.")
                 # Save incomplete suggestion for debugging
                 incomplete_path = os.path.join(workspace_dir, f"suggestion_iter_{i}_incomplete.json")
@@ -1069,7 +1069,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                     "status": status,
                     "improved": (status == "IMPROVED"),
                     "reason": "",
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 
                 if status == "IMPROVED":

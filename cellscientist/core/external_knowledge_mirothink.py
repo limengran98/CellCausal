@@ -788,7 +788,8 @@ def retrieve_external_knowledge(
                         log("[LIT] ⚠️ JINA_API_KEY missing. Skipping page scraping (snippets only).")
                     else:
                         # Only scrape up to deepread_max items
-                        items_to_scrape = [it for it in web_items if (it.url or "").startswith(("http://", "https://"))][:deepread_max]
+                        items_with_urls = [it for it in web_items if (it.url or "").startswith(("http://", "https://"))]
+                        items_to_scrape = items_with_urls[:deepread_max]
                         log(f"[LIT] 📄 Scraping {len(items_to_scrape)}/{len(web_items)} items (deepread limit)")
                         
                         for idx, it in enumerate(items_to_scrape, start=1):
@@ -837,7 +838,7 @@ def retrieve_external_knowledge(
     
     # Assign L* IDs to web items (if not already assigned)
     for idx, item in enumerate(web_items, 1):
-        if not item.eid or item.eid == "":
+        if not item.eid:
             item.eid = f"L{idx}"
     
     # TIER 4: Only inject up to inject_max items total
