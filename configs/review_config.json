@@ -68,6 +68,12 @@
 
     "task_keywords": "cell painting perturbation modeling",
     "query": ""
+  },
+  "bio_kb": {
+    "enabled": true,
+    "max_smiles": 25,
+    "max_targets_per_smiles": 6,
+    "max_pathways_per_target": 8
   }
 
 }
