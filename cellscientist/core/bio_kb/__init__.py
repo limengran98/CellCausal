@@ -33,7 +33,7 @@ from typing import Any, Callable, Dict, List
 
 from .config import BioKBConfig
 from .evidence_builder import build_semantic_table, semantic_table_to_evidence_items
-from .smiles_resolver import extract_smiles
+from .smiles_resolver import extract_smiles, extract_smiles_from_h5_robust
 from .utils import ensure_dir
 
 
@@ -196,5 +196,6 @@ __all__ = [
     "generate_biokb_semantic_table",
     "persist_biokb_semantic_table",
     "biokb_table_to_evidence_items",
-    "BioKBConfig"
+    "BioKBConfig",
+    "extract_smiles_from_h5_robust"
 ]
