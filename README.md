@@ -37,7 +37,7 @@ CellCausal/                         <-- Project Root
 │   │   ├── idea_generator.py            # Idea/hypothesis generation
 │   │   ├── execution_workflow.py        # Experiment stage entry: design & execute
 │   │   ├── review_workflow.py           # Review stage entry: review & optimize
-│   │   ├── prompt_orchestrator.py       # Orchestrate prompts/tasks across phases
+│   │   ├── prompt_orchestrator.py       # Orchestrate prompts/tasks across stages
 │   │   ├── prompt_generator.py          # Generate notebook/code content
 │   │   ├── prompt_executor.py           # GraphExecutor + prompt execution
 │   │   ├── executor_engine.py           # Execution engine used by review
@@ -80,9 +80,9 @@ CellCausal/                         <-- Project Root
 The framework uses a **Dual-Space Bilevel Optimization** strategy, controlled via `configs/`:
 
 *   **LLM Engine**: Gemini 3 Pro (default).
-*   **Design Phase**: Parallel hypothesis generation with self-correction.
-*   **Execution Phase**: Long-running context with global timeouts (up to 100h).
-*   **Review Phase**: Iterative optimization based on feedback (e.g., Pearson Correlation).
+*   **Experiment Stage**: Parallel hypothesis generation with self-correction.
+*   **Execution Stage**: Long-running context with global timeouts (up to 100h).
+*   **Review Stage**: Iterative optimization based on feedback (e.g., Pearson Correlation).
 
 ## 📊 Cost & Efficiency
 

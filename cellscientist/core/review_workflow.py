@@ -317,15 +317,15 @@ def find_best_experiment_trial(cfg, explicit_path=None):
 
     runs = sorted(list(set(search_paths)), reverse=True)
 
-    print(f"[INIT] Searching for Phase 2 results in: {gen_root}")
+    print(f"[INIT] Searching for Experiment stage results in: {gen_root}")
     for run in runs:
         nb_path = os.path.join(run, "notebook_prompt_exec.ipynb")
         metrics_path = os.path.join(run, "metrics.json")
         if os.path.exists(nb_path) and os.path.exists(metrics_path):
-            print(f"[INIT] Found valid Phase 2 source (Auto-detected): {run}")
+            print(f"[INIT] Found valid Experiment source (Auto-detected): {run}")
             return run
 
-    raise FileNotFoundError("No valid Phase 2 execution results found (Auto-detection failed).")
+    raise FileNotFoundError("No valid Experiment execution results found (Auto-detection failed).")
 
 def setup_phase3_workspace(cfg, source_trial_path):
     # [FIX] Add PID to prevent concurrency collision

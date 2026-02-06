@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Minimal explicit task-graph state for Phase 3 (reflection / decomposition / routing).
+Minimal explicit task-graph state for Review stage (reflection / decomposition / routing).
 
 Design goals:
 - Backward compatible: if LLM doesn't emit task fields, we still work.

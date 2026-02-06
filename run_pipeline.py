@@ -104,7 +104,7 @@ def main() -> None:
     parser.add_argument(
         "--skip-review",
         action="store_true",
-        help="Run only the experiment stage (Phase 2).",
+        help="Run only the experiment stage.",
     )
     parser.add_argument(
         "--skip-final-report",
@@ -145,7 +145,7 @@ def main() -> None:
     # 5) Logs
     logs_dir = _make_logs_dir(dataset_name)
 
-    # 6) Run Experiment Stage (formerly Phase 2)
+    # 6) Run Experiment Stage
     exp_cfg = stage_map["Experiment"]["config"]
     exp_log = os.path.join(logs_dir, "experiment.log")
     exp_t0 = time.time()
@@ -172,7 +172,7 @@ def main() -> None:
 
     print(f"[PIPELINE] Experiment output directory: {experiment_out}", flush=True)
 
-    # 8) Run Review Stage (formerly Phase 3)
+    # 8) Run Review Stage
     review_log = os.path.join(logs_dir, "review.log")
     review_t0 = time.time()
 

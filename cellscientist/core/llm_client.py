@@ -2,23 +2,23 @@
 """Unified LLM utilities.
 
 This module merges the previously duplicated `llm_utils.py` implementations from:
-- Design & Execution (Phase 2)
-- Review & Optimization (Phase 3)
+- Experiment stage (Design & Execution)
+- Review stage (Review & Optimization)
 
 Strict constraints honored:
-- No functional logic removed (Phase 1 excluded by user request).
+- No functional logic removed.
 - No "smart" simplifications; the combined behavior preserves both call styles.
 
 Compatibility notes
 -------------------
 The legacy code uses two different conventions:
 
-1) Phase-2 style:
+1) Experiment stage style:
    - resolve_llm_config(llm_config_dict)
    - chat_text(..., llm_config=...)
    - chat_json(..., llm_config=...)
 
-2) Phase-3 style:
+2) Review stage style:
    - resolve_llm_config(full_cfg_with_providers)
    - chat_text(..., cfg)
    - chat_json(..., cfg)
