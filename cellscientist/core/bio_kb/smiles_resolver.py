@@ -50,7 +50,11 @@ def canonicalize_smiles(smiles: str) -> Dict[str, str]:
 
 
 def extract_smiles_from_config(cfg: Dict[str, Any]) -> Tuple[List[str], str]:
-    """Extract SMILES from config['literature']['bio_kb']['smiles_list'].
+    """Extract SMILES from config.
+    
+    Supports two config structures:
+    1. cfg["literature"]["bio_kb"]["smiles_list"]
+    2. cfg["bio_kb"]["smiles_list"]
     
     Args:
         cfg: Configuration dictionary
@@ -59,12 +63,23 @@ def extract_smiles_from_config(cfg: Dict[str, Any]) -> Tuple[List[str], str]:
         Tuple of (smiles_list, source_description)
     """
     try:
+        # Priority 1: Check cfg["literature"]["bio_kb"]["smiles_list"]
+        # This takes precedence for backward compatibility with external_knowledge_mirothink.py
         lit = cfg.get("literature", {}) if isinstance(cfg, dict) else {}
-        bio_kb_cfg = lit.get("bio_kb", {}) if isinstance(lit, dict) else {}
-        smiles_list = bio_kb_cfg.get("smiles_list", []) if isinstance(bio_kb_cfg, dict) else []
+        if isinstance(lit, dict):
+            bio_kb_cfg = lit.get("bio_kb", {})
+            if isinstance(bio_kb_cfg, dict):
+                smiles_list = bio_kb_cfg.get("smiles_list", [])
+                if isinstance(smiles_list, list) and smiles_list:
+                    return [str(s).strip() for s in smiles_list if s], "config"
         
-        if isinstance(smiles_list, list) and smiles_list:
-            return [str(s).strip() for s in smiles_list if s], "config"
+        # Priority 2: Check cfg["bio_kb"]["smiles_list"]
+        # Fallback to root-level config if nested structure not found
+        bio_kb_cfg = cfg.get("bio_kb", {})
+        if isinstance(bio_kb_cfg, dict):
+            smiles_list = bio_kb_cfg.get("smiles_list", [])
+            if isinstance(smiles_list, list) and smiles_list:
+                return [str(s).strip() for s in smiles_list if s], "config"
     except Exception:
         pass
     

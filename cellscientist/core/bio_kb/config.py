@@ -108,7 +108,11 @@ class BioKBConfig:
     
     @classmethod
     def from_cfg(cls, cfg: Dict[str, Any]) -> "BioKBConfig":
-        """Create BioKBConfig from main config dict at cfg["literature"]["bio_kb"].
+        """Create BioKBConfig from main config dict.
+        
+        Supports two config structures:
+        1. cfg["literature"]["bio_kb"] (external_knowledge_mirothink.py expected structure)
+        2. cfg["bio_kb"] (pipeline_config.json structure)
         
         Args:
             cfg: Main configuration dictionary
@@ -116,6 +120,22 @@ class BioKBConfig:
         Returns:
             BioKBConfig instance
         """
-        lit = cfg.get("literature", {}) if isinstance(cfg, dict) else {}
-        bio_kb = lit.get("bio_kb", {}) if isinstance(lit, dict) else {}
-        return cls.from_dict(bio_kb) if isinstance(bio_kb, dict) else cls()
+        if not isinstance(cfg, dict):
+            return cls()
+        
+        # Priority 1: Check cfg["literature"]["bio_kb"] (external_knowledge_mirothink.py structure)
+        # This takes precedence for backward compatibility with existing external_knowledge integrations
+        lit = cfg.get("literature", {})
+        if isinstance(lit, dict):
+            bio_kb = lit.get("bio_kb", {})
+            if isinstance(bio_kb, dict) and bio_kb:
+                return cls.from_dict(bio_kb)
+        
+        # Priority 2: Check cfg["bio_kb"] (pipeline_config.json structure)
+        # Fallback to root-level config if nested structure not found
+        bio_kb = cfg.get("bio_kb", {})
+        if isinstance(bio_kb, dict) and bio_kb:
+            return cls.from_dict(bio_kb)
+        
+        # Default: return disabled config
+        return cls()
