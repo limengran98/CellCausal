@@ -405,11 +405,18 @@ def extract_smiles_from_h5_robust(
                 min_confidence=0.6
             )
             
-            metadata["matched_fields"] = {
-                target: {"field": field, "confidence": conf, "match_type": mtype} if match else None
-                for target, match in field_matches.items()
-                for field, conf, mtype in [match] if match
-            }
+            # Build matched_fields metadata
+            metadata["matched_fields"] = {}
+            for target, match in field_matches.items():
+                if match:
+                    field, conf, mtype = match
+                    metadata["matched_fields"][target] = {
+                        "field": field,
+                        "confidence": conf,
+                        "match_type": mtype
+                    }
+                else:
+                    metadata["matched_fields"][target] = None
             
             # Log field matching results
             for target, match in field_matches.items():
