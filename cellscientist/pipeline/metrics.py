@@ -34,6 +34,7 @@ def print_execution_plan(stage_map: Dict[str, Dict[str, Any]], dataset_name: str
     """Pretty print stage configuration overview (unified pipeline).
 
     Phase 1 (Design) is intentionally excluded per refactor requirements.
+    Displays comprehensive configuration including literature, BioKB, GPU, timeout, cache, etc.
     """
     console = console if console is not None else _maybe_console()
     if not console:
@@ -42,36 +43,103 @@ def print_execution_plan(stage_map: Dict[str, Dict[str, Any]], dataset_name: str
 
     from rich.table import Table
 
-    table = Table(title=f"🧬 CellScientist Pipeline (Target: [bold green]{dataset_name}[/])")
-    table.add_column("Stage", style="cyan", no_wrap=True)
-    table.add_column("Directory", style="blue")
+    table = Table(title=f"🧬 CellScientist Pipeline Configuration ([bold green]{dataset_name}[/])", 
+                  border_style="bright_cyan")
+    table.add_column("Stage", style="cyan bold", no_wrap=True)
     table.add_column("Model", style="magenta")
-    table.add_column("Key Params", style="white")
+    table.add_column("Literature", style="blue", justify="center")
+    table.add_column("BioKB", style="blue", justify="center")
+    table.add_column("GPU", style="green", justify="center")
+    table.add_column("Timeout", style="yellow", justify="right")
+    table.add_column("Max Iters", style="white", justify="center")
+    table.add_column("Cache", style="cyan", justify="center")
 
     def _pick(*keys):
         for k in keys:
             if k in stage_map and isinstance(stage_map.get(k), dict):
                 return stage_map[k]
         return None
+    
+    def _format_knowledge(cfg: dict, key_path: List[str], top_k_path: List[str]) -> str:
+        """Format knowledge source status with top-k value."""
+        enabled = get_nested(cfg, key_path)
+        top_k = get_nested(cfg, top_k_path)
+        if enabled:
+            return f"✓ ({top_k})" if top_k else "✓"
+        return "✗"
+    
+    def _format_timeout(seconds: Optional[int]) -> str:
+        """Format timeout in human-readable form."""
+        if not seconds:
+            return "-"
+        hours = seconds / 3600
+        if hours >= 1:
+            return f"{hours:.0f}h"
+        return f"{seconds}s"
 
     exp = _pick("Experiment", "Phase 2")
     if exp:
         c2 = exp.get("_loaded_cfg", {})
-        p2_model = get_nested(c2, ["llm", "model"])
-        p2_iters = get_nested(c2, ["experiment", "max_iterations"])
-        table.add_row("Experiment", exp.get("folder", "-"), str(p2_model), f"Max Iters: {p2_iters}")
+        p2_model = get_nested(c2, ["llm", "model"]) or "-"
+        p2_iters = get_nested(c2, ["experiment", "max_iterations"]) or "-"
+        
+        # Literature and BioKB
+        lit_status = _format_knowledge(c2, ["external_knowledge", "enable_literature"], 
+                                      ["external_knowledge", "literature_top_k"])
+        biokb_status = _format_knowledge(c2, ["external_knowledge", "enable_biokb"], 
+                                        ["external_knowledge", "biokb_top_k"])
+        
+        # GPU device
+        gpu_device = get_nested(c2, ["execution", "gpu_device"])
+        if gpu_device is not None:
+            gpu_str = f"GPU{gpu_device}"
+        else:
+            gpu_str = "CPU"
+        
+        # Timeout
+        timeout = get_nested(c2, ["execution", "timeout"]) or get_nested(c2, ["experiment", "timeout"])
+        timeout_str = _format_timeout(timeout)
+        
+        # Cache
+        cache_enabled = get_nested(c2, ["llm", "cache_enabled"]) or get_nested(c2, ["cache", "enabled"])
+        cache_str = "✓" if cache_enabled else "✗"
+        
+        table.add_row("Experiment", str(p2_model), lit_status, biokb_status, 
+                     gpu_str, timeout_str, str(p2_iters), cache_str)
     else:
-        table.add_row("Experiment", "-", "-", "(stage not configured)")
+        table.add_row("Experiment", "-", "-", "-", "-", "-", "-", "-")
 
     rev = _pick("Review", "Phase 3")
     if rev:
         c3 = rev.get("_loaded_cfg", {})
-        p3_model = get_nested(c3, ["llm", "model"])
-        p3_metric = get_nested(c3, ["review", "target_metric"])
-        p3_dir = get_nested(c3, ["review", "direction"])
-        table.add_row("Review+Optimize", rev.get("folder", "-"), str(p3_model), f"Target: {p3_metric} ({p3_dir})")
+        p3_model = get_nested(c3, ["llm", "model"]) or "-"
+        p3_iters = get_nested(c3, ["review", "max_iterations"]) or "-"
+        
+        # Literature and BioKB (typically reused from experiment)
+        lit_status = _format_knowledge(c3, ["external_knowledge", "enable_literature"], 
+                                      ["external_knowledge", "literature_top_k"])
+        biokb_status = _format_knowledge(c3, ["external_knowledge", "enable_biokb"], 
+                                        ["external_knowledge", "biokb_top_k"])
+        
+        # GPU device
+        gpu_device = get_nested(c3, ["execution", "gpu_device"])
+        if gpu_device is not None:
+            gpu_str = f"GPU{gpu_device}"
+        else:
+            gpu_str = "CPU"
+        
+        # Timeout
+        timeout = get_nested(c3, ["execution", "timeout"]) or get_nested(c3, ["review", "timeout"])
+        timeout_str = _format_timeout(timeout)
+        
+        # Cache
+        cache_enabled = get_nested(c3, ["llm", "cache_enabled"]) or get_nested(c3, ["cache", "enabled"])
+        cache_str = "✓" if cache_enabled else "✗"
+        
+        table.add_row("Review", str(p3_model), lit_status, biokb_status, 
+                     gpu_str, timeout_str, str(p3_iters), cache_str)
     else:
-        table.add_row("Review+Optimize", "-", "-", "(stage not configured)")
+        table.add_row("Review", "-", "-", "-", "-", "-", "-", "-")
 
     console.print(table)
     console.print("")
@@ -450,50 +518,66 @@ def rates(attempted: int, clean_success: int, succeeded: int, bug: int) -> Tuple
 
 
 def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
+    """Print final success rate scoreboard with enhanced formatting."""
     stages = summary.get("stages", {})
     console = console if console is not None else _maybe_console()
     if console:
         from rich.table import Table
 
-        table = Table(title=f"📊 Scoreboard (dataset={summary.get('dataset')})")
-        table.add_column("Stage")
-        table.add_column("Success Rate ↑", justify="right", style="green")
-        table.add_column("Zero-Shot SR ↑", justify="right", style="cyan")
-        table.add_column("Bug Rate ↓", justify="right", style="red")
-        table.add_column("Avg@Budget", justify="right")
-        table.add_column("Best@Budget", justify="right")
-        table.add_column("Metric")
-        table.add_column("Budget", justify="right")
-        table.add_column("Attempted", justify="right")
-        
-        # [REMOVED] Non-Exec time column
-        table.add_column("Total Time (s)", justify="right")
+        table = Table(title=f"📊 Success Rate Scoreboard ([bold]{summary.get('dataset')}[/])", 
+                     border_style="bright_green")
+        table.add_column("Stage", style="bold")
+        table.add_column("Success ↑", justify="right", style="green")
+        table.add_column("Best@Budget", justify="right", style="bright_cyan bold")
+        table.add_column("Time (s)", justify="right", style="yellow")
+        table.add_column("Token Cost", justify="right", style="magenta")
 
         for stage_name in ["Experiment", "Review", "Total"]:
             row = stages.get(stage_name, {})
+            
+            # Success rate with attempted count
             sr = row.get("success_rate")
-            clean_sr = row.get("clean_rate")
-            bugr = row.get("bug_rate")
+            attempted = row.get("attempted") or 0
+            succeeded = row.get("succeeded") or 0
+            if stage_name == "Total":
+                sr_s = "━━━━━━"
+            else:
+                sr_pct = f"{sr*100:.0f}%" if isinstance(sr, (int, float)) else "-"
+                sr_s = f"{sr_pct} ({succeeded}/{attempted})"
             
-            sr_s = f"{sr:.3f}" if isinstance(sr, (int, float)) else "-"
-            clean_s = f"{clean_sr:.3f}" if isinstance(clean_sr, (int, float)) else "-"
-            bug_s = f"{bugr:.3f}" if isinstance(bugr, (int, float)) else "-"
-            
-            avg = row.get("avg_at_budget")
-            avg_s = f"{avg:.4f}" if isinstance(avg, (int, float)) else "-"
+            # Best score
             best = row.get("best_at_budget")
-            best_s = f"{best:.4f}" if isinstance(best, (int, float)) else "-"
-            metric = str(row.get("best_metric", "-"))
-            budget = row.get("budget")
-            budget_s = str(budget) if budget is not None else "-"
-            attempted = row.get("attempted")
-            attempted_s = str(attempted) if attempted is not None else "-"
+            metric = str(row.get("best_metric", ""))
+            if stage_name == "Total":
+                # For total row, show overall best from both stages
+                exp_best = stages.get("Experiment", {}).get("best_at_budget")
+                rev_best = stages.get("Review", {}).get("best_at_budget")
+                candidates = [x for x in [exp_best, rev_best] if isinstance(x, (int, float))]
+                if candidates:
+                    best = max(candidates)
+                    best_s = f"[bold]{best:.4f}[/bold]" if isinstance(best, (int, float)) else "-"
+                else:
+                    best_s = "-"
+            else:
+                best_s = f"{metric}={best:.4f}" if isinstance(best, (int, float)) and metric else "-"
             
+            # Time
             tsec = row.get("time_sec")
-            tsec_s = f"{tsec:.1f}" if isinstance(tsec, (int, float)) else "-"
+            if stage_name == "Total":
+                tsec_s = f"[bold]{tsec:.1f}[/bold]" if isinstance(tsec, (int, float)) else "-"
+            else:
+                tsec_s = f"{tsec:.1f}" if isinstance(tsec, (int, float)) else "-"
             
-            table.add_row(stage_name, sr_s, clean_s, bug_s, avg_s, best_s, metric, budget_s, attempted_s, tsec_s)
+            # Token cost (placeholder for future implementation)
+            token_cost = "-"  # TODO: integrate with TokenMeter if available
+            
+            # Style Total row differently
+            if stage_name == "Total":
+                table.add_row(f"[bold]**{stage_name}**[/bold]", sr_s, best_s, tsec_s, f"[bold]{token_cost}[/bold]")
+            else:
+                table.add_row(stage_name, sr_s, best_s, tsec_s, token_cost)
 
+        console.print("")
         console.print(table)
     else:
         print("\n=== Scoreboard ===")
