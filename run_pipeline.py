@@ -145,6 +145,8 @@ def main() -> None:
 
     # 5) Initialize 4-Tier Logger
     # Gather full config for logger initialization
+    # Note: Using lowercase keys ('experiment', 'review') for internal consistency
+    # while display names use title case ('Experiment', 'Review')
     full_config = {
         "pipeline": pipe_cfg,
         "stages": {

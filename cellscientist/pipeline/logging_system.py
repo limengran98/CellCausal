@@ -46,7 +46,8 @@ class TieredLogger:
         
         self.dataset_name = dataset_name
         self.config = config
-        self.pipeline_id = f"{dataset_name}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+        # Use consistent ISO format for all timestamps
+        self.pipeline_id = f"{dataset_name}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
         
         # Tier 1: Console (direct print)
         self.console_enabled = True
@@ -304,8 +305,9 @@ class TieredLogger:
             end = datetime.fromisoformat(self.evidence_chain["end_time"])
             duration = (end - start).total_seconds()
             self.evidence_chain["total_duration_seconds"] = duration
-        except Exception:
-            pass
+        except Exception as e:
+            # Log parsing failure for debugging
+            self.full_log(f"Warning: Failed to calculate duration - {e}")
         
         # Save to file
         evidence_path = self.run_dir / "evidence_chain.json"
