@@ -103,7 +103,7 @@ def phase_generate(
     spec_path: str, 
     run_name: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Phase 1: Generate Notebook."""
+    """Generate Notebook (Experiment stage)."""
     
     out_root = _get_save_root(cfg)
     ts_now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
