@@ -64,6 +64,7 @@ def extract_smiles_from_config(cfg: Dict[str, Any]) -> Tuple[List[str], str]:
     """
     try:
         # Priority 1: Check cfg["literature"]["bio_kb"]["smiles_list"]
+        # This takes precedence for backward compatibility with external_knowledge_mirothink.py
         lit = cfg.get("literature", {}) if isinstance(cfg, dict) else {}
         if isinstance(lit, dict):
             bio_kb_cfg = lit.get("bio_kb", {})
@@ -73,6 +74,7 @@ def extract_smiles_from_config(cfg: Dict[str, Any]) -> Tuple[List[str], str]:
                     return [str(s).strip() for s in smiles_list if s], "config"
         
         # Priority 2: Check cfg["bio_kb"]["smiles_list"]
+        # Fallback to root-level config if nested structure not found
         bio_kb_cfg = cfg.get("bio_kb", {})
         if isinstance(bio_kb_cfg, dict):
             smiles_list = bio_kb_cfg.get("smiles_list", [])
