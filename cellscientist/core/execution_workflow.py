@@ -192,12 +192,12 @@ def _get_save_root(cfg: Dict[str, Any]) -> str:
     return (cfg.get("prompt_branch", {}) or {}).get("save_root", (cfg.get("paths", {}) or {}).get("design_execution_root", os.getcwd()))
 
 def _write_latest_pointer(save_root: str, best_dir: str):
-    """Writes a pointer file so Phase 3 can robustly find the output."""
+    """Writes a pointer file so Review stage can robustly find the output."""
     pointer_path = os.path.join(save_root, "latest_run_pointer.json")
     try:
         with open(pointer_path, "w") as f:
             json.dump({"latest_trial_dir": os.path.abspath(best_dir)}, f, indent=2)
-        print(f"[LOOP] Wrote Phase 2 pointer to: {pointer_path}", flush=True)
+        print(f"[LOOP] Wrote Experiment pointer to: {pointer_path}", flush=True)
     except Exception as e:
         print(f"[LOOP][WARN] Failed to write pointer file: {e}", flush=True)
 
