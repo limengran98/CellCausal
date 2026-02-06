@@ -267,10 +267,27 @@ def find_recent_output_dir(base_dir: str, prefix: str, t_start: float) -> Option
     return candidates[0][1]
 
 
-def extract_best_path_from_log(log_path: str, phase: str, base_dir: str = "", t_start: float = 0.0) -> Optional[str]:
+def extract_best_path_from_log(log_path: str, stage: str = None, phase: str = None, base_dir: str = "", t_start: float = 0.0) -> Optional[str]:
     """
     Extracts the output directory path for the current run.
+    
+    Args:
+        log_path: Path to the log file
+        stage: Stage name ("Experiment" or "Review") - preferred parameter
+        phase: Legacy parameter for backward compatibility ("Phase 2" or "Phase 3")
+        base_dir: Base directory for searching
+        t_start: Start time for filtering recent outputs
     """
+    # Handle backward compatibility
+    if stage is None and phase is not None:
+        # Map old phase names to new stage names
+        if phase == "Phase 2":
+            stage = "Experiment"
+        elif phase == "Phase 3":
+            stage = "Review"
+    
+    if stage is None:
+        raise ValueError("Either 'stage' or 'phase' parameter must be provided")
     
     # --- Strategy 1: Explicit Pointer File (High Robustness) ---
     # Run pipeline creates a pointer file in the logs dir or base dir
@@ -289,7 +306,7 @@ def extract_best_path_from_log(log_path: str, phase: str, base_dir: str = "", t_
     # --- Strategy 2: Log Parsing ---
     text = read_text(log_path)
     if text:
-        if phase == "Phase 2":
+        if stage == "Experiment":
             # Match: [ARCHIVE] Saved run to: prompt_run_xxxx
             m_best = re.search(r"\[ARCHIVE\] Saved run to:\s*(.+)", text)
             if m_best:
@@ -317,7 +334,7 @@ def extract_best_path_from_log(log_path: str, phase: str, base_dir: str = "", t_
                 trial_path = matches_trial[-1].group(1).strip()
                 if os.path.exists(trial_path): return trial_path
 
-        elif phase == "Phase 3":
+        elif stage == "Review":
             # Match: Saved BEST Metrics to: ...
             m_best = re.search(r"Saved BEST Metrics to:\s*(.+)", text)
             if m_best:
@@ -332,13 +349,13 @@ def extract_best_path_from_log(log_path: str, phase: str, base_dir: str = "", t_
                 if os.path.exists(dir_path): return dir_path
 
     # --- Strategy 3: Filesystem Fallback ---
-    if phase == "Phase 2" and base_dir:
+    if stage == "Experiment" and base_dir:
         # Try finding in generate_execution/prompt/prompt_run_*
         prompt_root = os.path.join(base_dir, "prompt")
         found = find_recent_output_dir(prompt_root, "prompt_run_", t_start) or find_recent_output_dir(prompt_root, "workspace_", t_start)
         if found: return found
         
-    elif phase == "Phase 3" and base_dir:
+    elif stage == "Review" and base_dir:
         # Try finding in review_feedback/review_run_*
         found = find_recent_output_dir(base_dir, "review_run_", t_start)
         if found: return found

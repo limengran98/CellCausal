@@ -6,9 +6,9 @@ This is the refactored, single entrypoint based on the original `runners` code.
 
 Key refactor points (per requirements):
 - Uses the runner framework (logging, config materialization, metrics, reporting).
-- Integrates Design&Execution (Phase 2) and Review&Optimization (Phase 3) into one
+- Integrates Design&Execution (Experiment stage) and Review&Optimization (Review stage) into one
   continuous business flow.
-- Removes Phase 1 orchestration (not provided) and any runner code that depends on it.
+- Phase 1 has been removed from the codebase.
 - Keeps all non-Phase-1 logic intact.
 """
 
@@ -36,10 +36,10 @@ from cellscientist.pipeline.config import (
 )
 from cellscientist.pipeline.metrics import (
     print_execution_plan,
-    parse_phase2_log,
-    parse_phase3_log,
-    phase2_scores_from_artifacts,
-    phase3_scores_from_artifacts,
+    parse_experiment_log,
+    parse_review_log,
+    experiment_scores_from_artifacts,
+    review_scores_from_artifacts,
     rates,
     mean_safe,
     print_final_scoreboard,
@@ -59,13 +59,13 @@ def _default_stage_map() -> Dict[str, Dict[str, Any]]:
     The user-facing file structure and naming are unified (no Phase folders).
     """
     return {
-        "Phase 2": {
+        "Experiment": {
             "folder": project_root(),
             "module": "cellscientist.core.execution_workflow",
             "config": os.path.join(project_root(), "configs", "experiment_config.json"),
             "entry": ["python", "-m", "cellscientist.core.execution_workflow"],
         },
-        "Phase 3": {
+        "Review": {
             "folder": project_root(),
             "module": "cellscientist.core.review_workflow",
             "config": os.path.join(project_root(), "configs", "review_config.json"),
@@ -145,115 +145,115 @@ def main() -> None:
     # 5) Logs
     logs_dir = _make_logs_dir(dataset_name)
 
-    # 6) Run Phase 2 (Design & Execution)
-    p2_cfg = stage_map["Phase 2"]["config"]
-    p2_log = os.path.join(logs_dir, "phase2.log")
-    p2_t0 = time.time()
+    # 6) Run Experiment Stage (formerly Phase 2)
+    exp_cfg = stage_map["Experiment"]["config"]
+    exp_log = os.path.join(logs_dir, "experiment.log")
+    exp_t0 = time.time()
 
-    cmd2 = stage_map["Phase 2"]["entry"] + ["--config", p2_cfg, "run"]
-    print(f"\n[PIPELINE] ▶ Running Experiment Stage (Phase 2)\n  cmd: {' '.join(cmd2)}\n  log: {p2_log}\n", flush=True)
-    with open(p2_log, "w", encoding="utf-8") as fp:
+    cmd2 = stage_map["Experiment"]["entry"] + ["--config", exp_cfg, "run"]
+    print(f"\n[PIPELINE] ▶ Running Experiment Stage\n  cmd: {' '.join(cmd2)}\n  log: {exp_log}\n", flush=True)
+    with open(exp_log, "w", encoding="utf-8") as fp:
         run_subprocess_streamed(cmd2, cwd=project_root(), phase_fp=fp, extra_env=extra_env)
-    p2_t1 = time.time()
+    exp_t1 = time.time()
 
-    # 7) Discover Phase 2 output dir
+    # 7) Discover Experiment output dir
     # Prefer config-declared design_execution_root; runner extractor uses it as base_dir.
-    p2_loaded = stage_map["Phase 2"].get("_loaded_cfg") or {}
-    ge_root = ((p2_loaded.get("paths") or {}).get("design_execution_root")
-               or (p2_loaded.get("prompt_branch") or {}).get("save_root")
+    exp_loaded = stage_map["Experiment"].get("_loaded_cfg") or {}
+    ge_root = ((exp_loaded.get("paths") or {}).get("design_execution_root")
+               or (exp_loaded.get("prompt_branch") or {}).get("save_root")
                or os.path.join(results_root_for_dataset(dataset_name), "generate_execution"))
     ge_root = os.path.abspath(os.path.join(project_root(), ge_root)) if not os.path.isabs(ge_root) else ge_root
 
-    phase2_out = extract_best_path_from_log(p2_log, phase="Phase 2", base_dir=ge_root, t_start=p2_t0)
+    experiment_out = extract_best_path_from_log(exp_log, stage="Experiment", base_dir=ge_root, t_start=exp_t0)
 
-    if not phase2_out:
-        # fall back to ge_root, phase3 has its own selection logic
-        phase2_out = ge_root
+    if not experiment_out:
+        # fall back to ge_root, review has its own selection logic
+        experiment_out = ge_root
 
-    print(f"[PIPELINE] Phase 2 output directory: {phase2_out}", flush=True)
+    print(f"[PIPELINE] Experiment output directory: {experiment_out}", flush=True)
 
-    # 8) Run Phase 3 (Review & Optimization)
-    p3_log = os.path.join(logs_dir, "phase3.log")
-    p3_t0 = time.time()
+    # 8) Run Review Stage (formerly Phase 3)
+    review_log = os.path.join(logs_dir, "review.log")
+    review_t0 = time.time()
 
     if args.skip_review:
         print("\n[PIPELINE] ⏭ Skipping review/optimization stage (--skip-review).", flush=True)
-        p3_t1 = p3_t0
+        review_t1 = review_t0
     else:
-        p3_cfg = stage_map["Phase 3"]["config"]
-        cmd3 = stage_map["Phase 3"]["entry"] + ["--config", p3_cfg, "--source_path", phase2_out]
-        print(f"\n[PIPELINE] ▶ Running Review/Optimization Stage (Phase 3)\n  cmd: {' '.join(cmd3)}\n  log: {p3_log}\n", flush=True)
-        with open(p3_log, "w", encoding="utf-8") as fp:
+        review_cfg = stage_map["Review"]["config"]
+        cmd3 = stage_map["Review"]["entry"] + ["--config", review_cfg, "--source_path", experiment_out]
+        print(f"\n[PIPELINE] ▶ Running Review/Optimization Stage\n  cmd: {' '.join(cmd3)}\n  log: {review_log}\n", flush=True)
+        with open(review_log, "w", encoding="utf-8") as fp:
             run_subprocess_streamed(cmd3, cwd=project_root(), phase_fp=fp, extra_env=extra_env)
-        p3_t1 = time.time()
+        review_t1 = time.time()
 
-    # 9) Collect metrics summary (runner behavior preserved; Phase 1 excluded)
+    # 9) Collect metrics summary
     summary: Dict[str, Any] = {"dataset": dataset_name, "logs_dir": logs_dir, "stages": {}}
 
-    # Phase 2 metrics
-    metric2 = (((stage_map["Phase 2"].get("_loaded_cfg") or {}).get("experiment") or {}).get("primary_metric")
+    # Experiment metrics
+    metric2 = (((stage_map["Experiment"].get("_loaded_cfg") or {}).get("experiment") or {}).get("primary_metric")
                or "PCC")
-    p2_text = Path(p2_log).read_text(encoding="utf-8", errors="ignore") if os.path.exists(p2_log) else ""
-    p2_parsed = parse_phase2_log(p2_text, metric=metric2)
-    p2_scores = phase2_scores_from_artifacts(ge_root, metric2, p2_t0, p2_t1)
+    exp_text = Path(exp_log).read_text(encoding="utf-8", errors="ignore") if os.path.exists(exp_log) else ""
+    exp_parsed = parse_experiment_log(exp_text, metric=metric2)
+    exp_scores = experiment_scores_from_artifacts(ge_root, metric2, exp_t0, exp_t1)
 
-    p2_attempted = int(p2_parsed.get("attempted") or 0)
-    p2_succeeded = int(p2_parsed.get("succeeded") or 0)
-    p2_bug = int(p2_parsed.get("bug") or 0)
-    p2_clean = int(p2_parsed.get("clean_success") or 0)
-    sr2, clean2, bug2 = rates(p2_attempted, p2_clean, p2_succeeded, p2_bug)
+    exp_attempted = int(exp_parsed.get("attempted") or 0)
+    exp_succeeded = int(exp_parsed.get("succeeded") or 0)
+    exp_bug = int(exp_parsed.get("bug") or 0)
+    exp_clean = int(exp_parsed.get("clean_success") or 0)
+    sr2, clean2, bug2 = rates(exp_attempted, exp_clean, exp_succeeded, exp_bug)
 
-    summary["stages"]["Phase 2"] = {
-        "attempted": p2_attempted,
-        "succeeded": p2_succeeded,
-        "bug": p2_bug,
-        "clean_success": p2_clean,
+    summary["stages"]["Experiment"] = {
+        "attempted": exp_attempted,
+        "succeeded": exp_succeeded,
+        "bug": exp_bug,
+        "clean_success": exp_clean,
         "success_rate": sr2,
         "clean_rate": clean2,
         "bug_rate": bug2,
-        "avg_at_budget": mean_safe(p2_scores),
-        "best_at_budget": max(p2_scores) if p2_scores else None,
+        "avg_at_budget": mean_safe(exp_scores),
+        "best_at_budget": max(exp_scores) if exp_scores else None,
         "best_metric": metric2,
-        "budget": p2_attempted,
-        "time_sec": float(p2_t1 - p2_t0),
+        "budget": exp_attempted,
+        "time_sec": float(exp_t1 - exp_t0),
     }
 
-    # Phase 3 metrics (if ran)
+    # Review metrics (if ran)
     if not args.skip_review:
-        p3_loaded = stage_map["Phase 3"].get("_loaded_cfg") or {}
-        metric3 = (((p3_loaded.get("review") or {}).get("target_metric")) or metric2)
-        rf_root = ((p3_loaded.get("paths") or {}).get("review_feedback_root")
+        review_loaded = stage_map["Review"].get("_loaded_cfg") or {}
+        metric3 = (((review_loaded.get("review") or {}).get("target_metric")) or metric2)
+        rf_root = ((review_loaded.get("paths") or {}).get("review_feedback_root")
                    or os.path.join(results_root_for_dataset(dataset_name), "review_feedback"))
         rf_root = os.path.abspath(os.path.join(project_root(), rf_root)) if not os.path.isabs(rf_root) else rf_root
 
-        p3_text = Path(p3_log).read_text(encoding="utf-8", errors="ignore") if os.path.exists(p3_log) else ""
-        p3_parsed = parse_phase3_log(p3_text, metric=metric3)
-        p3_scores = phase3_scores_from_artifacts(rf_root, metric3, p3_t0, p3_t1)
+        review_text = Path(review_log).read_text(encoding="utf-8", errors="ignore") if os.path.exists(review_log) else ""
+        review_parsed = parse_review_log(review_text, metric=metric3)
+        review_scores = review_scores_from_artifacts(rf_root, metric3, review_t0, review_t1)
 
-        p3_attempted = int(p3_parsed.get("attempted") or 0)
-        p3_succeeded = int(p3_parsed.get("succeeded") or 0)
-        p3_bug = int(p3_parsed.get("bug") or 0)
-        p3_clean = int(p3_parsed.get("clean_success") or 0)
-        sr3, clean3, bug3 = rates(p3_attempted, p3_clean, p3_succeeded, p3_bug)
+        review_attempted = int(review_parsed.get("attempted") or 0)
+        review_succeeded = int(review_parsed.get("succeeded") or 0)
+        review_bug = int(review_parsed.get("bug") or 0)
+        review_clean = int(review_parsed.get("clean_success") or 0)
+        sr3, clean3, bug3 = rates(review_attempted, review_clean, review_succeeded, review_bug)
 
-        summary["stages"]["Phase 3"] = {
-            "attempted": p3_attempted,
-            "succeeded": p3_succeeded,
-            "bug": p3_bug,
-            "clean_success": p3_clean,
+        summary["stages"]["ReviewOptimize"] = {
+            "attempted": review_attempted,
+            "succeeded": review_succeeded,
+            "bug": review_bug,
+            "clean_success": review_clean,
             "success_rate": sr3,
             "clean_rate": clean3,
             "bug_rate": bug3,
-            "avg_at_budget": mean_safe(p3_scores),
-            "best_at_budget": max(p3_scores) if p3_scores else None,
+            "avg_at_budget": mean_safe(review_scores),
+            "best_at_budget": max(review_scores) if review_scores else None,
             "best_metric": metric3,
-            "budget": p3_attempted,
-            "time_sec": float(p3_t1 - p3_t0),
+            "budget": review_attempted,
+            "time_sec": float(review_t1 - review_t0),
         }
 
-    # Total row (Phase 2+3)
-    total_t = float((p2_t1 - p2_t0) + (p3_t1 - p3_t0))
-    all_scores = list(p2_scores) + (list(summary["stages"].get("Phase 3", {}).get("scores", [])) if False else [])
+    # Total row (Experiment+Review)
+    total_t = float((exp_t1 - exp_t0) + (review_t1 - review_t0))
+    all_scores = list(exp_scores) + (list(summary["stages"].get("ReviewOptimize", {}).get("scores", [])) if False else [])
     # keep totals focused on rates/timing; per-stage averages already recorded.
     summary["stages"]["Total"] = {"time_sec": total_t}
 

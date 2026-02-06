@@ -172,11 +172,11 @@ def pick_best(scores: List[float], direction: str = "maximize") -> Optional[floa
 
 
 # =============================================================================
-# Phase log parsers
+# Stage log parsers
 # =============================================================================
 
 
-def parse_phase2_log(log_text: str, metric: str) -> Dict[str, Any]:
+def parse_experiment_log(log_text: str, metric: str) -> Dict[str, Any]:
     # [FIX] Markers updated to match execution_workflow.py output
     success_markers = [
         "Success threshold met",
@@ -222,7 +222,7 @@ def parse_phase2_log(log_text: str, metric: str) -> Dict[str, Any]:
         if any(x in ln for x in bug_markers):
             rec["bug"] = True
 
-        # [FIX] Robust Regex for Phase 2 Score: [CHECK] <Any text> | <Metric>: <Score>
+        # [FIX] Robust Regex for Experiment Score: [CHECK] <Any text> | <Metric>: <Score>
         # Handles: "[CHECK] Baseline | PCC: 0.1234" and "[CHECK] Winner | PCC: -999.0"
         mm = re.search(r"\[CHECK\].*?:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", ln)
         if mm:
@@ -267,7 +267,7 @@ def parse_phase2_log(log_text: str, metric: str) -> Dict[str, Any]:
     }
 
 
-def parse_phase3_log(log_text: str, metric: str) -> Dict[str, Any]:
+def parse_review_log(log_text: str, metric: str) -> Dict[str, Any]:
     success_markers = [
         "Goal Reached!",
         "Success threshold",
@@ -307,7 +307,7 @@ def parse_phase3_log(log_text: str, metric: str) -> Dict[str, Any]:
             iters.setdefault(cur_iter, {"bug": False, "score": None})
             iters[cur_iter]["bug"] = True
 
-        # [FIX] Robust Regex for Phase 3: matches "> Candidate Score: 0.1234"
+        # [FIX] Robust Regex for Review: matches "> Candidate Score: 0.1234"
         # Also supports "Global Best Score: 0.1234"
         ms = re.search(r"(?:Candidate Score|Global Best Score|Score)[:\s]+\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", ln)
         if ms:
@@ -355,7 +355,7 @@ def parse_phase3_log(log_text: str, metric: str) -> Dict[str, Any]:
 # =============================================================================
 
 
-def phase2_scores_from_artifacts(ge_dir: str, metric: str, t_start: float, t_end: float) -> List[float]:
+def experiment_scores_from_artifacts(ge_dir: str, metric: str, t_start: float, t_end: float) -> List[float]:
     scores: List[float] = []
     
     # Support multiple folder structures (prompt_run or just workspace)
@@ -390,7 +390,7 @@ def phase2_scores_from_artifacts(ge_dir: str, metric: str, t_start: float, t_end
     return scores
 
 
-def phase3_scores_from_artifacts(rf_dir: str, metric: str, t_start: float, t_end: float) -> List[float]:
+def review_scores_from_artifacts(rf_dir: str, metric: str, t_start: float, t_end: float) -> List[float]:
     scores: List[float] = []
     best_path = None
     best_mtime = -1.0
