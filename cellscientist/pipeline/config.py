@@ -162,49 +162,61 @@ def apply_pipeline_overrides(
     - "Review"       (Review & Optimization)
 
     Phase 1 logic is intentionally removed per user requirement.
+    
+    The merging follows a 3-tier inheritance pattern:
+    1. Start with pipeline_config.json as base (Tier 1)
+    2. Stage config overrides pipeline config (Tier 2/3)
+    3. Stage-specific overrides from pipeline_config.json (if any)
     """
-    cfg = dict(stage_cfg)
-
-    # 1) dataset_name
+    # Start with pipeline config as base, then overlay stage config on top
+    # This implements the 3-tier inheritance: pipeline < stage < stage_overrides
+    
+    # Filter out internal fields from pipeline config that shouldn't be inherited
+    pipe_base = {k: v for k, v in pipe_cfg.items() 
+                 if k not in ("_comment", "phase_overrides", "stage_overrides", "common", "env")}
+    
+    # Start by merging pipeline base with stage config
+    # Stage config values override pipeline config values
+    cfg = deep_merge(pipe_base, stage_cfg)
+    
+    # Now apply special handling for specific fields (backward compatibility)
+    
+    # 1) dataset_name - ensure it's set from pipeline if available
     if isinstance(pipe_cfg.get("dataset_name"), str) and pipe_cfg["dataset_name"].strip():
         cfg["dataset_name"] = pipe_cfg["dataset_name"].strip()
 
     common = pipe_cfg.get("common") if isinstance(pipe_cfg.get("common"), dict) else {}
 
     # 2) GPU selection: wipe cuda_device_id in child configs if parent sets CUDA_VISIBLE_DEVICES
+    #    BUT only if the stage config didn't explicitly set its own cuda_device_id
     cuda_visible = common.get("cuda_visible_devices")
     cuda_id = common.get("cuda_device_id")
     has_gpu_setting = (cuda_visible is not None) or (cuda_id is not None)
-    if has_gpu_setting:
+    
+    # Check if stage config has explicit cuda_device_id
+    stage_has_cuda_id = (isinstance(stage_cfg.get("exec"), dict) and 
+                         "cuda_device_id" in stage_cfg.get("exec", {}))
+    
+    if has_gpu_setting and not stage_has_cuda_id:
         # Both stages share the same exec.cuda_device_id convention
-        set_nested(cfg, ["exec", "cuda_device_id"], None)
+        # Only wipe if stage didn't explicitly set it
+        if "exec" in cfg and isinstance(cfg["exec"], dict):
+            set_nested(cfg, ["exec", "cuda_device_id"], None)
 
-    # 3) LLM defaults:
-    #    pipeline_config.json -> llm can override stage llm blocks.
+    # 3) LLM defaults - already handled by deep_merge above, but ensure proper merging order
+    #    pipeline_config.json -> llm can provide base, stage overrides it
     llm_common_raw = pipe_cfg.get("llm") if isinstance(pipe_cfg.get("llm"), dict) else None
     llm_common = drop_none(llm_common_raw) if isinstance(llm_common_raw, dict) else None
 
-    # Stage configs may have either:
-    #   - top-level llm: {...}
-    #   - provider style: {"llm": {...}, "providers": {...}, "default_provider": ...}
+    # The deep_merge above already handled this, but we need to ensure stage values win
     if isinstance(llm_common, dict) and llm_common:
         if isinstance(cfg.get("llm"), dict):
-            cfg["llm"] = deep_merge(cfg.get("llm") or {}, llm_common)
-        else:
-            # If the stage uses provider-style, merge into its nested llm block.
-            nested = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
-            if isinstance(cfg.get("providers"), dict) or isinstance(cfg.get("default_provider"), str):
-                cfg["llm"] = deep_merge(nested, llm_common)
-            else:
-                cfg["llm"] = deep_merge({}, llm_common)
+            # Re-merge to ensure stage config values override pipeline values
+            cfg["llm"] = deep_merge(llm_common, cfg.get("llm") or {})
 
-    # 4) Paths (common)
-    paths_common = pipe_cfg.get("paths") if isinstance(pipe_cfg.get("paths"), dict) else None
-    if isinstance(paths_common, dict) and paths_common:
-        cur = cfg.get("paths") if isinstance(cfg.get("paths"), dict) else {}
-        cfg["paths"] = deep_merge(cur, paths_common)
-
-    # 5) Stage-specific overrides
+    # 4) Paths - already handled by deep_merge above
+    
+    # 5) Stage-specific overrides (from pipeline config's stage_overrides section)
     stage_overrides = pipe_cfg.get("stage_overrides") if isinstance(pipe_cfg.get("stage_overrides"), dict) else {}
     so = stage_overrides.get(stage_name) if isinstance(stage_overrides.get(stage_name), dict) else None
     if isinstance(so, dict) and so:
