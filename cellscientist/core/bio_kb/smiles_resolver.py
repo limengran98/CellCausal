@@ -11,11 +11,16 @@ import os
 from typing import Any, Callable, Dict, List, Tuple, Optional
 from collections import Counter
 
-import numpy as np
-
 from .utils import graceful_fallback
 from .field_matcher import FieldMatcher
 from .config import BioKBConfig
+
+# Optional imports for H5 processing
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
 
 
 def canonicalize_smiles(smiles: str) -> Dict[str, str]:
