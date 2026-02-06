@@ -1,5 +1,17 @@
 # BioKB Module Documentation
 
+## 🆕 NEW: Enhanced Field Detection & Batch-Aware Sampling
+
+**Version 2.0 adds:**
+- ✨ **Fuzzy Field Matching**: Automatically detects SMILES, dose, plate_id, etc. with 100+ naming variations
+- 🎯 **Adaptive Sampling**: Intelligently scales from 50-300 SMILES based on dataset size
+- 🧪 **Batch-Aware Sampling**: Prioritizes cross-batch SMILES for robust biological insights
+- 📊 **Rich Metadata**: Tracks field matching, batch distribution, and sampling decisions
+
+See [Enhanced Features](#enhanced-features-v20) for details.
+
+---
+
 ## Overview
 
 The BioKB (Biological Knowledge Base) module provides SMILES-to-biological-process mapping capabilities for the CellCausal project. It implements a complete semantic enrichment pipeline that:
@@ -210,6 +222,108 @@ def biokb_table_to_evidence_items(
 }
 ```
 
+## Enhanced Features (v2.0)
+
+### Fuzzy Field Matching
+
+The new `FieldMatcher` class automatically detects field names with intelligent matching:
+
+```python
+from cellscientist.core.bio_kb.field_matcher import FieldMatcher
+
+matcher = FieldMatcher()
+
+# Automatically handles these variations:
+# SMILES: "smiles", "SMILES", "compound_smiles", "smiles_string", etc.
+# Dose: "dose", "concentration", "conc", "treatment_dose", etc.
+# Plate: "plate_id", "batch", "plate_number", "assay_plate", etc.
+
+result = matcher.find_field(
+    available_fields=["SMILES", "Dose", "PlateID"],
+    target="smiles"
+)
+# Returns: ("SMILES", 1.0, "exact_case_insensitive")
+```
+
+**Match types:**
+- `exact`: Perfect match
+- `exact_case_insensitive`: Case-insensitive match
+- `synonym`: Matched via synonym list (95% confidence)
+- `fuzzy`: Fuzzy string matching (≥60% confidence)
+
+### Adaptive Sampling
+
+Intelligently determines how many SMILES to sample based on dataset size:
+
+```python
+from cellscientist.core.bio_kb import BioKBConfig
+
+config = BioKBConfig(
+    sampling_strategy="adaptive",
+    adaptive_min=50,      # Minimum SMILES to sample
+    adaptive_max=300,     # Maximum SMILES to sample
+    adaptive_ratio=0.2    # Sample 20% of unique SMILES
+)
+
+# Behavior:
+# - ≤50 unique: Use all
+# - 50-1500 unique: Use 20% (min 50, max 300)
+# - >1500 unique: Cap at 300
+```
+
+### Batch-Aware Sampling
+
+Prioritizes SMILES that appear in multiple experimental batches:
+
+```python
+config = BioKBConfig(
+    sampling_method="cross_batch_first",  # Default
+    max_smiles_per_batch=20
+)
+
+# Methods:
+# - "cross_batch_first": Prioritize cross-batch SMILES (robust)
+# - "diverse": Sample evenly across all batches
+# - "frequent": Select most common SMILES
+```
+
+### Robust H5 Extraction
+
+New `extract_smiles_from_h5_robust()` function returns detailed metadata:
+
+```python
+from cellscientist.core.bio_kb import extract_smiles_from_h5_robust
+
+smiles_list, metadata = extract_smiles_from_h5_robust(
+    h5_path="./data/experiment.h5",
+    config=config,
+    log=print
+)
+
+# metadata includes:
+# - source: "h5_pandas" | "h5_h5py" | "none"
+# - total_samples: Total rows in dataset
+# - unique_smiles: Number of unique SMILES
+# - matched_fields: Field matching results with confidence
+# - batch_info: Cross-batch vs single-batch distribution
+# - sampling_info: Exact sampling statistics
+```
+
+**Example output:**
+```
+[BIOKB] 📂 Loaded H5 group: combined (10000 samples)
+[BIOKB] 🔍 Available fields: ['smiles', 'dose', 'plate_id', 'split_id']
+[BIOKB] ✅ Matched 'smiles' → 'smiles' (conf=1.00, type=exact)
+[BIOKB] ✅ Matched 'plate_id' → 'plate_id' (conf=1.00, type=exact)
+[BIOKB] 🧪 Detected 20 batches/plates
+[BIOKB] 📊 Cross-batch SMILES: 180 (robust)
+[BIOKB] 📊 Single-batch SMILES: 320
+[BIOKB] 🎯 Adaptive limit: 125/500 SMILES (25% of unique)
+[BIOKB] ✅ Sampled 125 SMILES:
+[BIOKB]    - Cross-batch: 110
+[BIOKB]    - Single-batch: 15
+```
+
 ## Configuration
 
 ### Configuration Schema
@@ -226,6 +340,17 @@ BioKB config is nested under `cfg["literature"]["bio_kb"]`:
       "smiles_list": ["CCO", "CC(C)O"],
       "h5_path": "/path/to/stage1.h5",
       
+      # NEW: Sampling strategy
+      "sampling_strategy": "adaptive",  # "adaptive" | "fixed"
+      "sampling_method": "cross_batch_first",  # "cross_batch_first" | "diverse" | "frequent"
+      "max_smiles_per_batch": 15,
+      "max_total_smiles": null,  # null = use adaptive logic
+      
+      # NEW: Adaptive sampling parameters
+      "adaptive_min": 50,      # Minimum SMILES to sample
+      "adaptive_max": 300,     # Maximum SMILES to sample
+      "adaptive_ratio": 0.2,   # Sample 20% of unique SMILES
+      
       # API configuration
       "chembl_enabled": true,
       "chembl_base_url": "https://www.ebi.ac.uk/chembl/api/data",
@@ -240,11 +365,15 @@ BioKB config is nested under `cfg["literature"]["bio_kb"]`:
       "cache_dir": "",  # Auto-set if empty
       "cache_ttl_days": 30,
       
+      # Performance
+      "parallel_queries": 3,  # NEW
+      
       # Output limits
-      "max_smiles": 10,
+      "max_smiles": 10,  # Backward compatibility (use adaptive_max instead)
       "max_targets_per_smiles": 10,
       "max_pathways_per_target": 20,
       "inject_max_items": 5,
+      "include_batch_info": true,  # NEW
       
       # Logging
       "log_to_console": true

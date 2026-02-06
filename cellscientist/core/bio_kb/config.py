@@ -38,11 +38,28 @@ class BioKBConfig:
     cache_dir: str = ""  # Auto-set to bio_kb/cache/ if empty
     cache_ttl_days: int = 30
     
-    # Output limits
+    # Sampling strategy
+    sampling_strategy: str = "adaptive"  # "adaptive" | "fixed"
+    sampling_method: str = "cross_batch_first"  # "cross_batch_first" | "diverse" | "frequent"
+    
+    # Adaptive limits (None = auto-determine)
+    max_smiles_per_batch: Optional[int] = 15
+    max_total_smiles: Optional[int] = None  # None = use adaptive logic
+    
+    # Adaptive logic parameters
+    adaptive_min: int = 50   # Minimum SMILES to sample
+    adaptive_max: int = 300  # Maximum SMILES to sample
+    adaptive_ratio: float = 0.2  # Sample 20% of unique SMILES
+    
+    # Output limits (backward compatibility)
     max_smiles: int = 10
     max_targets_per_smiles: int = 10
     max_pathways_per_target: int = 20
     inject_max_items: int = 5
+    include_batch_info: bool = True
+    
+    # Performance
+    parallel_queries: int = 3
     
     # Logging
     log_to_console: bool = True
@@ -70,6 +87,24 @@ class BioKBConfig:
         known_keys = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in d.items() if k in known_keys}
         return cls(**filtered)
+    
+    def get_adaptive_max_smiles(self, unique_smiles_count: int) -> int:
+        """
+        Calculate adaptive max_smiles based on actual data size.
+        
+        Logic:
+        - If unique_smiles <= adaptive_min: use all
+        - If unique_smiles <= adaptive_max: use adaptive_ratio * count
+        - If unique_smiles > adaptive_max: cap at adaptive_max
+        """
+        if self.sampling_strategy != "adaptive":
+            return self.max_total_smiles or unique_smiles_count
+        
+        if unique_smiles_count <= self.adaptive_min:
+            return unique_smiles_count
+        
+        adaptive_count = int(unique_smiles_count * self.adaptive_ratio)
+        return min(max(adaptive_count, self.adaptive_min), self.adaptive_max)
     
     @classmethod
     def from_cfg(cls, cfg: Dict[str, Any]) -> "BioKBConfig":
