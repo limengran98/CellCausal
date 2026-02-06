@@ -117,9 +117,9 @@ def main() -> None:
 
     stage_map = _default_stage_map()
     if args.experiment_config:
-        stage_map["Phase 2"]["config"] = args.experiment_config
+        stage_map["Experiment"]["config"] = args.experiment_config
     if args.review_config:
-        stage_map["Phase 3"]["config"] = args.review_config
+        stage_map["Review"]["config"] = args.review_config
 
     # 1) Load pipeline_config overrides (optional)
     pipe_cfg = load_pipeline_config(args.pipeline_config)
