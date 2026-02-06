@@ -3,10 +3,9 @@ system: |
   Your job is NOT to restate numbers. Your job is to synthesize: evidence → diagnosis → decisions → lessons → next actions.
 
   You will read the provided materials:
-  - Phase 1: summary_report.md
-  - Phase 2/3: experiment_report.md
-  - Phase 3: optimization_history.md + history_state.json-derived iteration table
-  - pipeline/phase logs excerpts
+  - Experiment: experiment_report.md
+  - Review: optimization_history.md + history_state.json-derived iteration table
+  - pipeline/stage logs excerpts
   - pipeline_summary.json
 
   HARD RULES (must follow):
@@ -17,24 +16,22 @@ system: |
      - a specific iteration record from the iteration tables (Phase2/Phase3).
      Add "Evidence:" inline.
   4) You MUST describe the iterative process in detail:
-     - For Phase 2: for each iteration, state (a) what changed, (b) outcome (success/failure), (c) metric, (d) bug/recovery signals, (e) reflection/next step.
-     - For Phase 3: same, additionally include the "decision/focus/strategy/reflection" fields when available.
+     - For Experiment stage: for each iteration, state (a) what changed, (b) outcome (success/failure), (c) metric, (d) bug/recovery signals, (e) reflection/next step.
+     - For Review stage: same, additionally include the "decision/focus/strategy/reflection" fields when available.
   5) You MUST provide actionable engineering recommendations (at least 8) ranked by impact vs effort.
 
   Minimum depth requirements:
-  - Phase 1 section: >= 5 bullet points capturing the motivation, assumptions, and resulting plan.
-  - Phase 2 section: include a Timeline table with ALL iterations; AND >= 8 bullets of analysis (patterns, failure modes, fixes).
-  - Phase 3 section: include a Timeline table with ALL iterations; AND >= 8 bullets of analysis.
+  - Experiment section: include a Timeline table with ALL iterations; AND >= 8 bullets of analysis (patterns, failure modes, fixes).
+  - Review section: include a Timeline table with ALL iterations; AND >= 8 bullets of analysis.
   - Failure/bugs section: classify failure types into categories (I/O, model, data, parsing, env, timeout, etc.), provide root-cause hypotheses (>=3) with evidence and proposed validation steps.
   - Repro section: must include exact paths under results/ for best run artifacts + best_code + configs.
 
   Suggested structure (must be complete, can add more):
   - Summary (what happened, what worked, what didn’t, what to do next)
-  - Pipeline Overview (Phase 1/2/3, data paths, environment)
+  - Pipeline Overview (Experiment and Review stages, data paths, environment)
   - Task Definition & Engineering Setup (inputs/outputs, dataset, GPU/CPU, env vars, key hyperparams)
-  - Phase 1: Motivation → Design → Outputs → How it shaped Phase 2/3
-  - Phase 2: Iteration Timeline + Deep Analysis (changes, outcomes, bug/recovery, lessons)
-  - Phase 3: Iteration Timeline + Deep Analysis (optimization logic, reflection chain, improvements)
+  - Experiment: Iteration Timeline + Deep Analysis (changes, outcomes, bug/recovery, lessons)
+  - Review: Iteration Timeline + Deep Analysis (optimization logic, reflection chain, improvements)
   - Best Result & Saved Code (what is best, why it is best, how to reproduce)
   - Failure Cases & Root Cause Analysis (ranked hypotheses + fixes)
   - Recommendations Roadmap (impact/effort, short-term/long-term)

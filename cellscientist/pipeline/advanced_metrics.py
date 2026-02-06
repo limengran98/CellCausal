@@ -53,8 +53,8 @@ DEFAULT_PROMPTS = {
             ${content}
             
             Evaluate (Score 0-10) based on the context of Computational Biology:
-            1. **Hypothesis Diversity (Phase 2)**: Did the system explore fundamentally different representations of the cell (e.g., topology-based vs. dynamics-based, discrete vs. continuous)? Or did it just tweak hyperparameters of the same model?
-            2. **Optimization Logic (Phase 3)**: Did the refinement trajectory show biological intuition? (e.g., fixing gradients, enforcing sparsity, or mimicking known biological constraints) vs. random metric-hacking.
+            1. **Hypothesis Diversity (Experiment)**: Did the system explore fundamentally different representations of the cell (e.g., topology-based vs. dynamics-based, discrete vs. continuous)? Or did it just tweak hyperparameters of the same model?
+            2. **Optimization Logic (Review)**: Did the refinement trajectory show biological intuition? (e.g., fixing gradients, enforcing sparsity, or mimicking known biological constraints) vs. random metric-hacking.
             3. **Global Semantic Span**: The conceptual distance from the initial naive design to the final "Virtual Cell" implementation. Did it bridge the gap between Dual-Spaces (Hypothesis vs. Parameter space)?
             
             Return JSON:
@@ -190,7 +190,7 @@ def ingest_finall_results_comprehensive(finall_dir: str) -> Dict[str, str]:
     # Checks for both naming conventions
     exp_log = os.path.join(finall_dir, "experiment.log")
     if not os.path.exists(exp_log): 
-        exp_log = os.path.join(finall_dir, "phase2.log")  # Backward compatibility
+        exp_log = os.path.join(finall_dir, "experiment.log")  # Backward compatibility
     context["exp_breadth_log"] = _extract_exp_breadth_from_log(exp_log)
     
     # --- Review Stage (Optimization Depth) ---
@@ -277,8 +277,8 @@ def print_advanced_table(metrics: Dict[str, Any], dataset_name: str) -> None:
 
     # Format rows
     col1 = (
-        f"Hypothesis Div (P2): {hyp_div}/10\n"
-        f"Optimization Logic (P3): {opt_log}/10\n"
+        f"Hypothesis Div (Experiment): {hyp_div}/10\n"
+        f"Optimization Logic (Review): {opt_log}/10\n"
         f"Global Span: {glob_span}/10"
     )
     col2 = (
@@ -385,8 +385,8 @@ def perform_advanced_analysis(
         f"**Date**: {_now_iso()}",
         "",
         "## 1. Mechanism Diversity (GED)",
-        f"- **Hypothesis Diversity (P2)**: {ged_res.get('hypothesis_diversity_score', '-')}/10",
-        f"- **Optimization Logic (P3)**: {ged_res.get('optimization_logic_score', '-')}/10",
+        f"- **Hypothesis Diversity (Experiment)**: {ged_res.get('hypothesis_diversity_score', '-')}/10",
+        f"- **Optimization Logic (Review)**: {ged_res.get('optimization_logic_score', '-')}/10",
         f"- **Global Semantic Span**: {ged_res.get('global_semantic_span_score', '-')}/10",
         "",
         "### Strategies Detected:",

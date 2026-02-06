@@ -103,7 +103,7 @@ def phase_generate(
     spec_path: str, 
     run_name: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Phase 1: Generate Notebook."""
+    """Generate Notebook (Experiment stage)."""
     
     out_root = _get_save_root(cfg)
     ts_now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -185,7 +185,7 @@ def phase_generate(
     return {"trial_dir": trial_dir, "notebook_path": nb_path}
 
 def phase_execute(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[str, Any]:
-    """Phase 2: Execute Notebook with Auto-Fix."""
+    """Experiment stage: Execute Notebook with Auto-Fix."""
     tdir = trial_dir or _get_latest_trial(cfg)
     if not tdir:
         raise RuntimeError("No trial directory found.")
@@ -255,7 +255,7 @@ def phase_execute(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[
     return {"trial_dir": tdir, "exec_notebook": final_exec, "metrics": metrics}
 
 def phase_analyze(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[str, Any]:
-    """Phase 3: Generate Report."""
+    """Review stage: Generate Report."""
     tdir = trial_dir or _get_latest_trial(cfg)
     if not tdir:
         raise RuntimeError("No trial directory found.")
