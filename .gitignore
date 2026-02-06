@@ -38,3 +38,7 @@ Thumbs.db
 results/
 workspace_*/
 *.log
+
+# BioKB cache (except .gitkeep)
+cellscientist/core/bio_kb/cache/*
+!cellscientist/core/bio_kb/cache/.gitkeep
