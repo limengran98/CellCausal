@@ -572,12 +572,13 @@ def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
             else:
                 tsec_s = f"{tsec:.1f}" if isinstance(tsec, (int, float)) else "-"
             
-            # Token cost (placeholder for future implementation)
-            token_cost = "-"  # TODO: integrate with TokenMeter if available
+            # Token cost placeholder - will be integrated with TokenMeter in future
+            # when LLM client metrics are passed to pipeline summary
+            token_cost = "-"
             
             # Style Total row differently
             if stage_name == "Total":
-                table.add_row(f"[bold]**{stage_name}**[/bold]", sr_s, best_s, tsec_s, f"[bold]{token_cost}[/bold]")
+                table.add_row(f"[bold]{stage_name}[/bold]", sr_s, best_s, tsec_s, f"[bold]{token_cost}[/bold]")
             else:
                 table.add_row(stage_name, sr_s, best_s, tsec_s, token_cost)
 
