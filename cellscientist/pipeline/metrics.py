@@ -72,10 +72,14 @@ def print_execution_plan(stage_map: Dict[str, Dict[str, Any]], dataset_name: str
         """Format timeout in human-readable form."""
         if not seconds:
             return "-"
-        hours = seconds / 3600
-        if hours >= 1:
-            return f"{hours:.0f}h"
-        return f"{seconds}s"
+        try:
+            sec = int(seconds)
+            hours = sec / 3600
+            if hours >= 1:
+                return f"{hours:.0f}h"
+            return f"{sec}s"
+        except (ValueError, TypeError):
+            return str(seconds)
 
     exp = _pick("Experiment", "Phase 2")
     if exp:
