@@ -63,7 +63,7 @@ def print_execution_plan(stage_map: Dict[str, Dict[str, Any]], dataset_name: str
     else:
         table.add_row("Experiment", "-", "-", "(stage not configured)")
 
-    rev = _pick("ReviewOptimize", "Phase 3")
+    rev = _pick("Review", "Phase 3")
     if rev:
         c3 = rev.get("_loaded_cfg", {})
         p3_model = get_nested(c3, ["llm", "model"])
@@ -469,7 +469,7 @@ def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
         # [REMOVED] Non-Exec time column
         table.add_column("Total Time (s)", justify="right")
 
-        for stage_name in ["Experiment", "ReviewOptimize", "Total"]:
+        for stage_name in ["Experiment", "Review", "Total"]:
             row = stages.get(stage_name, {})
             sr = row.get("success_rate")
             clean_sr = row.get("clean_rate")
@@ -497,7 +497,7 @@ def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
         console.print(table)
     else:
         print("\n=== Scoreboard ===")
-        for stage_name in ["Experiment", "ReviewOptimize", "Total"]:
+        for stage_name in ["Experiment", "Review", "Total"]:
             row = stages.get(stage_name, {})
             print(
                 f"{stage_name}: Success={row.get('success_rate')}, ZeroShot={row.get('clean_rate')}, "
