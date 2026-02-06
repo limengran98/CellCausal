@@ -236,7 +236,7 @@ def main() -> None:
         review_clean = int(review_parsed.get("clean_success") or 0)
         sr3, clean3, bug3 = rates(review_attempted, review_clean, review_succeeded, review_bug)
 
-        summary["stages"]["ReviewOptimize"] = {
+        summary["stages"]["Review"] = {
             "attempted": review_attempted,
             "succeeded": review_succeeded,
             "bug": review_bug,
@@ -253,7 +253,7 @@ def main() -> None:
 
     # Total row (Experiment+Review)
     total_t = float((exp_t1 - exp_t0) + (review_t1 - review_t0))
-    all_scores = list(exp_scores) + (list(summary["stages"].get("ReviewOptimize", {}).get("scores", [])) if False else [])
+    all_scores = list(exp_scores) + (list(summary["stages"].get("Review", {}).get("scores", [])) if False else [])
     # keep totals focused on rates/timing; per-stage averages already recorded.
     summary["stages"]["Total"] = {"time_sec": total_t}
 
