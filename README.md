@@ -54,10 +54,10 @@ CellCausal/                         <-- Project Root
 │       ├── advanced_metrics.py       # Deep Dive: Advanced statistical analysis
 │       └── utils.py                  # Utils: Logging, paths, and subprocess helpers
 │
-├── configs/                        # ⚙️ CONFIGURATION: Control parameters
-│   ├── pipeline_config.json        # Global Settings: Dataset, LLM models, Env
-│   ├── experiment_config.json      # Experiment stage props: Search width, fix rounds, timeouts
-│   └── review_config.json          # Review stage props: Optimization rounds, top-k selection
+├── configs/                        # ⚙️ CONFIGURATION: 3-Tier Inheritance Architecture
+│   ├── pipeline_config.json        # Tier 1: Global defaults (dataset, LLM, literature, bio_kb)
+│   ├── experiment_config.json      # Tier 2: Experiment overrides (model, timeouts, viz)
+│   └── review_config.json          # Tier 3: Review overrides (model, optimization params)
 │
 ├── prompts/                        # 📝 PROMPT TEMPLATES: System instructions (YAML)
 │   ├── pipeline_prompt.yaml        # General agent behaviors and personas
@@ -77,7 +77,54 @@ CellCausal/                         <-- Project Root
 
 ## ⚙️ Key Configurations
 
-The framework uses a **Dual-Space Bilevel Optimization** strategy, controlled via `configs/`:
+The framework uses a **3-Tier Inheritance Architecture** for configuration management:
+
+### Configuration Files
+
+```
+configs/
+├── pipeline_config.json       # Tier 1: Global defaults (shared by all stages)
+├── experiment_config.json     # Tier 2: Experiment-specific overrides only
+└── review_config.json         # Tier 3: Review-specific overrides only
+```
+
+### Inheritance Pattern
+
+**Stage configs inherit from pipeline config and override specific values:**
+
+```python
+# Effective config = pipeline_config ⊕ stage_config
+# Where ⊕ means: stage_config overrides pipeline_config
+```
+
+### Key Benefits
+
+*   **Single Source of Truth**: Shared settings (API keys, LLM configs, BioKB, Literature) defined once in `pipeline_config.json`
+*   **Clear Overrides**: Stage configs only contain differences, making customization obvious
+*   **Reduced Redundancy**: 17% total size reduction, eliminating duplicate API keys and settings
+*   **Easy Maintenance**: Update shared settings in one place, apply everywhere
+
+### Configuration Sections
+
+*   **Global Settings** (in `pipeline_config.json`):
+    *   `dataset_name`, `split_name`: Dataset and split configuration
+    *   `llm`, `llm_report`: LLM API endpoints, keys, and model defaults
+    *   `literature`: Literature search API keys (Serper, Jina) and parameters
+    *   `bio_kb`: Biological knowledge base (ChEMBL, Reactome) settings
+    *   `paths`: Data paths and output directories
+    *   `exec`: Execution timeouts and fix rounds
+    
+*   **Experiment Stage** (overrides in `experiment_config.json`):
+    *   LLM model selection for experiment generation
+    *   Experiment-specific paths and parameters
+    *   Hypergraph visualization settings
+    
+*   **Review Stage** (overrides in `review_config.json`):
+    *   LLM model selection for review/optimization
+    *   Review-specific paths and parameters
+    *   Optimization hierarchy and protected sections
+
+### Strategy
 
 *   **LLM Engine**: Gemini 3 Pro (default).
 *   **Experiment Stage**: Parallel hypothesis generation with self-correction.
