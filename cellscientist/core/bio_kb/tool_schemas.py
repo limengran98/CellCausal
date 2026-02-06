@@ -97,7 +97,7 @@ TOOL_SCHEMAS: Dict[str, ToolSchema] = {
 }
 
 
-def get_tool_schema(name: str) -> ToolSchema | None:
+def get_tool_schema(name: str) -> Optional[ToolSchema]:
     """Get tool schema by name.
     
     Args:

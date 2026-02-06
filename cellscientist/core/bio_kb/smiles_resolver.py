@@ -48,12 +48,16 @@ def extract_smiles_from_config(cfg: Dict[str, Any]) -> Tuple[List[str], str]:
     Returns:
         Tuple of (smiles_list, source_description)
     """
-    lit = cfg.get("literature", {}) if isinstance(cfg, dict) else {}
-    bio_kb_cfg = lit.get("bio_kb", {}) if isinstance(lit, dict) else {}
-    smiles_list = bio_kb_cfg.get("smiles_list", []) if isinstance(bio_kb_cfg, dict) else []
+    try:
+        lit = cfg.get("literature", {}) if isinstance(cfg, dict) else {}
+        bio_kb_cfg = lit.get("bio_kb", {}) if isinstance(lit, dict) else {}
+        smiles_list = bio_kb_cfg.get("smiles_list", []) if isinstance(bio_kb_cfg, dict) else []
+        
+        if isinstance(smiles_list, list) and smiles_list:
+            return [str(s).strip() for s in smiles_list if s], "config"
+    except Exception:
+        pass
     
-    if isinstance(smiles_list, list) and smiles_list:
-        return [str(s).strip() for s in smiles_list if s], "config"
     return [], "none"
 
 

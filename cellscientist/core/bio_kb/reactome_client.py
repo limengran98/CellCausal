@@ -34,7 +34,7 @@ def _get_cache_path(cache_dir: str, cache_key: str) -> str:
     return os.path.join(reactome_cache, f"{cache_key}.json")
 
 
-def _read_cache(cache_path: str) -> Dict[str, Any] | None:
+def _read_cache(cache_path: str) -> Optional[Dict[str, Any]]:
     """Read cached data from file.
     
     Args:
@@ -155,7 +155,7 @@ def query_pathway_details(
     pathway_id: str,
     config: BioKBConfig,
     log: Callable[[str], None]
-) -> Dict[str, Any] | None:
+) -> Optional[Dict[str, Any]]:
     """Query detailed information about a specific pathway.
     
     Args:

@@ -7,7 +7,7 @@ using keyword-based heuristics.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .data_lake import DataLake
 
@@ -16,7 +16,7 @@ def map_pathway_to_process(
     pathway_name: str,
     data_lake: DataLake,
     confidence_threshold: float = 0.1
-) -> Optional[Dict[str, any]]:
+) -> Optional[Dict[str, Any]]:
     """Map a pathway name to a biological process using keyword matching.
     
     Args:
@@ -65,7 +65,7 @@ def map_pathway_to_process(
 def map_pathways_to_processes(
     pathways: List[Dict[str, str]],
     data_lake: DataLake
-) -> List[Dict[str, any]]:
+) -> List[Dict[str, Any]]:
     """Map multiple pathways to biological processes.
     
     Args:
@@ -75,7 +75,7 @@ def map_pathways_to_processes(
     Returns:
         List of process mapping dictionaries with deduplicated processes
     """
-    process_map: Dict[str, Dict[str, any]] = {}
+    process_map: Dict[str, Dict[str, Any]] = {}
     
     for pathway in pathways:
         pathway_name = pathway.get("pathway_name", "")
