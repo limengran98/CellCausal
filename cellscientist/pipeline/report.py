@@ -77,8 +77,8 @@ def ensure_final_prompt_file_exists() -> None:
             """\
             system: |
                 You are a senior Research Engineer + Computational Biologist.
-                You will read the provided: `summary_report.md` for Phase 1, `experiment_report.md` for Phases 2/3,
-                pipeline/phase logs, and `pipeline_summary.json`, and generate a final Markdown analysis report.
+                You will read the provided: `experiment_report.md` for Experiment/Review stages,
+                pipeline/stage logs, and `pipeline_summary.json`, and generate a final Markdown analysis report.
                 Writing Requirements:
                 - Only output the Markdown body; do not output YAML/JSON/explanatory introductions.
                 - Must cover and explicitly write out:
@@ -91,11 +91,10 @@ def ensure_final_prompt_file_exists() -> None:
                 Suggested output structure (can be fine-tuned, but must be complete):
 
                 - Summary (1-2 paragraphs)
-                - Pipeline overview (Phase 1/2/3)
+                - Pipeline overview (Experiment and Review stages)
                 - Task definition and data/environment
-                - Phase 1: Motivation and thought process summary
-                - Phase 2: Generate-Execute-Analyze (iteratively)
-                - Phase 3: Optimize-Feedback (iteratively)
+                - Experiment Stage: Generate-Execute-Analyze (iteratively)
+                - Review Stage: Optimize-Feedback (iteratively)
                 - Best results and code saving instructions
                 - Failure Cases and Reflections (if any)
                 - Appendix: Critical Path List
@@ -112,67 +111,57 @@ def ensure_final_prompt_file_exists() -> None:
               ${pipeline_summary_json}
               ```
 
-              ## 2) Phase configs (redacted)
-              ### Phase 1 config
+              ## 2) Stage configs (redacted)
+              ### Experiment config
               ```json
-              ${phase1_config_json}
+              ${experiment_config_json}
               ```
 
-              ### Phase 2 config
+              ### Review config
               ```json
-              ${phase2_config_json}
+              ${review_config_json}
               ```
 
-              ### Phase 3 config
-              ```json
-              ${phase3_config_json}
-              ```
-
-              ## 3) Phase 1 summary_report.md
+              ## 3) Experiment stage best experiment_report.md (if any)
               ```markdown
-              ${phase1_summary_md}
+              ${experiment_report_md}
               ```
 
-              ## 4) Phase 2 best experiment_report.md (if any)
+              ## 4) Review stage experiment_report.md (if any)
               ```markdown
-              ${phase2_report_md}
+              ${review_report_md}
               ```
 
-              ## 5) Phase 3 experiment_report.md (if any)
+              ## 5) Review stage optimization history (if any)
               ```markdown
-              ${phase3_report_md}
+              ${review_optim_history_md}
               ```
 
-              ## 6) Phase 3 optimization history (if any)
-              ```markdown
-              ${phase3_optim_history_md}
-              ```
-
-              ## 7) Iteration tables (machine extracted)
-              ### Phase 2 iterations
+              ## 6) Iteration tables (machine extracted)
+              ### Experiment iterations
               ```json
-              ${phase2_iters_json}
+              ${experiment_iters_json}
               ```
 
-              ### Phase 3 iterations
+              ### Review iterations
               ```json
-              ${phase3_iters_json}
+              ${review_iters_json}
               ```
 
-              ## 8) Logs (head+tail excerpts)
+              ## 7) Logs (head+tail excerpts)
               ### pipeline log excerpt
               ```text
               ${pipeline_log_excerpt}
               ```
 
-              ### phase2 log excerpt
+              ### experiment log excerpt
               ```text
-              ${phase2_log_excerpt}
+              ${experiment_log_excerpt}
               ```
 
-              ### phase3 log excerpt
+              ### review log excerpt
               ```text
-              ${phase3_log_excerpt}
+              ${review_log_excerpt}
               ```
             """
         )
@@ -299,7 +288,7 @@ def chat_text(messages: List[Dict[str, Any]], llm_cfg: Dict[str, Any]) -> str:
 # =============================================================================
 
 
-def phase2_iters_detail_from_log(log_text: str, metric: str) -> List[Dict[str, Any]]:
+def experiment_iters_detail_from_log(log_text: str, metric: str) -> List[Dict[str, Any]]:
     iters: Dict[int, Dict[str, Any]] = {}
     cur_iter: Optional[int] = None
     bug_markers = [
@@ -343,7 +332,7 @@ def phase2_iters_detail_from_log(log_text: str, metric: str) -> List[Dict[str, A
     return [iters[k] for k in sorted(iters.keys())]
 
 
-def phase3_iters_from_history_state(workspace_dir: str) -> List[Dict[str, Any]]:
+def review_iters_from_history_state(workspace_dir: str) -> List[Dict[str, Any]]:
     p = os.path.join(workspace_dir, "history_state.json")
     hist = safe_read_json(p)
     if not isinstance(hist, list):
@@ -386,8 +375,8 @@ def generate_final_report(
     pipeline_log_path: str,
     pipe_cfg: Optional[Dict[str, Any]],
     # [NEW] Explicit path arguments to replace search functions
-    explicit_p2_path: Optional[str] = None,
-    explicit_p3_path: Optional[str] = None,
+    explicit_experiment_path: Optional[str] = None,
+    explicit_review_path: Optional[str] = None,
     direction: str,
     metric: str,
     output_dir: Optional[str] = None, # [NEW] Added to allow overriding output location (e.g. to logs_dir)
@@ -402,36 +391,35 @@ def generate_final_report(
     print(f"📝 Generating Final Report in: {final_dir}")
 
     # Locate key artifacts
-    # Phase 1 (Design Analysis) is intentionally removed from the unified pipeline.
     # Keep placeholder variables for prompt compatibility, but leave content empty.
     phase1_summary_path = ""
 
     # [FIX] Use explicit paths instead of searching based on time
-    best_p2_dir = explicit_p2_path
-    if best_p2_dir and not os.path.exists(best_p2_dir):
+    best_exp_dir = explicit_experiment_path
+    if best_exp_dir and not os.path.exists(best_exp_dir):
         # Fallback only if provided path is bad (shouldn't happen with log tracker)
-        print(f"[WARN] Explicit P2 path provided but not found: {best_p2_dir}")
-        best_p2_dir = None
+        print(f"[WARN] Explicit Experiment path provided but not found: {best_exp_dir}")
+        best_exp_dir = None
         
-    phase2_report_path = os.path.join(best_p2_dir, "experiment_report.md") if best_p2_dir else ""
+    experiment_report_path = os.path.join(best_exp_dir, "experiment_report.md") if best_exp_dir else ""
 
-    p3_ws = explicit_p3_path
-    if p3_ws and not os.path.exists(p3_ws):
-        print(f"[WARN] Explicit P3 path provided but not found: {p3_ws}")
-        p3_ws = None
+    review_ws = explicit_review_path
+    if review_ws and not os.path.exists(review_ws):
+        print(f"[WARN] Explicit Review path provided but not found: {review_ws}")
+        review_ws = None
         
-    phase3_report_path = os.path.join(p3_ws, "experiment_report.md") if p3_ws else ""
-    phase3_opt_hist_path = os.path.join(p3_ws, "optimization_history.md") if p3_ws else ""
+    review_report_path = os.path.join(review_ws, "experiment_report.md") if review_ws else ""
+    review_opt_hist_path = os.path.join(review_ws, "optimization_history.md") if review_ws else ""
 
     # Export best code
     best_nb_src = ""
-    # Priority: Phase 3 Best -> Phase 2 Executed -> Phase 2 Prompt
-    if p3_ws and os.path.exists(os.path.join(p3_ws, "notebook_best.ipynb")):
-        best_nb_src = os.path.join(p3_ws, "notebook_best.ipynb")
-    elif best_p2_dir and os.path.exists(os.path.join(best_p2_dir, "notebook_prompt_exec.ipynb")):
-        best_nb_src = os.path.join(best_p2_dir, "notebook_prompt_exec.ipynb")
-    elif best_p2_dir and os.path.exists(os.path.join(best_p2_dir, "notebook_prompt.ipynb")):
-        best_nb_src = os.path.join(best_p2_dir, "notebook_prompt.ipynb")
+    # Priority: Review Best -> Experiment Executed -> Experiment Prompt
+    if review_ws and os.path.exists(os.path.join(review_ws, "notebook_best.ipynb")):
+        best_nb_src = os.path.join(review_ws, "notebook_best.ipynb")
+    elif best_exp_dir and os.path.exists(os.path.join(best_exp_dir, "notebook_prompt_exec.ipynb")):
+        best_nb_src = os.path.join(best_exp_dir, "notebook_prompt_exec.ipynb")
+    elif best_exp_dir and os.path.exists(os.path.join(best_exp_dir, "notebook_prompt.ipynb")):
+        best_nb_src = os.path.join(best_exp_dir, "notebook_prompt.ipynb")
 
     best_nb_dst = safe_copy(best_nb_src, final_dir, "best_code.ipynb") if best_nb_src else None
     if best_nb_dst:
@@ -439,24 +427,24 @@ def generate_final_report(
 
     # Also copy key inputs for convenience
     
-    if best_p2_dir:
-        safe_copy(os.path.join(best_p2_dir, "metrics.json"), final_dir, "phase2_best_metrics.json")
-        safe_copy(phase2_report_path, final_dir, "phase2_best_experiment_report.md")
+    if best_exp_dir:
+        safe_copy(os.path.join(best_exp_dir, "metrics.json"), final_dir, "experiment_best_metrics.json")
+        safe_copy(experiment_report_path, final_dir, "experiment_best_experiment_report.md")
         
-    if p3_ws:
-        safe_copy(os.path.join(p3_ws, "metrics_best.json"), final_dir, "phase3_best_metrics.json")
-        safe_copy(phase3_report_path, final_dir, "phase3_experiment_report.md")
-        safe_copy(phase3_opt_hist_path, final_dir, "phase3_optimization_history.md")
-        safe_copy(os.path.join(p3_ws, "history_state.json"), final_dir, "phase3_history_state.json")
+    if review_ws:
+        safe_copy(os.path.join(review_ws, "metrics_best.json"), final_dir, "review_best_metrics.json")
+        safe_copy(review_report_path, final_dir, "review_experiment_report.md")
+        safe_copy(review_opt_hist_path, final_dir, "review_optimization_history.md")
+        safe_copy(os.path.join(review_ws, "history_state.json"), final_dir, "review_history_state.json")
         
     safe_copy(pipeline_log_path, final_dir, os.path.basename(pipeline_log_path))
     for _k, lp in (phase_logs or {}).items():
         safe_copy(lp, final_dir, os.path.basename(lp))
 
     # Build iteration tables
-    p2_log_text = read_text(phase_logs.get("Phase 2", ""))
-    p2_iters = phase2_iters_detail_from_log(p2_log_text, metric)
-    p3_iters = phase3_iters_from_history_state(p3_ws) if p3_ws else []
+    exp_log_text = read_text(phase_logs.get("Experiment", ""))
+    exp_iters = experiment_iters_detail_from_log(exp_log_text, metric)
+    review_iters = review_iters_from_history_state(review_ws) if review_ws else []
 
     system_prompt, user_template = load_final_prompt()
     llm_cfg = resolve_report_llm_cfg(pipe_cfg)
@@ -477,17 +465,17 @@ def generate_final_report(
                 "final_output_dir": final_dir,
                 "pipeline_summary_json": pipeline_summary_json,
                 "phase1_config_json": p1_cfg_json,
-                "phase2_config_json": p2_cfg_json,
-                "phase3_config_json": p3_cfg_json,
+                "experiment_config_json": exp_cfg_json,
+                "review_config_json": review_cfg_json,
                 "phase1_summary_md": read_text_limited(phase1_summary_path, max_chars=md_cap) if phase1_summary_path else "",
-                "phase2_report_md": read_text_limited(phase2_report_path, max_chars=md_cap) if phase2_report_path else "",
-                "phase3_report_md": read_text_limited(phase3_report_path, max_chars=md_cap) if phase3_report_path else "",
-                "phase3_optim_history_md": read_text_limited(phase3_opt_hist_path, max_chars=md_cap) if phase3_opt_hist_path else "",
-                "phase2_iters_json": json.dumps(p2_iters, ensure_ascii=False, indent=2),
-                "phase3_iters_json": json.dumps(p3_iters, ensure_ascii=False, indent=2),
+                "experiment_report_md": read_text_limited(experiment_report_path, max_chars=md_cap) if experiment_report_path else "",
+                "review_report_md": read_text_limited(review_report_path, max_chars=md_cap) if review_report_path else "",
+                "review_optim_history_md": read_text_limited(review_opt_hist_path, max_chars=md_cap) if review_opt_hist_path else "",
+                "experiment_iters_json": json.dumps(exp_iters, ensure_ascii=False, indent=2),
+                "review_iters_json": json.dumps(review_iters, ensure_ascii=False, indent=2),
                 "pipeline_log_excerpt": read_head_tail_lines(pipeline_log_path, max_chars=log_cap),
-                "phase2_log_excerpt": read_head_tail_lines(phase_logs.get("Phase 2", ""), max_chars=log_cap),
-                "phase3_log_excerpt": read_head_tail_lines(phase_logs.get("Phase 3", ""), max_chars=log_cap),
+                "experiment_log_excerpt": read_head_tail_lines(phase_logs.get("Experiment", ""), max_chars=log_cap),
+                "review_log_excerpt": read_head_tail_lines(phase_logs.get("Review", ""), max_chars=log_cap),
             }
 
             user_prompt = user_template
@@ -542,15 +530,15 @@ def generate_final_report_and_exports(
     results_root = os.path.join(project_root(), "results", ds_name) if ds_name else os.path.join(project_root(), "results")
 
     phase_logs = {
-        "Phase 2": os.path.join(logs_dir, "phase2.log") if logs_dir else "",
-        "Phase 3": os.path.join(logs_dir, "phase3.log") if logs_dir else "",
+        "Experiment": os.path.join(logs_dir, "experiment.log") if logs_dir else "",
+        "Review": os.path.join(logs_dir, "review.log") if logs_dir else "",
     }
 
-    # Use Phase 2 log as the pipeline log anchor (runner does not create a separate pipeline log).
-    pipeline_log_path = phase_logs.get("Phase 2", "") or ""
+    # Use Experiment log as the pipeline log anchor (runner does not create a separate pipeline log).
+    pipeline_log_path = phase_logs.get("Experiment", "") or ""
 
-    stage2_cfg = (stage_map.get("Phase 2", {}) or {}).get("_loaded_cfg") or {}
-    stage3_cfg = (stage_map.get("Phase 3", {}) or {}).get("_loaded_cfg") or {}
+    stage2_cfg = (stage_map.get("Experiment", {}) or {}).get("_loaded_cfg") or {}
+    stage3_cfg = (stage_map.get("Review", {}) or {}).get("_loaded_cfg") or {}
     stage1_cfg: Dict[str, Any] = {}  # Phase 1 removed
 
     # Timings (best-effort)
@@ -565,26 +553,26 @@ def generate_final_report_and_exports(
     # Explicit artifact directories (best-effort from logs)
     from .utils import extract_best_path_from_log
 
-    explicit_p2_path = None
-    explicit_p3_path = None
+    explicit_experiment_path = None
+    explicit_review_path = None
 
     try:
-        # Phase 2 base dir
-        p2_base = ((stage2_cfg.get("paths") or {}).get("design_execution_root")
+        # Experiment base dir
+        exp_base = ((stage2_cfg.get("paths") or {}).get("design_execution_root")
                    or (stage2_cfg.get("prompt_branch") or {}).get("save_root")
                    or os.path.join("results", ds_name, "generate_execution"))
-        p2_base = os.path.abspath(os.path.join(project_root(), p2_base)) if not os.path.isabs(str(p2_base)) else str(p2_base)
-        explicit_p2_path = extract_best_path_from_log(phase_logs["Phase 2"], phase="Phase 2", base_dir=p2_base, t_start=0.0)
+        exp_base = os.path.abspath(os.path.join(project_root(), exp_base)) if not os.path.isabs(str(exp_base)) else str(exp_base)
+        explicit_experiment_path = extract_best_path_from_log(phase_logs["Experiment"], stage="Experiment", base_dir=exp_base, t_start=0.0)
     except Exception:
-        explicit_p2_path = None
+        explicit_experiment_path = None
 
     try:
-        p3_base = ((stage3_cfg.get("paths") or {}).get("review_feedback_root")
+        review_base = ((stage3_cfg.get("paths") or {}).get("review_feedback_root")
                    or os.path.join("results", ds_name, "review_feedback"))
-        p3_base = os.path.abspath(os.path.join(project_root(), p3_base)) if not os.path.isabs(str(p3_base)) else str(p3_base)
-        explicit_p3_path = extract_best_path_from_log(phase_logs["Phase 3"], phase="Phase 3", base_dir=p3_base, t_start=0.0)
+        review_base = os.path.abspath(os.path.join(project_root(), review_base)) if not os.path.isabs(str(review_base)) else str(review_base)
+        explicit_review_path = extract_best_path_from_log(phase_logs["Review"], stage="Review", base_dir=review_base, t_start=0.0)
     except Exception:
-        explicit_p3_path = None
+        explicit_review_path = None
 
     # Metric + direction
     metric = ((stage3_cfg.get("review") or {}).get("target_metric")
@@ -603,8 +591,8 @@ def generate_final_report_and_exports(
         phase_logs=phase_logs,
         pipeline_log_path=pipeline_log_path,
         pipe_cfg=pipe_cfg,
-        explicit_p2_path=explicit_p2_path,
-        explicit_p3_path=explicit_p3_path,
+        explicit_experiment_path=explicit_experiment_path,
+        explicit_review_path=explicit_review_path,
         direction=direction,
         metric=metric,
         output_dir=logs_dir if logs_dir else None,

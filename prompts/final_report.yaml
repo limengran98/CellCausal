@@ -52,65 +52,55 @@ user_template: |
   ${pipeline_summary_json}
   ```
 
-  ## 2) Phase configs (redacted)
-  ### Phase 1 config
+  ## 2) Stage configs (redacted)
+  ### Experiment config
   ```json
-  ${phase1_config_json}
+  ${experiment_config_json}
   ```
 
-  ### Phase 2 config
+  ### Review config
   ```json
-  ${phase2_config_json}
+  ${review_config_json}
   ```
 
-  ### Phase 3 config
-  ```json
-  ${phase3_config_json}
-  ```
-
-  ## 3) Phase 1 summary_report.md
+  ## 3) Experiment stage best experiment_report.md (if any)
   ```markdown
-  ${phase1_summary_md}
+  ${experiment_report_md}
   ```
 
-  ## 4) Phase 2 best experiment_report.md (if any)
+  ## 4) Review stage experiment_report.md (if any)
   ```markdown
-  ${phase2_report_md}
+  ${review_report_md}
   ```
 
-  ## 5) Phase 3 experiment_report.md (if any)
+  ## 5) Review stage optimization history (if any)
   ```markdown
-  ${phase3_report_md}
+  ${review_optim_history_md}
   ```
 
-  ## 6) Phase 3 optimization history (if any)
-  ```markdown
-  ${phase3_optim_history_md}
-  ```
-
-  ## 7) Iteration tables (machine extracted)
-  ### Phase 2 iterations
+  ## 6) Iteration tables (machine extracted)
+  ### Experiment iterations
   ```json
-  ${phase2_iters_json}
+  ${experiment_iters_json}
   ```
 
-  ### Phase 3 iterations
+  ### Review iterations
   ```json
-  ${phase3_iters_json}
+  ${review_iters_json}
   ```
 
-  ## 8) Logs (head+tail excerpts)
+  ## 7) Logs (head+tail excerpts)
   ### pipeline log excerpt
   ```text
   ${pipeline_log_excerpt}
   ```
 
-  ### phase2 log excerpt
+  ### experiment log excerpt
   ```text
-  ${phase2_log_excerpt}
+  ${experiment_log_excerpt}
   ```
 
-  ### phase3 log excerpt
+  ### review log excerpt
   ```text
-  ${phase3_log_excerpt}
+  ${review_log_excerpt}
   ```

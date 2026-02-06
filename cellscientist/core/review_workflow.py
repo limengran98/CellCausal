@@ -265,7 +265,7 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
 def _get_paths(cfg: dict) -> dict:
     return cfg.get("paths", {}) or {}
 
-def find_best_phase2_trial(cfg, explicit_path=None):
+def find_best_experiment_trial(cfg, explicit_path=None):
     """
     Finds the source trial directory.
     """
@@ -1296,7 +1296,7 @@ def main():
         if not explicit_source:
             explicit_source = (cfg.get("paths", {}) or {}).get("explicit_source_path")
 
-        source_trial = find_best_phase2_trial(cfg, explicit_source)
+        source_trial = find_best_experiment_trial(cfg, explicit_source)
         workspace, base_nb = setup_phase3_workspace(cfg, source_trial)
         optimize_loop(cfg, workspace, base_nb)
     except Exception as e:

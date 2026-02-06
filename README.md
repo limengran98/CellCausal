@@ -14,10 +14,10 @@ python run_pipeline.py
 
 | Argument | Description |
 | :--- | :--- |
-| `--skip-review` | Run only the experiment stage (Phase 2), skipping optimization. |
+| `--skip-review` | Run only the experiment stage, skipping optimization. |
 | `--pipeline-config` | Support custom pipeline configuration path. |
-| `--experiment-config` | Override Experiment (Phase 2) configuration. |
-| `--review-config` | Override Review (Phase 3) configuration. |
+| `--experiment-config` | Override Experiment stage configuration. |
+| `--review-config` | Override Review stage configuration. |
 
 ## 📂 Project Structure
 
@@ -35,8 +35,8 @@ CellCausal/                         <-- Project Root
 │   │   ├── config_loader.py             # Load/merge config + ${VAR} expansion
 │   │   ├── llm_client.py                # LLM client + token metering
 │   │   ├── idea_generator.py            # Idea/hypothesis generation
-│   │   ├── execution_workflow.py        # Phase 2 entry: design & execute
-│   │   ├── review_workflow.py           # Phase 3 entry: review & optimize
+│   │   ├── execution_workflow.py        # Experiment stage entry: design & execute
+│   │   ├── review_workflow.py           # Review stage entry: review & optimize
 │   │   ├── prompt_orchestrator.py       # Orchestrate prompts/tasks across phases
 │   │   ├── prompt_generator.py          # Generate notebook/code content
 │   │   ├── prompt_executor.py           # GraphExecutor + prompt execution
@@ -56,8 +56,8 @@ CellCausal/                         <-- Project Root
 │
 ├── configs/                        # ⚙️ CONFIGURATION: Control parameters
 │   ├── pipeline_config.json        # Global Settings: Dataset, LLM models, Env
-│   ├── experiment_config.json      # Phase 2 Props: Search width, fix rounds, timeouts
-│   └── review_config.json          # Phase 3 Props: Optimization rounds, top-k selection
+│   ├── experiment_config.json      # Experiment stage props: Search width, fix rounds, timeouts
+│   └── review_config.json          # Review stage props: Optimization rounds, top-k selection
 │
 ├── prompts/                        # 📝 PROMPT TEMPLATES: System instructions (YAML)
 │   ├── pipeline_prompt.yaml        # General agent behaviors and personas
@@ -70,8 +70,8 @@ CellCausal/                         <-- Project Root
 │
 └── results/                        # 📊 ARTIFACTS: All generated outputs
     ├── <dataset_name>/
-        ├── generate_execution/     # Phase 2 Outputs (Notebooks, Logs, Figures)
-        ├── review_feedback/        # Phase 3 Outputs (Optimized Code, Reviews)
+        ├── generate_execution/     # Experiment stage outputs (Notebooks, Logs, Figures)
+        ├── review_feedback/        # Review stage outputs (Optimized Code, Reviews)
         └── run_logs/               # System logs and terminal streams
 ```
 

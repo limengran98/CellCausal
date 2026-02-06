@@ -8,7 +8,7 @@ Strategy: "Comprehensive Finall_Results Analysis"
 Evaluates Mechanism Diversity (GED) and Code Complexity by digesting ALL 
 artifacts preserved in the 'finall_results' folder.
 
-1. Mechanism Diversity: Derived from mining 'phase2.log' (Breadth) and 'phase3_history' (Depth).
+1. Mechanism Diversity: Derived from mining 'experiment.log' (Breadth) and 'review_history' (Depth).
 2. Code Complexity: Derived from 'best_code.py' (AST + LLM).
 
 Outputs to: logs_dir/advanced_metrics/
@@ -155,13 +155,13 @@ def calculate_ast_metrics(code_text: str) -> Dict[str, Any]:
 # 2. Comprehensive Data Ingestion (From finall_results only)
 # =============================================================================
 
-def _extract_p2_breadth_from_log(log_path: str) -> str:
+def _extract_exp_breadth_from_log(log_path: str) -> str:
     """
-    Minings phase2.log to reconstruct the 'Hypothesis Space'.
+    Mines experiment.log to reconstruct the 'Hypothesis Space'.
     It looks for lines where the system tried different prompts/focuses.
     """
     text = read_text(log_path)
-    if not text: return "(Phase 2 log missing in finall_results)"
+    if not text: return "(Experiment log missing in finall_results)"
     
     hits = []
     # Capture lines showing distinct strategies or focuses
@@ -173,7 +173,7 @@ def _extract_p2_breadth_from_log(log_path: str) -> str:
              hits.append(clean)
     
     # Return a digest to represent breadth
-    return "P2_Log_Digest (All Attempts):\n" + "\n".join(hits[:80])
+    return "Experiment_Log_Digest (All Attempts):\n" + "\n".join(hits[:80])
 
 def ingest_finall_results_comprehensive(finall_dir: str) -> Dict[str, str]:
     """
@@ -181,36 +181,32 @@ def ingest_finall_results_comprehensive(finall_dir: str) -> Dict[str, str]:
     """
     context = {}
     
-    # --- Phase 1 (Design Logic) ---
-    p1_report = os.path.join(finall_dir, "phase1_summary_report.md")
-    context["p1_logic"] = read_text_limited(p1_report, max_chars=12000) or "(P1 Report Missing)"
-    
-    # --- Phase 2 (Generation Breadth & Best Strategy) ---
+    # --- Experiment Stage (Generation Breadth & Best Strategy) ---
     # 1. The Winner (Depth)
-    p2_report = os.path.join(finall_dir, "phase2_best_experiment_report.md")
-    context["p2_best_report"] = read_text_limited(p2_report, max_chars=8000) or "(P2 Best Report Missing)"
+    exp_report = os.path.join(finall_dir, "experiment_best_experiment_report.md")
+    context["exp_best_report"] = read_text_limited(exp_report, max_chars=8000) or "(Experiment Best Report Missing)"
     
     # 2. The Alternatives (Breadth from Log)
     # Checks for both naming conventions
-    p2_log = os.path.join(finall_dir, "phase2.log")
-    if not os.path.exists(p2_log): 
-        p2_log = os.path.join(finall_dir, "Phase 2.log")
-    context["p2_breadth_log"] = _extract_p2_breadth_from_log(p2_log)
+    exp_log = os.path.join(finall_dir, "experiment.log")
+    if not os.path.exists(exp_log): 
+        exp_log = os.path.join(finall_dir, "phase2.log")  # Backward compatibility
+    context["exp_breadth_log"] = _extract_exp_breadth_from_log(exp_log)
     
-    # --- Phase 3 (Optimization Depth) ---
+    # --- Review Stage (Optimization Depth) ---
     # 1. History JSON (Preferred)
-    p3_json = os.path.join(finall_dir, "phase3_history_state.json")
-    hist_data = safe_read_json(p3_json)
+    review_json = os.path.join(finall_dir, "review_history_state.json")
+    hist_data = safe_read_json(review_json)
     if hist_data:
         digest = []
         for e in hist_data:
             if isinstance(e, dict):
                 digest.append(f"Iter {e.get('iter')}: {e.get('decision')} | Focus: {e.get('focus')} | Score: {e.get('score')}")
-        context["p3_trajectory"] = "\n".join(digest)
+        context["review_trajectory"] = "\n".join(digest)
     else:
         # Fallback to MD
-        p3_md = os.path.join(finall_dir, "phase3_optimization_history.md")
-        context["p3_trajectory"] = read_text(p3_md) or "(P3 History Missing)"
+        review_md = os.path.join(finall_dir, "review_optimization_history.md")
+        context["review_trajectory"] = read_text(review_md) or "(Review History Missing)"
 
     # --- Code (Result) ---
     code_path = os.path.join(finall_dir, "best_code.py")
@@ -329,18 +325,15 @@ def perform_advanced_analysis(
     # A. Mechanism Diversity (GED) - Full Lifecycle
     # -------------------------------------------------------
     ged_context = f"""
-    === Phase 1: Design Logic (The Origin) ===
-    {data['p1_logic'][:4000]}...
-    
-    === Phase 2: Generation Space (The Breadth) ===
+    === Experiment Stage: Generation Space (The Breadth) ===
     -- Alternative Attempts (Log Digest) --
-    {data['p2_breadth_log']}
+    {data['exp_breadth_log']}
     
     -- Best Strategy Details --
-    {data['p2_best_report'][:4000]}...
+    {data['exp_best_report'][:4000]}...
     
-    === Phase 3: Optimization Space (The Depth) ===
-    {data['p3_trajectory']}
+    === Review Stage: Optimization Space (The Depth) ===
+    {data['review_trajectory']}
     """
     
     print("   ... Calculating Mechanism Diversity (GED)...")
