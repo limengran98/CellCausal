@@ -17,11 +17,7 @@
     "direction": "maximize",
     "max_iterations": 5,
     "pass_threshold": 0.7,
-    "force_cells": [
-      0,
-      1,
-      4
-    ],
+    "force_cells": [0, 1, 4],
     "protected_sections": [
       "SECTION 1",
       "SECTION 2",
@@ -43,5 +39,12 @@
   
   "exec": {
     "timeout_seconds": 18000
+  },
+  
+  "bio_kb": {
+    "_comment": "Review stage: more aggressive BioKB querying for optimization",
+    "inject_max_items": 12,
+    "max_targets_per_smiles": 10,
+    "max_pathways_per_target": 15
   }
 }
