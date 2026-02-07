@@ -30,6 +30,32 @@ from cellscientist.core.llm_client import TokenMeter
 # [UPDATED] Import unified H5 resolver
 from cellscientist.pipeline.utils import project_root, resolve_h5_path_unified
 
+
+# =============================================================================
+# Unified Logging Helper for Subprocess Module
+# =============================================================================
+
+def _log(msg: str, *, console: bool = False):
+    """Unified logging output for subprocess execution.
+    
+    All messages go through print (captured by parent's run_cmd_streamed).
+    - If console=True: Adds [CELL_CONSOLE] prefix → shown in console + all logs
+    - If console=False: Adds [DETAIL] prefix → only in detail logs, not console
+    
+    Args:
+        msg: Message to log
+        console: If True, message appears in console. If False, only in detail logs.
+    """
+    if console:
+        print(f"[CELL_CONSOLE] {msg}", flush=True)
+    else:
+        print(f"[DETAIL] {msg}", flush=True)
+
+
+# =============================================================================
+# Setup Functions
+# =============================================================================
+
 def _setup_stage1_resources(cfg: dict, enable_idea: bool = False, spec_path: Optional[str] = None):
     """Sets up Stage-1 resources (H5 data path and Idea file).
 
@@ -55,7 +81,7 @@ def _setup_stage1_resources(cfg: dict, enable_idea: bool = False, spec_path: Opt
     if not enable_idea:
         if "STAGE1_IDEA_PATH" in os.environ:
             del os.environ["STAGE1_IDEA_PATH"]
-        print("[SETUP] Idea Mode: OFF", flush=True)
+        _log("[SETUP] Idea Mode: OFF", console=False)
         return
 
     # Idea loading relative to the resolved H5 path
@@ -65,14 +91,14 @@ def _setup_stage1_resources(cfg: dict, enable_idea: bool = False, spec_path: Opt
     # 1) Use existing file next to H5 if present
     if os.path.exists(idea_path):
         os.environ["STAGE1_IDEA_PATH"] = idea_path
-        print(f"[SETUP] Idea File: {idea_path}", flush=True)
+        _log(f"[SETUP] Idea File: {idea_path}", console=False)
         return
 
     # 2) Use config-specified file
     custom_idea = cfg.get("prompt_branch", {}).get("idea_file")
     if custom_idea and os.path.exists(custom_idea):
         os.environ["STAGE1_IDEA_PATH"] = os.path.abspath(custom_idea)
-        print(f"[SETUP] Config Idea File: {os.environ['STAGE1_IDEA_PATH']}", flush=True)
+        _log(f"[SETUP] Config Idea File: {os.environ['STAGE1_IDEA_PATH']}", console=False)
         return
 
     # 3) Auto-generate idea.json (Phase-1 not available)
@@ -91,20 +117,20 @@ def _setup_stage1_resources(cfg: dict, enable_idea: bool = False, spec_path: Opt
 
         if written and os.path.exists(written):
             os.environ["STAGE1_IDEA_PATH"] = os.path.abspath(written)
-            print(f"[SETUP] 🧠 Auto-generated idea.json: {os.environ['STAGE1_IDEA_PATH']}", flush=True)
+            _log(f"[SETUP] 🧠 Auto-generated idea.json: {os.environ['STAGE1_IDEA_PATH']}", console=False)
             return
 
     except Exception as e:
-        print(f"[SETUP][WARN] Failed to auto-generate idea.json: {e}", flush=True)
+        _log(f"[SETUP][WARN] Failed to auto-generate idea.json: {e}", console=False)
 
-    print("[SETUP][WARN] --use-idea ON but no idea.json found.", flush=True)
+    _log("[SETUP][WARN] --use-idea ON but no idea.json found.", console=False)
 
 def _inject_api_key(cfg: dict):
     """Ensure API Key is loaded into environment for llm_utils to find."""
     key = cfg.get("llm", {}).get("api_key")
     if key:
         os.environ["OPENAI_API_KEY"] = key
-        print(f"[SETUP] API Key Injected: ...{key[-4:]}", flush=True)
+        _log(f"[SETUP] API Key Injected: ...{key[-4:]}", console=False)
 
 def _check_success(metrics: dict, threshold: float, metric_key: str) -> Tuple[bool, float]:
     if not metrics:
@@ -145,7 +171,7 @@ def _check_success(metrics: dict, threshold: float, metric_key: str) -> Tuple[bo
     except Exception:
         score = -999.0
 
-    print(f"[CHECK] {winner} | {metric_key}: {score:.4f} (Target > {threshold})", flush=True)
+    _log(f"[CHECK] {winner} | {metric_key}: {score:.4f} (Target > {threshold})", console=False)
     return score > threshold, score
 
 def _archive_run(trial_dir: str) -> Optional[str]:
@@ -165,15 +191,15 @@ def _archive_run(trial_dir: str) -> Optional[str]:
 
     try:
         os.rename(trial_dir, new_path)
-        print(f"[ARCHIVE] Saved run to: {new_name}", flush=True)
+        _log(f"[ARCHIVE] Saved run to: {new_name}", console=False)
         return new_path
     except OSError:
         try:
             shutil.move(trial_dir, new_path)
-            print(f"[ARCHIVE] Moved run to: {new_name}", flush=True)
+            _log(f"[ARCHIVE] Moved run to: {new_name}", console=False)
             return new_path
         except Exception as e:
-            print(f"[ARCHIVE][WARN] Failed to archive run: {e}", flush=True)
+            _log(f"[ARCHIVE][WARN] Failed to archive run: {e}", console=False)
             return None
 
 def _atomic_write_json(path: str, data: dict):
@@ -185,7 +211,7 @@ def _atomic_write_json(path: str, data: dict):
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp, path)
     except Exception as e:
-        print(f"[LOOP][WARN] Failed to write loop summary to {path}: {e}", flush=True)
+        _log(f"[LOOP][WARN] Failed to write loop summary to {path}: {e}", console=False)
 
 def _get_save_root(cfg: Dict[str, Any]) -> str:
     # Follow prompt_orchestrator's logic
@@ -197,9 +223,9 @@ def _write_latest_pointer(save_root: str, best_dir: str):
     try:
         with open(pointer_path, "w") as f:
             json.dump({"latest_trial_dir": os.path.abspath(best_dir)}, f, indent=2)
-        print(f"[LOOP] Wrote Experiment pointer to: {pointer_path}", flush=True)
+        _log(f"[LOOP] Wrote Experiment pointer to: {pointer_path}", console=False)
     except Exception as e:
-        print(f"[LOOP][WARN] Failed to write pointer file: {e}", flush=True)
+        _log(f"[LOOP][WARN] Failed to write pointer file: {e}", console=False)
 
 def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
     exp_cfg = cfg.get("experiment", {}) or {}
@@ -221,10 +247,10 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
     out_root = _get_save_root(cfg)
     summary_path = os.path.join(out_root, f"phase2_loop_summary_{start_ts}_{pid}.json")
 
-    print(f"\n[LOOP] Max Iters: {max_iters} | Target: {pm} > {threshold}", flush=True)
-    print(f"[LOOP] Workspace Prefix: {workspace_prefix}", flush=True)
-    print(f"[LOOP] Save Root: {out_root}", flush=True)
-    print(f"[LOOP] Loop Summary: {summary_path}", flush=True)
+    _log(f"\n[LOOP] Max Iters: {max_iters} | Target: {pm} > {threshold}", console=False)
+    _log(f"[LOOP] Workspace Prefix: {workspace_prefix}", console=False)
+    _log(f"[LOOP] Save Root: {out_root}", console=False)
+    _log(f"[LOOP] Loop Summary: {summary_path}", console=False)
 
     # [TELEM] Reset meter before starting loop to clear any setup noise
     TokenMeter.get_and_reset()
@@ -274,7 +300,7 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
     try:
         for i in range(1, max_iters + 1):
             run_name = f"{workspace_prefix}_iter{i:03d}"
-            print(f"\n{'='*40}\n🔄 ITERATION {i}/{max_iters} | run_name={run_name}\n{'='*40}", flush=True)
+            _log(f"\n{'='*40}\n🔄 ITERATION {i}/{max_iters} | run_name={run_name}\n{'='*40}", console=True)
 
             # [TELEM] Reset meter at start of iteration to capture ONLY this iteration's usage
             TokenMeter.get_and_reset()
@@ -297,13 +323,13 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
 
                 # [TELEM] Capture Usage specific to this iteration
                 usage_stats = TokenMeter.get_and_reset()
-                print(f"[COST] Iteration {i}: {usage_stats['total_tokens']} tokens | {usage_stats['total_latency_sec']:.2f}s LLM time", flush=True)
+                _log(f"💰 Cost: {usage_stats['total_tokens']} tokens | {usage_stats['total_latency_sec']:.2f}s LLM time", console=True)
 
                 if score > -999.0 and score > best_score:
                     prev_best = best_score
                     best_score = score
                     best_trial_dir = iter_trial_dir
-                    print(f"📈 [IMPROVEMENT] New best score: {score:.4f} (Prev: {prev_best:.4f}).", flush=True)
+                    _log(f"📈 [IMPROVEMENT] New best score: {score:.4f} (Prev: {prev_best:.4f}).", console=True)
 
                 iter_logs.append({
                     "iter": i,
@@ -320,17 +346,17 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
                 _write_summary(final=False)
 
                 if success and iter_trial_dir:
-                    print(f"\n🎉 [SUCCESS] Criteria Met! Archiving and stopping.", flush=True)
+                    _log(f"\n🎉 [SUCCESS] Criteria Met! Archiving and stopping.", console=True)
                     archived_dir = _archive_run(iter_trial_dir)
                     # [ROBUSTNESS] Write pointer
                     _write_latest_pointer(out_root, archived_dir)
                     _write_summary(final=True)
                     return
 
-                print("⚠️ [CONTINUE] Threshold not met.", flush=True)
+                _log("⚠️ [CONTINUE] Threshold not met.", console=True)
 
             except KeyboardInterrupt:
-                print("\n[INTERRUPT] KeyboardInterrupt received. Saving loop summary and exiting.", flush=True)
+                _log("\n[INTERRUPT] KeyboardInterrupt received. Saving loop summary and exiting.", console=True)
                 # Capture partial usage
                 usage_stats = TokenMeter.get_and_reset()
                 iter_logs.append({
@@ -347,7 +373,7 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
                 raise
 
             except Exception as e:
-                print(f"❌ [ERROR] Iteration {i} crashed: {e}", flush=True)
+                _log(f"❌ [ERROR] Iteration {i} crashed: {e}", console=True)
                 import traceback
                 traceback.print_exc()
 
@@ -366,16 +392,16 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
                 })
                 _write_summary(final=False)
 
-        print(f"\n{'='*40}\n🏁 LOOP FINISHED (No immediate success)\n{'='*40}", flush=True)
+        _log(f"\n{'='*40}\n🏁 LOOP FINISHED (No immediate success)\n{'='*40}", console=True)
 
         # Archive BEST run found (keeps time-stamped prompt_run_* behavior)
         if best_trial_dir and os.path.exists(best_trial_dir):
-            print(f"[LOOP] Archiving BEST run found (Score: {best_score:.4f}).", flush=True)
+            _log(f"[LOOP] Archiving BEST run found (Score: {best_score:.4f}).", console=False)
             archived_dir = _archive_run(best_trial_dir)
             # [ROBUSTNESS] Write pointer
             _write_latest_pointer(out_root, archived_dir)
         else:
-            print("[LOOP] ❌ No valid runs completed successfully to archive.", flush=True)
+            _log("[LOOP] ❌ No valid runs completed successfully to archive.", console=True)
 
         _write_summary(final=True)
 

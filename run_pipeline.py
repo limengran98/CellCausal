@@ -168,14 +168,14 @@ def main() -> None:
 
     # Open additional log files for complete capture
     execution_detail_log = os.path.join(logs_dir, "execution_detail.log")
-    console_filter_log = os.path.join(logs_dir, "console_filtered.log")
+    console_output_log = os.path.join(logs_dir, "console_output.log")
     
     detail_fp = None
-    console_filter_fp = None
+    console_output_fp = None
     
     try:
         detail_fp = open(execution_detail_log, "w", encoding="utf-8")
-        console_filter_fp = open(console_filter_log, "w", encoding="utf-8")
+        console_output_fp = open(console_output_log, "w", encoding="utf-8")
         
         # Write header to detail log
         detail_fp.write("=" * 80 + "\n")
@@ -204,7 +204,7 @@ def main() -> None:
                 cwd=project_root(), 
                 phase_fp=fp, 
                 detail_fp=detail_fp,
-                console_filter_fp=console_filter_fp,
+                console_filter_fp=console_output_fp,
                 extra_env=extra_env
             )
         exp_t1 = time.time()
@@ -249,7 +249,7 @@ def main() -> None:
                     cwd=project_root(), 
                     phase_fp=fp, 
                     detail_fp=detail_fp,
-                    console_filter_fp=console_filter_fp,
+                    console_filter_fp=console_output_fp,
                     extra_env=extra_env
                 )
             review_t1 = time.time()
@@ -265,11 +265,11 @@ def main() -> None:
             except Exception as e:
                 logger.full_log(f"Warning: Could not close detail log properly: {e}")
         
-        if console_filter_fp:
+        if console_output_fp:
             try:
-                console_filter_fp.close()
+                console_output_fp.close()
             except Exception as e:
-                logger.full_log(f"Warning: Could not close console filter log properly: {e}")
+                logger.full_log(f"Warning: Could not close console output log properly: {e}")
 
     # 10) Collect metrics summary
     summary: Dict[str, Any] = {"dataset": dataset_name, "logs_dir": logs_dir, "stages": {}}
