@@ -21,6 +21,27 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 # =============================================================================
+# Unified Logging Helper for Subprocess Module
+# =============================================================================
+
+def _log(msg: str, *, console: bool = False):
+    """Unified logging output for subprocess execution.
+    
+    All messages go through print (captured by parent's run_cmd_streamed).
+    - If console=True: Adds [CELL_CONSOLE] prefix → shown in console + all logs
+    - If console=False: Adds [DETAIL] prefix → only in detail logs, not console
+    
+    Args:
+        msg: Message to log
+        console: If True, message appears in console. If False, only in detail logs.
+    """
+    if console:
+        print(f"[CELL_CONSOLE] {msg}", flush=True)
+    else:
+        print(f"[DETAIL] {msg}", flush=True)
+
+
+# =============================================================================
 # Project root / CWD
 # =============================================================================
 
@@ -39,9 +60,9 @@ def ensure_project_cwd() -> None:
     root = project_root()
     marker = os.path.join(root, "cellscientist")
     if not os.path.exists(marker):
-        print(
+        _log(
             f"[WARN] Script location '{root}' may not be project root (missing 'cellscientist').\n"
-            "       Continuing anyway and forcing CWD to script directory."
+            "       Continuing anyway and forcing CWD to script directory.", console=True
         )
     os.chdir(root)
 
@@ -53,7 +74,7 @@ def ensure_project_cwd() -> None:
 
 def load_json(path: str) -> Dict[str, Any]:
     if not os.path.exists(path):
-        print(f"❌ Error: Config file not found: {path}")
+        _log(f"❌ Error: Config file not found: {path}", console=True)
         raise FileNotFoundError(path)
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -130,7 +151,7 @@ def resolve_h5_path_unified(cfg: Dict[str, Any]) -> Optional[str]:
     explicit_h5 = paths_cfg.get("data_h5_path")
     if explicit_h5 and os.path.exists(str(explicit_h5)):
         cand = os.path.abspath(str(explicit_h5))
-        print(f"[DATA] Found Stage 1 Data (Explicit): {cand}", flush=True)
+        _log(f"[DATA] Found Stage 1 Data (Explicit): {cand}", console=False)
         return cand
 
     data_root = paths_cfg.get("data_root")
@@ -166,7 +187,7 @@ def resolve_h5_path_unified(cfg: Dict[str, Any]) -> Optional[str]:
                 tried.append(cand_a)
                 if os.path.exists(cand_a):
                     cand = os.path.abspath(cand_a)
-                    print(f"[DATA] Found Stage 1 Data (Dataset Subdir): {cand}", flush=True)
+                    _log(f"[DATA] Found Stage 1 Data (Dataset Subdir): {cand}", console=False)
                     return cand
 
             # Strategy B: <root>/<file>
@@ -174,7 +195,7 @@ def resolve_h5_path_unified(cfg: Dict[str, Any]) -> Optional[str]:
             tried.append(cand_b)
             if os.path.exists(cand_b):
                 cand = os.path.abspath(cand_b)
-                print(f"[DATA] Found Stage 1 Data (Root Dir): {cand}", flush=True)
+                _log(f"[DATA] Found Stage 1 Data (Root Dir): {cand}", console=False)
                 return cand
             
             # Strategy C: Recursive
@@ -182,14 +203,14 @@ def resolve_h5_path_unified(cfg: Dict[str, Any]) -> Optional[str]:
                 matches = glob.glob(os.path.join(root_abs, "**", str(data_fname)), recursive=True)
                 if matches:
                     cand = os.path.abspath(matches[0])
-                    print(f"[DATA] Found Stage 1 Data (Recursive): {cand}", flush=True)
+                    _log(f"[DATA] Found Stage 1 Data (Recursive): {cand}", console=False)
                     return cand
             except Exception:
                 pass
 
-        print("[DATA][WARN] Could not resolve data H5 via data_root/filename. Tried:", flush=True)
+        _log("[DATA][WARN] Could not resolve data H5 via data_root/filename. Tried:", console=False)
         for p in tried:
-            print(f"  - {p}", flush=True)
+            _log(f"  - {p}", console=False)
 
     # 3. Legacy Fallback (stage1_analysis_dir)
     s1_dir_str = paths_cfg.get("stage1_analysis_dir")
@@ -207,20 +228,20 @@ def resolve_h5_path_unified(cfg: Dict[str, Any]) -> Optional[str]:
                 ])
                 if subdirs:
                     final_ref_dir = subdirs[-1]
-                    print(f"[DATA] 🔎 Auto-detected latest reference run: {os.path.basename(final_ref_dir)}", flush=True)
+                    _log(f"[DATA] 🔎 Auto-detected latest reference run: {os.path.basename(final_ref_dir)}", console=True)
 
         cand_h5 = os.path.join(final_ref_dir, "REFERENCE_DATA.h5")
         if os.path.exists(cand_h5):
-            print(f"[DATA] Found Stage 1 Data (Legacy Explicit): {cand_h5}", flush=True)
+            _log(f"[DATA] Found Stage 1 Data (Legacy Explicit): {cand_h5}", console=False)
             return cand_h5
 
         h5_files = glob.glob(os.path.join(final_ref_dir, "*.h5"))
         if h5_files:
             target_h5 = h5_files[0]
-            print(f"[DATA] Found Stage 1 Data (Legacy Auto): {target_h5}", flush=True)
+            _log(f"[DATA] Found Stage 1 Data (Legacy Auto): {target_h5}", console=False)
             return target_h5
 
-    print(f"[DATA][WARN] No .h5 files found via any method.", flush=True)
+    _log(f"[DATA][WARN] No .h5 files found via any method.", console=False)
     return None
 
 
@@ -427,7 +448,7 @@ def setup_logging(results_root: str) -> Tuple[str, str, Any]:
     log_fp = open(log_path, "a", encoding="utf-8")
     sys.stdout = TeeStream(sys.__stdout__, log_fp)  # type: ignore
     sys.stderr = TeeStream(sys.__stderr__, log_fp)  # type: ignore
-    print(f"📝 Logging console output to: {log_path}")
+    _log(f"📝 Logging console output to: {log_path}", console=True)
     return logs_dir, log_path, log_fp
 
 

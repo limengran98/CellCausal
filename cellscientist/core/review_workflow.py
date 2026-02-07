@@ -43,6 +43,26 @@ except ImportError:
     write_experiment_report = None
 
 # =============================================================================
+# Unified Logging Helper for Subprocess Module
+# =============================================================================
+
+def _log(msg: str, *, console: bool = False):
+    """Unified logging output for subprocess execution.
+    
+    All messages go through print (captured by parent's run_cmd_streamed).
+    - If console=True: Adds [CELL_CONSOLE] prefix → shown in console + all logs
+    - If console=False: Adds [DETAIL] prefix → only in detail logs, not console
+    
+    Args:
+        msg: Message to log
+        console: If True, message appears in console. If False, only in detail logs.
+    """
+    if console:
+        print(f"[CELL_CONSOLE] {msg}", flush=True)
+    else:
+        print(f"[DETAIL] {msg}", flush=True)
+
+# =============================================================================
 # 1. Helper: Resource Resolver (Legacy Wrapper)
 # =============================================================================
 
@@ -69,10 +89,10 @@ def _inject_llm_env(cfg: dict) -> None:
     # [FIX] Check and Warn if default
     current_base = os.environ.get("OPENAI_BASE_URL", "default")
     if "api.openai.com" in current_base or current_base == "default":
-        print(f"[LLM] ⚠️ WARNING: Using default/OpenAI Base URL ({current_base}).", flush=True)
-        print(f"       If you need a custom endpoint (e.g. yi-zhan), ensure 'base_url' is in your config.", flush=True)
+        _log(f"[LLM] ⚠️ WARNING: Using default/OpenAI Base URL ({current_base}).", console=True)
+        _log(f"       If you need a custom endpoint (e.g. yi-zhan), ensure 'base_url' is in your config.", console=True)
     else:
-        print(f"[LLM] ✅ Using Custom Base URL: {current_base}", flush=True)
+        _log(f"[LLM] ✅ Using Custom Base URL: {current_base}", console=True)
 
 
 def _resolve_relative_resources(cfg):
@@ -121,7 +141,7 @@ def _log_tree_visual(workspace, iteration, strategy, decision, focus, status, sc
     tree_str = "\n".join(lines)
 
     # 1. Print to Terminal
-    print(tree_str)
+    _log(tree_str, console=True)
 
     # 2. Save to File in Workspace (append)
     try:
@@ -130,7 +150,7 @@ def _log_tree_visual(workspace, iteration, strategy, decision, focus, status, sc
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(tree_str + "\n")
     except Exception as e:
-        print(f"[WARN] Failed to append optimization tree: {e}")
+        _log(f"[WARN] Failed to append optimization tree: {e}", console=False)
 
 def _compute_semantic_gradient(candidate_metrics, baseline_metrics):
     """
@@ -254,9 +274,9 @@ def write_review_log(workspace, iteration, suggestion, score, current_best, stat
     try:
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(log_entry)
-        print(f"[LOG] Review log updated: {log_path}")
+        _log(f"[LOG] Review log updated: {log_path}", console=False)
     except Exception as e:
-        print(f"[WARN] Failed to write review log: {e}")
+        _log(f"[WARN] Failed to write review log: {e}", console=False)
 
 # =============================================================================
 # 3. Path & Resource Management
@@ -272,11 +292,11 @@ def find_best_experiment_trial(cfg, explicit_path=None):
     # 1. Check argument explicit path
     if explicit_path:
         abs_path = os.path.abspath(explicit_path) if not os.path.isabs(explicit_path) else explicit_path
-        print(f"[INIT] Checking specified path: {abs_path}")
+        _log(f"[INIT] Checking specified path: {abs_path}", console=False)
         
         # Check if this IS the run directory
         if os.path.exists(os.path.join(abs_path, "metrics.json")):
-             print(f"[INIT] Locked to specified source (Direct): {abs_path}")
+             _log(f"[INIT] Locked to specified source (Direct): {abs_path}", console=False)
              return abs_path
 
     # 2. Check config explicit path (bridge from run_cellscientist.py)
@@ -293,7 +313,7 @@ def find_best_experiment_trial(cfg, explicit_path=None):
     if cfg_explicit:
         abs_path = os.path.abspath(cfg_explicit)
         if os.path.exists(os.path.join(abs_path, "metrics.json")):
-            print(f"[INIT] Locked to config explicit source: {abs_path}")
+            _log(f"[INIT] Locked to config explicit source: {abs_path}", console=False)
             return abs_path
 
     # 3. Fallback: Search in default locations (Auto-detection)
@@ -317,12 +337,12 @@ def find_best_experiment_trial(cfg, explicit_path=None):
 
     runs = sorted(list(set(search_paths)), reverse=True)
 
-    print(f"[INIT] Searching for Experiment stage results in: {gen_root}")
+    _log(f"[INIT] Searching for Experiment stage results in: {gen_root}", console=False)
     for run in runs:
         nb_path = os.path.join(run, "notebook_prompt_exec.ipynb")
         metrics_path = os.path.join(run, "metrics.json")
         if os.path.exists(nb_path) and os.path.exists(metrics_path):
-            print(f"[INIT] Found valid Experiment source (Auto-detected): {run}")
+            _log(f"[INIT] Found valid Experiment source (Auto-detected): {run}", console=False)
             return run
 
     raise FileNotFoundError("No valid Experiment execution results found (Auto-detection failed).")
@@ -391,7 +411,7 @@ def identify_mutable_cells(nb, cfg):
             if is_model or is_digest:
                 mutable_indices.append(i)
 
-    print(f"[ROUTER] Mutable Cell Indices (Auto): {mutable_indices}")
+    _log(f"[ROUTER] Mutable Cell Indices (Auto): {mutable_indices}", console=False)
     return mutable_indices
 
 # =============================================================================
@@ -629,7 +649,7 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
             # Uses MiroThink-derived Serper search + Jina Reader scraping. Controlled by cfg["literature"]["enabled"].
             # Pass query_hint based on failure type classification
             if failure_type != "F0" and query_hint:
-                print(f"[REVIEW] Failure type: {failure_type}, using targeted query hint", flush=True)
+                _log(f"[REVIEW] Failure type: {failure_type}, using targeted query hint", console=True)
             
             try:
                 pack = retrieve_external_knowledge(
@@ -645,7 +665,7 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
                     max_chars=int(((cfg.get("literature") or {}) if isinstance(cfg.get("literature"), dict) else {}).get("prompt_max_chars", 6000) or 6000),
                 )
             except Exception as e:
-                print(f"[REVIEW][LIT][WARN] External knowledge retrieval failed: {e}", flush=True)
+                _log(f"[REVIEW][LIT][WARN] External knowledge retrieval failed: {e}", console=False)
                 ctx["external_knowledge_md"] = ""
 
             if "system" in p_data:
@@ -657,7 +677,7 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
                 user_prompt += f"\n\n**DATA FEEDBACK (SEMANTIC GRADIENT)**:\n{semantic_gradient_text}"
 
         except Exception as e:
-            print(f"[WARN] Failed to load prompt yaml: {e}")
+            _log(f"[WARN] Failed to load prompt yaml: {e}", console=False)
 
     messages = [
         {"role": "system", "content": sys_prompt},
@@ -672,11 +692,11 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
             f.write(sys_prompt)
         with open(os.path.join(debug_iter_dir, "review_prompt_user.txt"), "w", encoding="utf-8") as f:
             f.write(user_prompt)
-        print(f"[REVIEW] 🧾 Saved prompt snapshot to: {debug_iter_dir}", flush=True)
+        _log(f"[REVIEW] 🧾 Saved prompt snapshot to: {debug_iter_dir}", console=True)
     except Exception as e:
-        print(f"[REVIEW][WARN] Failed to save prompt snapshot: {e}", flush=True)
+        _log(f"[REVIEW][WARN] Failed to save prompt snapshot: {e}", console=False)
 
-    print(f"[REVIEW] Requesting optimization (Iter {iteration})...")
+    _log(f"[REVIEW] Requesting optimization (Iter {iteration})...", console=False)
 
     try:
         return chat_json(
@@ -685,7 +705,7 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
             temperature=(cfg.get("llm", {}) or {}).get("temperature", 0.7)
         )
     except Exception as e:
-        print(f"[REVIEW] LLM Interaction Failed: {e}")
+        _log(f"[REVIEW] LLM Interaction Failed: {e}", console=False)
         return None
 
 # =============================================================================
@@ -704,7 +724,7 @@ def execute_and_recover(nb_path, workdir, cfg, mutable_indices=None, extra_env=N
     current_nb_path = nb_path
 
     nb = nbformat.read(current_nb_path, as_version=4)
-    print(f"[EXEC] Running Notebook: {current_nb_path}")
+    _log(f"[EXEC] Running Notebook: {current_nb_path}", console=True)
 
     executed_nb, errors = run_notebook_pure(
         nb,
@@ -724,8 +744,8 @@ def execute_and_recover(nb_path, workdir, cfg, mutable_indices=None, extra_env=N
 
     while errors and fix_round < max_fixes:
         fix_round += 1
-        print(f"\n{'!'*40}")
-        print(f"[EXEC] Errors Found (Round {fix_round}) - Initiating Recovery...")
+        _log(f"\n{'!'*40}", console=True)
+        _log(f"[EXEC] Errors Found (Round {fix_round}) - Initiating Recovery...", console=True)
 
         dump_error_log(workdir, errors, round_idx=fix_round)
 
@@ -737,10 +757,10 @@ def execute_and_recover(nb_path, workdir, cfg, mutable_indices=None, extra_env=N
         )
 
         if not changed:
-            print(f"[EXEC] Could not generate valid fix ({method}). Stopping.")
+            _log(f"[EXEC] Could not generate valid fix ({method}). Stopping.", console=True)
             break
 
-        print(f"[EXEC] Applying Fix ({method}) -> Rerunning...")
+        _log(f"[EXEC] Applying Fix ({method}) -> Rerunning...", console=True)
 
         current_nb_obj, errors = run_notebook_pure(
             fixed_nb,
@@ -751,14 +771,14 @@ def execute_and_recover(nb_path, workdir, cfg, mutable_indices=None, extra_env=N
         )
 
         if not errors:
-            print(f"[EXEC] Fixed successfully!")
+            _log(f"[EXEC] Fixed successfully!", console=True)
             break
 
     final_out_path = nb_path.replace(".ipynb", "_exec.ipynb")
     nbformat.write(current_nb_obj, final_out_path)
 
     if errors:
-        print(f"[EXEC] Final Execution Failed. Remaining Errors: {len(errors)}")
+        _log(f"[EXEC] Final Execution Failed. Remaining Errors: {len(errors)}", console=True)
         dump_error_log(workdir, errors, round_idx=999)
         return final_out_path, False
 
@@ -775,7 +795,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
     if h5_path:
         exec_env["STAGE1_H5_PATH"] = h5_path
     else:
-        print("[ERROR] STAGE1_H5_PATH could not be resolved! Notebook execution may fail.")
+        _log("[ERROR] STAGE1_H5_PATH could not be resolved! Notebook execution may fail.", console=True)
 
     review_cfg = cfg.get("review", {}) or {}
     target_metric = review_cfg.get("target_metric", "PCC")
@@ -833,18 +853,18 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 history_summary = json.load(f)
             if not isinstance(history_summary, list):
                 history_summary = []
-            print(f"[INIT] Loaded {len(history_summary)} history records from state file.")
+            _log(f"[INIT] Loaded {len(history_summary)} history records from state file.", console=True)
         except Exception as e:
-            print(f"[WARN] Failed to load history state: {e}")
+            _log(f"[WARN] Failed to load history state: {e}", console=False)
 
     # Task-Graph State
     task_graph_state_path = os.path.join(workspace_dir, "task_graph_state.json")
     if os.path.exists(task_graph_state_path):
         try:
             task_graph_state = load_task_graph(task_graph_state_path)
-            print(f"[INIT] Loaded task graph with {len(task_graph_state.get('tasks', {}))} tasks.")
+            _log(f"[INIT] Loaded task graph with {len(task_graph_state.get('tasks', {}))} tasks.", console=True)
         except Exception as e:
-            print(f"[WARN] Failed to load task graph state: {e}. Re-initializing.")
+            _log(f"[WARN] Failed to load task graph state: {e}. Re-initializing.", console=False)
             task_graph_state = init_task_graph_from_config(review_cfg.get("optimization_hierarchy", []))
     else:
         task_graph_state = init_task_graph_from_config(review_cfg.get("optimization_hierarchy", []))
@@ -852,14 +872,14 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
     try:
         save_task_graph(task_graph_state, task_graph_state_path)
     except Exception as e:
-        print(f"[WARN] Failed to save task graph state: {e}")
+        _log(f"[WARN] Failed to save task graph state: {e}", console=False)
 
     baseline_display = f"{static_baseline_score:.4f}" if static_baseline_score is not None else "N/A"
 
-    print(f"\n[LOOP] Starting Optimization.")
-    print(f"       🎯 Target: {target_metric} ({direction})")
-    print(f"       🏁 Original Baseline: {baseline_display}")
-    print(f"       🥇 Current Best:      {best_score_so_far:.4f}")
+    _log(f"\n[LOOP] Starting Optimization.", console=True)
+    _log(f"       🎯 Target: {target_metric} ({direction})", console=True)
+    _log(f"       🏁 Original Baseline: {baseline_display}", console=True)
+    _log(f"       🥇 Current Best:      {best_score_so_far:.4f}", console=True)
     
     # [TELEM] Reset Meter Global
     TokenMeter.get_and_reset()
@@ -877,7 +897,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             nb = nbformat.read(best_nb_path, as_version=4)
             mutable_indices = identify_mutable_cells(nb, cfg)
             if not mutable_indices:
-                print("[ERROR] No mutable cells found.")
+                _log("[ERROR] No mutable cells found.", console=True)
                 break
 
             try:
@@ -894,28 +914,28 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             )
 
             if not suggestion or "edits" not in suggestion:
-                print("[WARN] Invalid LLM response. Skipping.")
+                _log("[WARN] Invalid LLM response. Skipping.", console=False)
                 continue
             
             # [NEW] Validate used_evidence_ids (mandatory tracking)
             # Allow empty list if no external knowledge was consulted
             if "used_evidence_ids" not in suggestion or not isinstance(suggestion.get("used_evidence_ids"), list):
-                print("[WARN] Missing or invalid 'used_evidence_ids' field. Skipping this iteration for evidence traceability.")
+                _log("[WARN] Missing or invalid 'used_evidence_ids' field. Skipping this iteration for evidence traceability.", console=False)
                 # Save incomplete suggestion for debugging
                 incomplete_path = os.path.join(workspace_dir, f"suggestion_iter_{i}_incomplete.json")
                 try:
                     with open(incomplete_path, 'w', encoding='utf-8') as f:
                         json.dump(suggestion, f, indent=2, ensure_ascii=False)
-                    print(f"[WARN] Incomplete suggestion saved to: {incomplete_path}")
+                    _log(f"[WARN] Incomplete suggestion saved to: {incomplete_path}", console=False)
                 except Exception:
                     pass
                 continue
             
             used_evidence_ids = suggestion.get("used_evidence_ids", [])
             if used_evidence_ids:
-                print(f"[REVIEW] ✅ Evidence IDs used: {used_evidence_ids}")
+                _log(f"[REVIEW] ✅ Evidence IDs used: {used_evidence_ids}", console=True)
             else:
-                print(f"[REVIEW] ⚠️ No external evidence consulted (empty evidence list)")
+                _log(f"[REVIEW] ⚠️ No external evidence consulted (empty evidence list)", console=True)
             suggestion["used_evidence_ids"] = used_evidence_ids  # Ensure it's in the saved suggestion
 
             # [TRACE] Persist suggestion for causal traceability
@@ -948,9 +968,9 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                     if updates:
                         task_graph_state = apply_decomposition_updates(task_graph_state, updates)
                 except Exception as e:
-                    print(f"[WARN] Failed to apply decomposition updates: {e}")
+                    _log(f"[WARN] Failed to apply decomposition updates: {e}", console=False)
             except Exception as e:
-                print(f"[WARN] Failed to apply decomposition updates: {e}")
+                _log(f"[WARN] Failed to apply decomposition updates: {e}", console=False)
 
             # Route active tasks (compat)
             try:
@@ -979,10 +999,10 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
 
             _log_tree_visual(workspace_dir, i, strategy_tag, decision_tag, focus_tag, "PENDING", best_score_so_far)
 
-            print(f"[STRATEGY] {strategy_tag}")
-            print(f"[ACTION]   {decision_tag} (Focus: {focus_tag})")
-            print(f"[REFLECTION] {reflection[:100]}...")
-            print(f"[CRITIQUE] {critique[:100]}...")
+            _log(f"[STRATEGY] {strategy_tag}", console=True)
+            _log(f"[ACTION]   {decision_tag} (Focus: {focus_tag})", console=True)
+            _log(f"[REFLECTION] {reflection[:100]}...", console=True)
+            _log(f"[CRITIQUE] {critique[:100]}...", console=True)
 
             nb_next = deepcopy(nb)
             applied_count = 0
@@ -996,7 +1016,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                     continue
 
             if applied_count == 0:
-                print("[WARN] No edits applied.")
+                _log("[WARN] No edits applied.", console=False)
                 continue
 
             candidate_nb_path = os.path.join(workspace_dir, f"notebook_iter_{i}.ipynb")
@@ -1007,7 +1027,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             except Exception:
                 pass
 
-            print(f"[EXEC] Running Candidate {i}...")
+            _log(f"[EXEC] Running Candidate {i}...", console=True)
 
             executed_nb_path, success = execute_and_recover(
                 nb_path=candidate_nb_path,
@@ -1020,7 +1040,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             # [TELEM] Capture stats for this iteration
             usage_stats = TokenMeter.get_and_reset()
             usage_stats["duration_sec"] = time.time() - iter_started
-            print(f"[COST] Iteration {i}: {usage_stats['total_tokens']} tokens | {usage_stats['total_latency_sec']:.2f}s LLM time")
+            _log(f"[COST] Iteration {i}: {usage_stats['total_tokens']} tokens | {usage_stats['total_latency_sec']:.2f}s LLM time", console=True)
 
             try:
                 iter_metrics_path = os.path.join(workspace_dir, f"metrics_iter_{i}.json")
@@ -1049,14 +1069,14 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 elif is_better(candidate_score, best_score_so_far):
                     status = "IMPROVED"
 
-                print(f"-"*40)
-                print(f"[RESULT] Iteration {i} Summary")
-                print(f"  > Candidate Score: {candidate_score:.4f}")
+                _log(f"-"*40, console=True)
+                _log(f"[RESULT] Iteration {i} Summary", console=True)
+                _log(f"  > Candidate Score: {candidate_score:.4f}", console=True)
                 comp_base_disp = f"{comparison_baseline:.4f}" if comparison_baseline is not None else "N/A"
-                print(f"  > Baseline Score:  {comp_base_disp}")
-                print(f"  > Best Previous:   {best_score_so_far:.4f}")
-                print(f"  > Verdict:         {status}")
-                print(f"-"*40)
+                _log(f"  > Baseline Score:  {comp_base_disp}", console=True)
+                _log(f"  > Best Previous:   {best_score_so_far:.4f}", console=True)
+                _log(f"  > Verdict:         {status}", console=True)
+                _log(f"-"*40, console=True)
 
                 _log_tree_visual(workspace_dir, i, strategy_tag, decision_tag, focus_tag, status, candidate_score)
 
@@ -1091,9 +1111,9 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 try:
                     with open(gate_path, 'w', encoding='utf-8') as f:
                         json.dump(gate_decision, f, indent=2, ensure_ascii=False)
-                    print(f"[GATE] 📋 Decision saved: {gate_path} | Action: {gate_decision['action']}")
+                    _log(f"[GATE] 📋 Decision saved: {gate_path} | Action: {gate_decision['action']}", console=True)
                 except Exception as e:
-                    print(f"[WARN] Failed to save gate decision: {e}")
+                    _log(f"[WARN] Failed to save gate decision: {e}", console=False)
 
                 # Update task graph with evidence (compat)
                 try:
@@ -1136,12 +1156,12 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                     except Exception:
                         pass
                 except Exception as e:
-                    print(f"[WARN] Failed to update task graph state: {e}")
+                    _log(f"[WARN] Failed to update task graph state: {e}", console=False)
 
                 try:
                     save_task_graph(task_graph_state, task_graph_state_path)
                 except Exception as e:
-                    print(f"[WARN] Failed to save task graph state: {e}")
+                    _log(f"[WARN] Failed to save task graph state: {e}", console=False)
 
                 history_summary.append({
                     "iter": i,
@@ -1168,10 +1188,10 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                     with open(history_state_path, "w", encoding="utf-8") as f:
                         json.dump(history_summary, f, indent=2, ensure_ascii=False)
                 except Exception as e:
-                    print(f"[WARN] Failed to save history state: {e}")
+                    _log(f"[WARN] Failed to save history state: {e}", console=False)
 
                 if status == "IMPROVED":
-                    print(f"🎉 NEW BEST! Updating baseline for next iteration.")
+                    _log(f"🎉 NEW BEST! Updating baseline for next iteration.", console=True)
                     best_score_so_far = candidate_score
                     best_nb_path = executed_nb_path
                     current_metrics_path = iter_metrics_path
@@ -1182,7 +1202,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                                 m_obj = json.load(f)
                             write_experiment_report(workspace_dir, m_obj, cfg, primary_metric=target_metric)
                         except Exception as e:
-                            print(f"[WARN] Report gen failed: {e}")
+                            _log(f"[WARN] Report gen failed: {e}", console=False)
 
                     # [FIX] Final threshold checks with direction
                     beats_threshold = False
@@ -1199,15 +1219,15 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                             beats_baseline = (best_score_so_far > static_baseline_score)
 
                     if beats_threshold and beats_baseline:
-                        print(f"\n[SUCCESS] Goal Reached! Score {best_score_so_far:.4f} vs Threshold ({threshold})")
+                        _log(f"\n[SUCCESS] Goal Reached! Score {best_score_so_far:.4f} vs Threshold ({threshold})", console=True)
                         break
                     elif beats_threshold and not beats_baseline:
-                        print(f"\n[CONTINUE] Threshold passed ({best_score_so_far:.4f} vs {threshold}), but NOT beating Baseline ({static_baseline_score:.4f}). Continuing...")
+                        _log(f"\n[CONTINUE] Threshold passed ({best_score_so_far:.4f} vs {threshold}), but NOT beating Baseline ({static_baseline_score:.4f}). Continuing...", console=True)
                 else:
-                    print(f"📉 Improvement failed. Reverting to previous best.")
+                    _log(f"📉 Improvement failed. Reverting to previous best.", console=True)
 
             except Exception as e:
-                print(f"[ERROR] Logic Error after execution: {e}")
+                _log(f"[ERROR] Logic Error after execution: {e}", console=True)
                 
                 # [TELEM] Recover usage even on error
                 usage_stats = TokenMeter.get_and_reset()
@@ -1230,7 +1250,7 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                     pass
 
     except KeyboardInterrupt:
-        print("[INTERRUPT] KeyboardInterrupt received. Saving history_state.json and exiting...")
+        _log("[INTERRUPT] KeyboardInterrupt received. Saving history_state.json and exiting...", console=True)
         raise
     finally:
         # [RF-01 FIX] Ensure history/task-graph are persisted even on crash/interrupt
@@ -1238,45 +1258,45 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
             with open(history_state_path, "w", encoding="utf-8") as f:
                 json.dump(history_summary, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            print(f"[WARN] Failed to save history state in finally: {e}")
+            _log(f"[WARN] Failed to save history state in finally: {e}", console=False)
         try:
             save_task_graph(task_graph_state, task_graph_state_path)
         except Exception as e:
-            print(f"[WARN] Failed to save task graph state in finally: {e}")
+            _log(f"[WARN] Failed to save task graph state in finally: {e}", console=False)
 
     # =============================================================================
     # 9. Finalize: Save Best Artifacts
     # =============================================================================
-    print(f"\n🏁 Optimization Finished. Global Best Score: {best_score_so_far:.4f}")
+    _log(f"\n🏁 Optimization Finished. Global Best Score: {best_score_so_far:.4f}", console=True)
 
     if best_nb_path and os.path.exists(best_nb_path):
         final_nb_path = os.path.join(workspace_dir, "notebook_best.ipynb")
         try:
             shutil.copy(best_nb_path, final_nb_path)
-            print(f"✅ Saved BEST Notebook to: {final_nb_path}")
+            _log(f"✅ Saved BEST Notebook to: {final_nb_path}", console=True)
         except Exception as e:
-            print(f"[WARN] Failed to save BEST Notebook: {e}")
+            _log(f"[WARN] Failed to save BEST Notebook: {e}", console=False)
     else:
-        print(f"⚠️ Could not locate best notebook source: {best_nb_path}")
+        _log(f"⚠️ Could not locate best notebook source: {best_nb_path}", console=True)
 
     if current_metrics_path and os.path.exists(current_metrics_path):
         final_met_path = os.path.join(workspace_dir, "metrics_best.json")
         try:
             shutil.copy(current_metrics_path, final_met_path)
-            print(f"✅ Saved BEST Metrics to: {final_met_path}")
+            _log(f"✅ Saved BEST Metrics to: {final_met_path}", console=True)
         except Exception as e:
-            print(f"[WARN] Failed to save BEST Metrics: {e}")
+            _log(f"[WARN] Failed to save BEST Metrics: {e}", console=False)
 
         if write_experiment_report:
             try:
                 with open(final_met_path, 'r', encoding="utf-8") as f:
                     m_obj = json.load(f)
                 write_experiment_report(workspace_dir, m_obj, cfg, primary_metric=target_metric)
-                print(f"✅ Regenerated Experiment Report based on BEST metrics.")
+                _log(f"✅ Regenerated Experiment Report based on BEST metrics.", console=True)
             except Exception as e:
-                print(f"[WARN] Final Report gen failed: {e}")
+                _log(f"[WARN] Final Report gen failed: {e}", console=False)
     else:
-        print(f"⚠️ Could not locate best metrics source: {current_metrics_path}")
+        _log(f"⚠️ Could not locate best metrics source: {current_metrics_path}", console=True)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -1286,7 +1306,7 @@ def main():
     args = parser.parse_args()
 
     if not os.path.exists(args.config):
-        print(f"[FATAL] Config not found: {args.config}")
+        _log(f"[FATAL] Config not found: {args.config}", console=True)
         return
     cfg = load_full_config(args.config)
     _inject_llm_env(cfg)
@@ -1300,7 +1320,7 @@ def main():
         workspace, base_nb = setup_phase3_workspace(cfg, source_trial)
         optimize_loop(cfg, workspace, base_nb)
     except Exception as e:
-        print(f"[FATAL] {e}")
+        _log(f"[FATAL] {e}", console=True)
 
 if __name__ == "__main__":
     main()
