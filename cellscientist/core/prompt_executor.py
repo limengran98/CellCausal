@@ -15,6 +15,26 @@ from .llm_client import chat_json, chat_text
 from . import notebook_autofix as _autofix
 
 # =============================================================================
+# Unified Logging Helper for Subprocess Module
+# =============================================================================
+
+def _log(msg: str, *, console: bool = False):
+    """Unified logging output for subprocess execution.
+    
+    All messages go through print (captured by parent's run_cmd_streamed).
+    - If console=True: Adds [CELL_CONSOLE] prefix → shown in console + all logs
+    - If console=False: Adds [DETAIL] prefix → only in detail logs, not console
+    
+    Args:
+        msg: Message to log
+        console: If True, message appears in console. If False, only in detail logs.
+    """
+    if console:
+        print(f"[CELL_CONSOLE] {msg}", flush=True)
+    else:
+        print(f"[DETAIL] {msg}", flush=True)
+
+# =============================================================================
 # 0. Robust Helper Tools (The "Nuclear" Parser v2.0)
 # =============================================================================
 
@@ -50,7 +70,7 @@ def _dump_graph_error_log(workdir: str, task_id: str, errors: List[Dict[str, Any
         lines.append((e.get("traceback") or "") + "\n")
     with open(log_path, "w", encoding="utf-8") as f:
         f.writelines(lines)
-    print(f"[GRAPH][ERROR DUMP] Saved detailed error log: {log_path}", flush=True)
+    _log(f"[GRAPH][ERROR DUMP] Saved detailed error log: {log_path}", console=False)
     return log_path
 
 # =============================================================================
@@ -149,7 +169,7 @@ class GraphExecutor(NotebookClient):
 
     def execute_graph(self):
         """Main entry point for graph execution."""
-        print(f"[GRAPH] 🚀 Initializing Kernel in {self.workdir}", flush=True)
+        _log(f"[GRAPH] 🚀 Initializing Kernel in {self.workdir}", console=False)
         
         # 1. Setup Environment & Guard Code
         self._inject_setup_cells()
@@ -158,6 +178,12 @@ class GraphExecutor(NotebookClient):
         self.create_kernel_manager()
         self.start_new_kernel()
         self.start_new_kernel_client()
+
+        # Track execution statistics
+        total_cells = sum(1 for c in self.nb.cells if c.cell_type == 'code')
+        executed_cells = 0
+        failed_cells = 0
+        autofix_used = False
 
         try:
             # 3. Iterate Cells (Nodes)
@@ -174,7 +200,7 @@ class GraphExecutor(NotebookClient):
                 task_id = task_meta.get("id", f"Cell_{cell_idx}")
                 task_name = task_meta.get("name", "Unnamed")
                 
-                print(f"[GRAPH] ▶️  Running Node {task_id}: {task_name} (Idx: {cell_idx})", flush=True)
+                _log(f"├─ ⚙️  Execute: Cell {executed_cells + 1}/{total_cells} [{task_name}]", console=True)
 
                 try:
                     # Execute single cell using nbclient's low-level method
@@ -182,29 +208,37 @@ class GraphExecutor(NotebookClient):
                     
                     # If we are here, execution was successful
                     self._after_cell_success(cell_idx, task_id)
+                    executed_cells += 1
                     cell_idx += 1 
                 
                 except CellExecutionError:
-                    print(f"[GRAPH] ❌ Error in Node {task_id}. Initiating Adaptive Fix...", flush=True)
+                    _log(f"   ❌ Error in Cell {executed_cells + 1} ({task_name})", console=True)
                     self._after_cell_error(cell_idx, task_id)
                     
                     # Try to fix IN-PLACE
                     fixed = self._attempt_node_fix(cell_idx, task_id)
+                    autofix_used = True
                     
                     if fixed:
-                        print(f"[GRAPH] 🔄 Patch applied to Node {task_id}. Retrying immediately...", flush=True)
+                        _log(f"   🔧 Auto-fix applied → Retrying", console=True)
                         # We do NOT increment cell_idx, so the loop will re-execute the SAME cell index
                         # but with the new source code we just patched into self.nb
                         continue 
                     else:
-                        print(f"[GRAPH] 🛑 Failed to fix Node {task_id} after {self.max_fix_rounds} rounds.", flush=True)
+                        _log(f"   🛑 Auto-fix failed after {self.max_fix_rounds} rounds", console=True)
                         self.global_errors.append(f"Task {task_id} Failed.")
+                        failed_cells += 1
                         # Stop execution here to preserve partial results or debug
                         break
         
         finally:
-            print("[GRAPH] 🛑 Shutting down kernel.", flush=True)
+            _log("[GRAPH] 🛑 Shutting down kernel.", console=False)
             self._cleanup_kernel()
+            
+            # Print execution summary
+            success_status = "✅ Success" if failed_cells == 0 else f"❌ Failed ({failed_cells} errors)"
+            autofix_note = " (with autofix)" if autofix_used and failed_cells == 0 else " (no autofix)" if not autofix_used else ""
+            _log(f"└─ ⚙️  Execute: {executed_cells} cells → {success_status}{autofix_note}", console=True)
 
         return self.nb
 
@@ -301,7 +335,7 @@ print("[SETUP] Environment Configured.", "OUTPUT_DIR=", os.environ.get("OUTPUT_D
             latest = os.path.join(self.final_keep_dir, "notebook_latest.ipynb")
             nbformat.write(self.nb, latest)
         except Exception as e:
-            print(f"[EXEC][WARN] Failed to checkpoint notebook at cell {cell_idx}: {e}", flush=True)
+            _log(f"[EXEC][WARN] Failed to checkpoint notebook at cell {cell_idx}: {e}", console=False)
 
     def _copy_changed_files(self, old_manifest: dict, new_manifest: dict, cell_idx: int, task_id: str, *, tag: str = "after"):
         # [UPDATED] Force copy ANY file in new_manifest to intermediate dir to guarantee persistence
@@ -337,7 +371,7 @@ print("[SETUP] Environment Configured.", "OUTPUT_DIR=", os.environ.get("OUTPUT_D
                 skipped += 1
 
         if copied > 0:
-            print(f"[EXEC] 💾 Synced {copied} files to intermediate/ @ cell {cell_idx}", flush=True)
+            _log(f"   💾 Synced {copied} files to intermediate/", console=False)
 
     def _after_cell_success(self, cell_idx: int, task_id: str):
         if self.checkpoint_each_cell:
@@ -393,7 +427,7 @@ print("[SETUP] Environment Configured.", "OUTPUT_DIR=", os.environ.get("OUTPUT_D
                 report += (e.get("traceback") or "") + "\n"
             with open(log_path, "w", encoding="utf-8") as f:
                 f.write(report)
-            print(f"[GRAPH][ERROR] Saved detailed error log: {log_path}", flush=True)
+            _log(f"[GRAPH][ERROR] Saved detailed error log: {log_path}", console=False)
             return log_path
         except Exception:
             return ""
@@ -432,12 +466,12 @@ print("[SETUP] Environment Configured.", "OUTPUT_DIR=", os.environ.get("OUTPUT_D
             self._cell_last_error_sig[key] = err_sig
 
             round_no = attempt + 1
-            print(f"   [FIX] {task_id} | Round {round_no}/{self.max_fix_rounds} | Analyzing...", flush=True)
+            _log(f"   🔧 Auto-fix (Round {round_no}/{self.max_fix_rounds})", console=True)
 
             # 1. Heuristics (Fast path)
             h_changes, _ = _apply_heuristics(self.nb, errors)
             if h_changes > 0:
-                print(f"   [FIX] ⚡ Applied heuristic patch.", flush=True)
+                _log(f"   ✅ Heuristic patch applied", console=False)
                 self._cell_fix_counts[key] = round_no
                 return True
 
@@ -458,11 +492,11 @@ print("[SETUP] Environment Configured.", "OUTPUT_DIR=", os.environ.get("OUTPUT_D
                 new_source = nb_fixed.cells[cell_idx].source
                 if self.nb.cells[cell_idx].source != new_source:
                     self.nb.cells[cell_idx].source = new_source
-                    print(f"   [FIX] 🧠 LLM patch generated and applied.", flush=True)
+                    _log(f"   ✅ LLM patch applied", console=False)
                     self._cell_fix_counts[key] = round_no
                     return True
                 else:
-                    print(f"   [FIX] ⚠️ LLM returned identical code.", flush=True)
+                    _log(f"   ⚠️ LLM returned identical code", console=False)
             
         return False
 
@@ -510,13 +544,13 @@ def run_notebook_with_autofix(
     )
     
     # Run
-    print(f"[EXEC] Starting Adaptive Graph Execution: {nb_path}", flush=True)
+    _log(f"[EXEC] Starting Adaptive Graph Execution: {nb_path}", console=True)
     try:
         final_nb = executor.execute_graph()
     except Exception as e:
         tb = traceback.format_exc()
-        print(f"[EXEC] ☢️ Critical Framework Error: {e}", flush=True)
-        print(tb, flush=True)
+        _log(f"[EXEC] ☢️ Critical Framework Error: {e}", console=True)
+        _log(tb, console=False)
         try:
             os.makedirs(workdir, exist_ok=True)
             with open(os.path.join(workdir, "framework_error_traceback.txt"), "w", encoding="utf-8") as f:
@@ -533,12 +567,12 @@ def run_notebook_with_autofix(
         final_nb.cells.pop(0)
 
     nbformat.write(final_nb, out_path)
-    print(f"[EXEC] Saved final state: {out_path}", flush=True)
+    _log(f"[EXEC] Saved final state: {out_path}", console=True)
     
     if executor.global_errors:
-        print(f"[EXEC] Finished with unresolved errors: {executor.global_errors}", flush=True)
+        _log(f"[EXEC] Finished with unresolved errors: {executor.global_errors}", console=False)
     else:
-        print(f"[EXEC] ✅ Execution completed successfully.", flush=True)
+        _log(f"[EXEC] ✅ Execution completed successfully.", console=True)
         
     # If notebook did not create metrics.json, write a stub so downstream stages don't silently show -999.
     m_path = os.path.join(workdir, "metrics.json")
@@ -556,7 +590,7 @@ def run_notebook_with_autofix(
                 shutil.copy2(m_path, os.path.join(workdir, "final_keep", "metrics.json"))
             except Exception:
                 pass
-            print(f"[EXEC][WARN] Wrote stub metrics.json: {m_path}", flush=True)
+            _log(f"[EXEC][WARN] Wrote stub metrics.json: {m_path}", console=False)
         except Exception:
             pass
 

@@ -39,6 +39,26 @@ from typing import Any, Dict, List, Optional, Union
 import requests
 
 # =============================================================================
+# Unified Logging Helper for Subprocess Module
+# =============================================================================
+
+def _log(msg: str, *, console: bool = False):
+    """Unified logging output for subprocess execution.
+    
+    All messages go through print (captured by parent's run_cmd_streamed).
+    - If console=True: Adds [CELL_CONSOLE] prefix → shown in console + all logs
+    - If console=False: Adds [DETAIL] prefix → only in detail logs, not console
+    
+    Args:
+        msg: Message to log
+        console: If True, message appears in console. If False, only in detail logs.
+    """
+    if console:
+        print(f"[CELL_CONSOLE] {msg}", flush=True)
+    else:
+        print(f"[DETAIL] {msg}", flush=True)
+
+# =============================================================================
 # Token Meter (Telemetry & Cost Tracking)
 # =============================================================================
 
@@ -144,7 +164,7 @@ def _resolve_from_llm_block(llm_cfg: Dict[str, Any]) -> Dict[str, Any]:
     timeout = int(llm.get("timeout") or 600)
 
     if not api_key:
-        print("[LLM] ⚠️ WARNING: No API Key found in config or environment!", flush=True)
+        _log("[LLM] ⚠️ WARNING: No API Key found in config or environment!", console=False)
 
     return {
         "model": model,
@@ -184,7 +204,7 @@ def _resolve_from_full_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     max_tokens = int(llm.get("max_tokens", prof.get("max_tokens", 40000)))
 
     if not api_key:
-        print("[LLM] ⚠️ WARNING: No API Key found in config/provider/env!", flush=True)
+        _log("[LLM] ⚠️ WARNING: No API Key found in config/provider/env!", console=False)
 
     return {
         "model": model,
@@ -364,11 +384,11 @@ def _post_request(url: str, headers: dict, payload: dict, timeout: int = 600, re
             if r.status_code == 200:
                 return r.json()
 
-            print(f"[LLM] HTTP {r.status_code} (Attempt {attempt+1}/{retries}): {r.text[:200]}", flush=True)
+            _log(f"[LLM] HTTP {r.status_code} (Attempt {attempt+1}/{retries}): {r.text[:200]}", console=False)
             time.sleep(1 + attempt)
         except Exception as e:
             last_err = e
-            print(f"[LLM] Connection Error (Attempt {attempt+1}/{retries}): {e}", flush=True)
+            _log(f"[LLM] Connection Error (Attempt {attempt+1}/{retries}): {e}", console=False)
             time.sleep(1 + attempt)
 
     raise RuntimeError(f"LLM Request failed after {retries} retries. URL: {url}. Last error: {last_err}")
@@ -502,7 +522,7 @@ def chat_text(
     }
 
     # Preserve Phase-2 logging verbosity.
-    print(f"[LLM] Text Gen -> Model: {resolved.get('model')} | URL: {resolved.get('base_url')}", flush=True)
+    _log(f"[LLM] Text Gen -> Model: {resolved.get('model')} | URL: {resolved.get('base_url')}", console=False)
 
     # Phase-2 empty-content retry loop (does not duplicate HTTP retry logic).
     for attempt in range(3):
@@ -523,7 +543,7 @@ def chat_text(
         if isinstance(data, dict) and isinstance(data.get("error"), dict):
             # Many OpenAI-ish gateways return HTTP 200 with an embedded error.
             err = data.get("error") or {}
-            print(f"[LLM] ⚠️ API error field: {str(err)[:200]}", flush=True)
+            _log(f"[LLM] ⚠️ API error field: {str(err)[:200]}", console=False)
 
         content = _extract_text_from_response(data)
         if content:
@@ -531,7 +551,7 @@ def chat_text(
 
         _dump_llm_response_if_needed(data, kind="empty_text")
 
-        print(f"[LLM] ⚠️ Warning: Received empty content from API (Attempt {attempt+1}/3).", flush=True)
+        _log(f"[LLM] ⚠️ Warning: Received empty content from API (Attempt {attempt+1}/3).", console=False)
         time.sleep(0.8 + 0.8 * attempt)
 
     return ""
@@ -598,11 +618,11 @@ def chat_json(
 
             if isinstance(data, dict) and isinstance(data.get("error"), dict):
                 err = data.get("error") or {}
-                print(f"[LLM] ⚠️ API error field: {str(err)[:200]}", flush=True)
+                _log(f"[LLM] ⚠️ API error field: {str(err)[:200]}", console=False)
 
             content = _extract_text_from_response(data)
             if not content:
-                print(f"[LLM] ⚠️ Empty JSON content (Attempt {attempt+1}/{max_retries}).", flush=True)
+                _log(f"[LLM] ⚠️ Empty JSON content (Attempt {attempt+1}/{max_retries}).", console=False)
                 _dump_llm_response_if_needed(data, kind="empty_json")
                 time.sleep(0.8 + 0.8 * attempt)
                 continue
@@ -618,8 +638,8 @@ def chat_json(
 
         except Exception as e:
             last_error = e
-            print(f"[LLM] JSON Parse/Net Error (Attempt {attempt+1}/{max_retries}): {e}", flush=True)
+            _log(f"[LLM] JSON Parse/Net Error (Attempt {attempt+1}/{max_retries}): {e}", console=False)
             time.sleep(0.8 + 0.8 * attempt)
 
-    print(f"[LLM] Failed to parse JSON after retries. Last error: {last_error}", flush=True)
+    _log(f"[LLM] Failed to parse JSON after retries. Last error: {last_error}", console=False)
     return {}

@@ -12,6 +12,26 @@ from .llm_client import chat_text
 from .external_knowledge_mirothink import retrieve_external_knowledge, knowledge_pack_to_markdown
 
 # =============================================================================
+# Unified Logging Helper for Subprocess Module
+# =============================================================================
+
+def _log(msg: str, *, console: bool = False):
+    """Unified logging output for subprocess execution.
+    
+    All messages go through print (captured by parent's run_cmd_streamed).
+    - If console=True: Adds [CELL_CONSOLE] prefix → shown in console + all logs
+    - If console=False: Adds [DETAIL] prefix → only in detail logs, not console
+    
+    Args:
+        msg: Message to log
+        console: If True, message appears in console. If False, only in detail logs.
+    """
+    if console:
+        print(f"[CELL_CONSOLE] {msg}", flush=True)
+    else:
+        print(f"[DETAIL] {msg}", flush=True)
+
+# =============================================================================
 # Robust JSON extraction / repair utilities
 # =============================================================================
 
@@ -290,7 +310,7 @@ def _synthesize_strategy(cfg: Dict[str, Any], raw_ideas: str, debug_dir: str) ->
     sys_content = idea_prompt_data.get("system", "Act as Lead Architect.")
     user_prompt = f"Here are the available ideas:\n{raw_ideas}\n\nWrite the Strategy Summary."
 
-    print("\n[GEN] 🧠 Synthesizing Research Strategy...", flush=True)
+    _log("\n[GEN] 🧠 Synthesizing Research Strategy...", console=True)
     try:
         strategy = chat_text(
             [{"role": "system", "content": sys_content}, {"role": "user", "content": user_prompt}],
@@ -300,15 +320,15 @@ def _synthesize_strategy(cfg: Dict[str, Any], raw_ideas: str, debug_dir: str) ->
             timeout=600,
         )
         if not strategy:
-            print("[GEN] ⚠️ Strategy synthesis returned empty string.", flush=True)
+            _log("[GEN] ⚠️ Strategy synthesis returned empty string.", console=True)
             return ""
 
         with open(strategy_path, "w", encoding="utf-8") as f:
             f.write(strategy)
-        print(f"[GEN] ✅ Strategy saved to: {strategy_path}", flush=True)
+        _log(f"[GEN] ✅ Strategy saved to: {strategy_path}", console=True)
         return strategy
     except Exception as e:
-        print(f"[GEN][ERROR] Strategy Synthesis Failed: {e}", flush=True)
+        _log(f"[GEN][ERROR] Strategy Synthesis Failed: {e}", console=True)
         return ""
 
 # =============================================================================
@@ -351,6 +371,7 @@ def generate_notebook_content(
     # Controlled by cfg['literature']['enabled']. Uses Serper for search and (optionally) Jina Reader for scraping.
     external_knowledge_md = ""
     external_knowledge_section = ""
+    pack = None
     try:
         pack = retrieve_external_knowledge(
             cfg,
@@ -363,6 +384,24 @@ def generate_notebook_content(
             pack,
             max_chars=int(((cfg.get("literature") or {}) if isinstance(cfg.get("literature"), dict) else {}).get("prompt_max_chars", 6000) or 6000),
         )
+        
+        # Add knowledge retrieval summary to console
+        if pack and pack.items:
+            # Count by source type
+            biokb_count = sum(1 for item in pack.items if item.source == "biokb")
+            web_count = len(pack.items) - biokb_count
+            
+            # Format counts for display
+            parts = []
+            if web_count > 0:
+                parts.append(f"{web_count} papers")
+            if biokb_count > 0:
+                parts.append(f"{biokb_count} pathways")
+            
+            if parts:
+                summary = " and ".join(parts) if len(parts) == 2 else parts[0]
+                _log(f"├─ 📚 Knowledge: Retrieved {summary}", console=True)
+        
         # [DIAGNOSTIC] Explicitly warn if no items found
         if not pack.items:
             external_knowledge_section = "\n> [WARN] External knowledge search executed but returned NO results. Check logs/API key.\n"
@@ -376,7 +415,7 @@ def generate_notebook_content(
 {external_knowledge_md}
 """
     except Exception as e:
-        print(f"[GEN][LIT][WARN] External knowledge retrieval failed: {e}", flush=True)
+        _log(f"[GEN][LIT][WARN] External knowledge retrieval failed: {e}", console=False)
         external_knowledge_section = f"\n> [ERROR] External knowledge retrieval failed: {e}\n"
 
 
@@ -387,6 +426,10 @@ def generate_notebook_content(
     if raw_ideas:
         strategy_md = _synthesize_strategy(cfg, raw_ideas, debug_dir)
         if strategy_md:
+            # Calculate and display strategy size
+            strategy_size_kb = len(strategy_md.encode('utf-8')) / 1024
+            _log(f"├─ 🧠 Generate: Strategy synthesized ({strategy_size_kb:.1f}KB)", console=True)
+            
             full_user_content = f"""
 ================================================================================
 # PART 1: RESEARCH STRATEGY (MANDATORY IMPLEMENTATION)
@@ -401,11 +444,11 @@ def generate_notebook_content(
 {spec_dump}
 {external_knowledge_section}
 """
-            print("[GEN] 💻 Generating Code (Strategy-Driven)...", flush=True)
+            _log("[GEN] 💻 Generating Code (Strategy-Driven)...", console=True)
         else:
             strategy_md = "**Strategy**: Fallback to Freestyle Design (Synthesis Failed)."
             full_user_content = f"# TECHNICAL SPECIFICATION\n{spec_dump}\n\n{external_knowledge_section}"
-            print("[GEN] 💻 Generating Code (Fallback to Freestyle)...", flush=True)
+            _log("[GEN] 💻 Generating Code (Fallback to Freestyle)...", console=True)
     else:
         strategy_md = (
             "## 🧠 Research Strategy (Freestyle)\n\n"
@@ -424,7 +467,7 @@ Follow these rules strictly:
 {spec_dump}
 {external_knowledge_section}
 """
-        print("[GEN] 💻 Generating Code (Freestyle/No-Idea)...", flush=True)
+        _log("[GEN] 💻 Generating Code (Freestyle/No-Idea)...", console=True)
     messages = [{"role": "system", "content": sys_txt}, {"role": "user", "content": full_user_content}]
 
 
@@ -438,9 +481,9 @@ Follow these rules strictly:
         if external_knowledge_md:
             with open(os.path.join(debug_dir, "external_knowledge_design.md"), "w", encoding="utf-8") as f:
                 f.write(external_knowledge_md)
-        print(f"[GEN] 🧾 Debug prompts saved under: {debug_dir}", flush=True)
+        _log(f"[GEN] 🧾 Debug prompts saved under: {debug_dir}", console=False)
     except Exception as e:
-        print(f"[GEN][WARN] Failed to save debug prompts: {e}", flush=True)
+        _log(f"[GEN][WARN] Failed to save debug prompts: {e}", console=False)
 
     pb = cfg.get("prompt_branch", {}) or {}
 
@@ -471,7 +514,7 @@ Follow these rules strictly:
             if attempt >= json_retries:
                 break
 
-            print(f"[GEN] ⚠️ JSON parse failed (attempt {attempt+1}/{json_retries+1}). Trying to repair output...", flush=True)
+            _log(f"[GEN] ⚠️ JSON parse failed (attempt {attempt+1}/{json_retries+1}). Trying to repair output...", console=False)
             repaired = _repair_to_json_with_llm(cfg, attempts_raw[-1], strict_json_only=strict_json_only)
             attempts_raw.append(repaired or "")
 
@@ -483,7 +526,7 @@ Follow these rules strictly:
                 f.write(f"\n===== RAW ATTEMPT {i} =====\n")
                 f.write(t or "EMPTY RESPONSE")
                 f.write("\n")
-        print(f"[GEN] ❌ Debug info saved to {debug_path}", flush=True)
+        _log(f"[GEN] ❌ Debug info saved to {debug_path}", console=True)
         raise RuntimeError(f"Notebook Generation Failed (JSON Parse): {last_exc}")
 
     # Build notebook object
@@ -496,6 +539,11 @@ Follow these rules strictly:
         hypergraph_data = nb_json.get("hypergraph", {}) or {}
     elif isinstance(nb_json, list):
         cells_data = nb_json
+
+    # Calculate total code size
+    total_code_size = sum(len((c.get("code", "") or "").encode('utf-8')) for c in cells_data if isinstance(c, dict))
+    code_size_kb = total_code_size / 1024
+    _log(f"└─ 🧠 Generate: Code generated ({code_size_kb:.1f}KB, {len(cells_data)} cells)", console=True)
 
     if hypergraph_data:
         nb.metadata["execution"] = {"hypergraph": hypergraph_data}

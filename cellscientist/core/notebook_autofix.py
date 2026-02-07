@@ -24,6 +24,26 @@ import nbformat
 from .llm_client import chat_json, chat_text
 
 # =============================================================================
+# Unified Logging Helper for Subprocess Module
+# =============================================================================
+
+def _log(msg: str, *, console: bool = False):
+    """Unified logging output for subprocess execution.
+    
+    All messages go through print (captured by parent's run_cmd_streamed).
+    - If console=True: Adds [CELL_CONSOLE] prefix → shown in console + all logs
+    - If console=False: Adds [DETAIL] prefix → only in detail logs, not console
+    
+    Args:
+        msg: Message to log
+        console: If True, message appears in console. If False, only in detail logs.
+    """
+    if console:
+        print(f"[CELL_CONSOLE] {msg}", flush=True)
+    else:
+        print(f"[DETAIL] {msg}", flush=True)
+
+# =============================================================================
 # 0. Robust JSON/Python-Dict Extraction (Design-style)
 # =============================================================================
 
@@ -285,12 +305,12 @@ def llm_autofix_once_design(
         raw_text = chat_text(messages, llm_config=llm_cfg, temperature=0.0, timeout=600)
         spec = extract_edits_spec(raw_text)
     except Exception as e:
-        print(f"[FIX] LLM Call/Parse Failed: {e}", flush=True)
+        _log(f"[FIX] LLM Call/Parse Failed: {e}", console=False)
         return nb, False
 
     edits = spec.get("edits") or []
     if not edits:
-        print("[FIX] LLM returned response but no 'edits' key found.", flush=True)
+        _log("[FIX] LLM returned response but no 'edits' key found.", console=False)
         return nb, False
 
     changes = apply_llm_edits(nb, edits)
@@ -336,7 +356,7 @@ def llm_autofix_request_review(
     try:
         resp = chat_json(messages, cfg, temperature=0.1)
     except Exception as e:
-        print(f"[FIX] LLM Error: {e}", flush=True)
+        _log(f"[FIX] LLM Error: {e}", console=False)
         return nb, False
 
     edits = resp.get("edits", [])
@@ -390,7 +410,7 @@ def attempt_fix_notebook(
             if idx in mutable_indices:
                 target_errors.append(e)
             else:
-                print(f"[FIX] 🚫 Skipping fix for Immutable Cell {idx} (Error: {e.get('ename')})")
+                _log(f"[FIX] 🚫 Skipping fix for Immutable Cell {idx} (Error: {e.get('ename')})", console=False)
 
         if not target_errors:
             return nb, False, "Aborted:ImmutableErrorsOnly"
