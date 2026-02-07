@@ -450,9 +450,9 @@ def generate_final_report(
     llm_cfg = resolve_report_llm_cfg(pipe_cfg)
 
     pipeline_summary_json = json.dumps(redact_secrets(pipeline_summary), ensure_ascii=False, indent=2)
-    p1_cfg_json = json.dumps(redact_secrets(stage1_cfg), ensure_ascii=False, indent=2)
-    p2_cfg_json = json.dumps(redact_secrets(stage2_cfg), ensure_ascii=False, indent=2)
-    p3_cfg_json = json.dumps(redact_secrets(stage3_cfg), ensure_ascii=False, indent=2)
+    ana_cfg_json = json.dumps(redact_secrets(stage1_cfg), ensure_ascii=False, indent=2)
+    exp_cfg_json = json.dumps(redact_secrets(stage2_cfg), ensure_ascii=False, indent=2)
+    review_cfg_json = json.dumps(redact_secrets(stage3_cfg), ensure_ascii=False, indent=2)
 
     # progressive shrinking to avoid context explosions
     last_err: Optional[str] = None
@@ -464,7 +464,7 @@ def generate_final_report(
                 "dataset_name": ds_name,
                 "final_output_dir": final_dir,
                 "pipeline_summary_json": pipeline_summary_json,
-                "phase1_config_json": p1_cfg_json,
+                "phase1_config_json": ana_cfg_json,
                 "experiment_config_json": exp_cfg_json,
                 "review_config_json": review_cfg_json,
                 "phase1_summary_md": read_text_limited(phase1_summary_path, max_chars=md_cap) if phase1_summary_path else "",
