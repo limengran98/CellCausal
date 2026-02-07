@@ -166,6 +166,23 @@ def main() -> None:
     # 6) Pretty plan (using existing function - still outputs to console)
     print_execution_plan(stage_map, dataset_name)
 
+    # Open additional log files for complete capture
+    execution_detail_log = os.path.join(logs_dir, "execution_detail.log")
+    console_filter_log = os.path.join(logs_dir, "console_filtered.log")
+    
+    detail_fp = open(execution_detail_log, "w", encoding="utf-8")
+    console_filter_fp = open(console_filter_log, "w", encoding="utf-8")
+    
+    # Write header to detail log
+    detail_fp.write("=" * 80 + "\n")
+    detail_fp.write("PIPELINE EXECUTION DETAIL LOG\n")
+    detail_fp.write("=" * 80 + "\n")
+    detail_fp.write(f"Dataset: {dataset_name}\n")
+    detail_fp.write(f"Logs Directory: {logs_dir}\n")
+    detail_fp.write(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+    detail_fp.write("=" * 80 + "\n\n")
+    detail_fp.flush()
+
     # 7) Run Experiment Stage
     exp_cfg = stage_map["Experiment"]["config"]
     exp_log = os.path.join(logs_dir, "experiment.log")
@@ -178,7 +195,14 @@ def main() -> None:
     logger.full_log(f"Experiment log: {exp_log}")
     
     with open(exp_log, "w", encoding="utf-8") as fp:
-        run_subprocess_streamed(cmd2, cwd=project_root(), phase_fp=fp, extra_env=extra_env)
+        run_subprocess_streamed(
+            cmd2, 
+            cwd=project_root(), 
+            phase_fp=fp, 
+            detail_fp=detail_fp,
+            console_filter_fp=console_filter_fp,
+            extra_env=extra_env
+        )
     exp_t1 = time.time()
 
     # 8) Discover Experiment output dir
@@ -216,8 +240,22 @@ def main() -> None:
         logger.full_log(f"Review log: {review_log}")
         
         with open(review_log, "w", encoding="utf-8") as fp:
-            run_subprocess_streamed(cmd3, cwd=project_root(), phase_fp=fp, extra_env=extra_env)
+            run_subprocess_streamed(
+                cmd3, 
+                cwd=project_root(), 
+                phase_fp=fp, 
+                detail_fp=detail_fp,
+                console_filter_fp=console_filter_fp,
+                extra_env=extra_env
+            )
         review_t1 = time.time()
+    
+    # Close additional log files
+    detail_fp.write("\n" + "=" * 80 + "\n")
+    detail_fp.write("PIPELINE EXECUTION COMPLETED\n")
+    detail_fp.write("=" * 80 + "\n")
+    detail_fp.close()
+    console_filter_fp.close()
 
     # 10) Collect metrics summary
     summary: Dict[str, Any] = {"dataset": dataset_name, "logs_dir": logs_dir, "stages": {}}

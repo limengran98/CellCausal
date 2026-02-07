@@ -49,8 +49,11 @@ class TieredLogger:
         # Use consistent ISO format for all timestamps
         self.pipeline_id = f"{dataset_name}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
         
-        # Tier 1: Console (direct print)
+        # Tier 1: Console (direct print + console_output.log)
         self.console_enabled = True
+        self.console_log_path = self.run_dir / "console_output.log"
+        self.console_log_fp: Optional[TextIO] = None
+        self._setup_console_log()
         
         # Tier 2: Stage loggers
         self.stage_loggers: Dict[str, logging.Logger] = {}
@@ -80,6 +83,14 @@ class TieredLogger:
         self._tee_stdout: Optional[TextIO] = None
         self._tee_stderr: Optional[TextIO] = None
         
+    def _setup_console_log(self) -> None:
+        """Setup Tier 1 console output log file."""
+        try:
+            self.console_log_fp = open(self.console_log_path, 'w', encoding='utf-8')
+        except Exception as e:
+            print(f"Warning: Could not open console_output.log: {e}")
+            self.console_log_fp = None
+    
     def _sanitize_config(self, config: dict) -> dict:
         """Remove sensitive data from config before logging."""
         import copy
@@ -160,7 +171,16 @@ class TieredLogger:
         prefix = f"{indent}{symbol} " if symbol else indent
         output = f"{prefix}{message}"
         
+        # Print to console
         print(output, flush=True)
+        
+        # Write to console_output.log
+        if self.console_log_fp:
+            try:
+                self.console_log_fp.write(output + "\n")
+                self.console_log_fp.flush()
+            except Exception:
+                pass
         
         # Also log to Tier 3
         self.full_log(f"[CONSOLE] {output}")
@@ -354,6 +374,13 @@ class TieredLogger:
         """Finalize all logging tiers."""
         # Save evidence chain
         self.save_evidence_chain()
+        
+        # Close console log
+        if self.console_log_fp:
+            try:
+                self.console_log_fp.close()
+            except Exception:
+                pass
         
         # Close stage loggers
         for logger in self.stage_loggers.values():

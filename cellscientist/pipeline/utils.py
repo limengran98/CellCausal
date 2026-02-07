@@ -450,14 +450,46 @@ def run_cmd_streamed(
     *,
     cwd: str,
     phase_fp=None,
+    detail_fp=None,
+    console_filter_fp=None,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> None:
+    """Run a subprocess with streamed output to multiple destinations.
+    
+    Args:
+        cmd: Command to run
+        cwd: Working directory
+        phase_fp: File handle for phase-specific log (experiment.log/review.log)
+        detail_fp: File handle for complete detail log (execution_detail.log)
+        console_filter_fp: File handle for filtered console output (console_output.log)
+        extra_env: Additional environment variables
+    """
     env = os.environ.copy()
     if extra_env:
         for k, v in extra_env.items():
             if v is None:
                 continue
             env[str(k)] = str(v)
+
+    # Core workflow keywords that should be visible in console
+    CONSOLE_VISIBLE_KEYWORDS = [
+        "[CONSOLE_VISIBLE]",  # Explicit marker
+        "ITERATION",          # Iteration progress
+        "Score:",             # Metrics
+        "PCC =",
+        "MSE =",
+        "RMSE =",
+        "Strategy:",          # Strategy info
+        "Knowledge:",         # Knowledge retrieval
+        "Execute:",           # Execution status
+        "Success",            # Success messages
+        "Failed",             # Failure messages
+        "Best",               # Best result updates
+    ]
+    
+    def should_show_in_console(line: str) -> bool:
+        """Check if a line should be displayed in console."""
+        return any(keyword in line for keyword in CONSOLE_VISIBLE_KEYWORDS)
 
     proc = subprocess.Popen(
         cmd,
@@ -472,17 +504,42 @@ def run_cmd_streamed(
     )
     assert proc.stdout is not None
     for line in proc.stdout:
-        try:
-            sys.stdout.write(line)
-            sys.stdout.flush()
-        except Exception:
-            pass
+        # Always write to detail log (complete capture)
+        if detail_fp:
+            try:
+                detail_fp.write(line)
+                detail_fp.flush()
+            except Exception:
+                pass
+        
+        # Write to phase log (experiment.log/review.log)
         if phase_fp:
             try:
                 phase_fp.write(line)
                 phase_fp.flush()
             except Exception:
                 pass
+        
+        # Console output: filtered or all (based on keywords)
+        try:
+            if should_show_in_console(line):
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                # Also write to console filter log
+                if console_filter_fp:
+                    try:
+                        console_filter_fp.write(line)
+                        console_filter_fp.flush()
+                    except Exception:
+                        pass
+            # For non-matching lines, still write to stdout if no detail_fp
+            # (backward compatibility - when detail_fp is None, behave as before)
+            elif detail_fp is None:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+        except Exception:
+            pass
+            
     rc = proc.wait()
     if rc != 0:
         raise subprocess.CalledProcessError(rc, cmd)
@@ -498,6 +555,8 @@ def run_subprocess_streamed(
     *,
     cwd: str,
     phase_fp=None,
+    detail_fp=None,
+    console_filter_fp=None,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> None:
     """Compatibility wrapper.
@@ -507,7 +566,14 @@ def run_subprocess_streamed(
     We keep the old name to avoid breaking the runner entrypoint.
     """
 
-    return run_cmd_streamed(cmd, cwd=cwd, phase_fp=phase_fp, extra_env=extra_env)
+    return run_cmd_streamed(
+        cmd, 
+        cwd=cwd, 
+        phase_fp=phase_fp, 
+        detail_fp=detail_fp,
+        console_filter_fp=console_filter_fp,
+        extra_env=extra_env
+    )
 
 
 # =============================================================================
