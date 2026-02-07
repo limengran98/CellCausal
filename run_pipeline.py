@@ -170,92 +170,106 @@ def main() -> None:
     execution_detail_log = os.path.join(logs_dir, "execution_detail.log")
     console_filter_log = os.path.join(logs_dir, "console_filtered.log")
     
-    detail_fp = open(execution_detail_log, "w", encoding="utf-8")
-    console_filter_fp = open(console_filter_log, "w", encoding="utf-8")
+    detail_fp = None
+    console_filter_fp = None
     
-    # Write header to detail log
-    detail_fp.write("=" * 80 + "\n")
-    detail_fp.write("PIPELINE EXECUTION DETAIL LOG\n")
-    detail_fp.write("=" * 80 + "\n")
-    detail_fp.write(f"Dataset: {dataset_name}\n")
-    detail_fp.write(f"Logs Directory: {logs_dir}\n")
-    detail_fp.write(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-    detail_fp.write("=" * 80 + "\n\n")
-    detail_fp.flush()
-
-    # 7) Run Experiment Stage
-    exp_cfg = stage_map["Experiment"]["config"]
-    exp_log = os.path.join(logs_dir, "experiment.log")
-    exp_t0 = time.time()
-
-    cmd2 = stage_map["Experiment"]["entry"] + ["--config", exp_cfg, "run"]
-    logger.console_info("")
-    logger.console_info("🔄 EXPERIMENT STAGE", level=0)
-    logger.full_log(f"Running Experiment Stage: {' '.join(cmd2)}")
-    logger.full_log(f"Experiment log: {exp_log}")
-    
-    with open(exp_log, "w", encoding="utf-8") as fp:
-        run_subprocess_streamed(
-            cmd2, 
-            cwd=project_root(), 
-            phase_fp=fp, 
-            detail_fp=detail_fp,
-            console_filter_fp=console_filter_fp,
-            extra_env=extra_env
-        )
-    exp_t1 = time.time()
-
-    # 8) Discover Experiment output dir
-    # Prefer config-declared design_execution_root; runner extractor uses it as base_dir.
-    exp_loaded = stage_map["Experiment"].get("_loaded_cfg") or {}
-    ge_root = ((exp_loaded.get("paths") or {}).get("design_execution_root")
-               or (exp_loaded.get("prompt_branch") or {}).get("save_root")
-               or os.path.join(results_root_for_dataset(dataset_name), "generate_execution"))
-    ge_root = os.path.abspath(os.path.join(project_root(), ge_root)) if not os.path.isabs(ge_root) else ge_root
-
-    experiment_out = extract_best_path_from_log(exp_log, stage="Experiment", base_dir=ge_root, t_start=exp_t0)
-
-    if not experiment_out:
-        # fall back to ge_root, review has its own selection logic
-        experiment_out = ge_root
-
-    logger.console_info(f"Output directory: {experiment_out}", level=1, symbol="📁")
-    logger.full_log(f"Experiment output directory: {experiment_out}")
-
-    # 9) Run Review Stage
-    review_log = os.path.join(logs_dir, "review.log")
-    review_t0 = time.time()
-
-    if args.skip_review:
-        logger.console_info("")
-        logger.console_info("⏭ Skipping review/optimization stage (--skip-review)", level=0)
-        logger.full_log("Review stage skipped by user")
-        review_t1 = review_t0
-    else:
-        review_cfg = stage_map["Review"]["config"]
-        cmd3 = stage_map["Review"]["entry"] + ["--config", review_cfg, "--source_path", experiment_out]
-        logger.console_info("")
-        logger.console_info("🔄 REVIEW STAGE", level=0)
-        logger.full_log(f"Running Review Stage: {' '.join(cmd3)}")
-        logger.full_log(f"Review log: {review_log}")
+    try:
+        detail_fp = open(execution_detail_log, "w", encoding="utf-8")
+        console_filter_fp = open(console_filter_log, "w", encoding="utf-8")
         
-        with open(review_log, "w", encoding="utf-8") as fp:
+        # Write header to detail log
+        detail_fp.write("=" * 80 + "\n")
+        detail_fp.write("PIPELINE EXECUTION DETAIL LOG\n")
+        detail_fp.write("=" * 80 + "\n")
+        detail_fp.write(f"Dataset: {dataset_name}\n")
+        detail_fp.write(f"Logs Directory: {logs_dir}\n")
+        detail_fp.write(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        detail_fp.write("=" * 80 + "\n\n")
+        detail_fp.flush()
+
+        # 7) Run Experiment Stage
+        exp_cfg = stage_map["Experiment"]["config"]
+        exp_log = os.path.join(logs_dir, "experiment.log")
+        exp_t0 = time.time()
+
+        cmd2 = stage_map["Experiment"]["entry"] + ["--config", exp_cfg, "run"]
+        logger.console_info("")
+        logger.console_info("🔄 EXPERIMENT STAGE", level=0)
+        logger.full_log(f"Running Experiment Stage: {' '.join(cmd2)}")
+        logger.full_log(f"Experiment log: {exp_log}")
+        
+        with open(exp_log, "w", encoding="utf-8") as fp:
             run_subprocess_streamed(
-                cmd3, 
+                cmd2, 
                 cwd=project_root(), 
                 phase_fp=fp, 
                 detail_fp=detail_fp,
                 console_filter_fp=console_filter_fp,
                 extra_env=extra_env
             )
-        review_t1 = time.time()
+        exp_t1 = time.time()
+
+        # 8) Discover Experiment output dir
+        # Prefer config-declared design_execution_root; runner extractor uses it as base_dir.
+        exp_loaded = stage_map["Experiment"].get("_loaded_cfg") or {}
+        ge_root = ((exp_loaded.get("paths") or {}).get("design_execution_root")
+                   or (exp_loaded.get("prompt_branch") or {}).get("save_root")
+                   or os.path.join(results_root_for_dataset(dataset_name), "generate_execution"))
+        ge_root = os.path.abspath(os.path.join(project_root(), ge_root)) if not os.path.isabs(ge_root) else ge_root
+
+        experiment_out = extract_best_path_from_log(exp_log, stage="Experiment", base_dir=ge_root, t_start=exp_t0)
+
+        if not experiment_out:
+            # fall back to ge_root, review has its own selection logic
+            experiment_out = ge_root
+
+        logger.console_info(f"Output directory: {experiment_out}", level=1, symbol="📁")
+        logger.full_log(f"Experiment output directory: {experiment_out}")
+
+        # 9) Run Review Stage
+        review_log = os.path.join(logs_dir, "review.log")
+        review_t0 = time.time()
+
+        if args.skip_review:
+            logger.console_info("")
+            logger.console_info("⏭ Skipping review/optimization stage (--skip-review)", level=0)
+            logger.full_log("Review stage skipped by user")
+            review_t1 = review_t0
+        else:
+            review_cfg = stage_map["Review"]["config"]
+            cmd3 = stage_map["Review"]["entry"] + ["--config", review_cfg, "--source_path", experiment_out]
+            logger.console_info("")
+            logger.console_info("🔄 REVIEW STAGE", level=0)
+            logger.full_log(f"Running Review Stage: {' '.join(cmd3)}")
+            logger.full_log(f"Review log: {review_log}")
+            
+            with open(review_log, "w", encoding="utf-8") as fp:
+                run_subprocess_streamed(
+                    cmd3, 
+                    cwd=project_root(), 
+                    phase_fp=fp, 
+                    detail_fp=detail_fp,
+                    console_filter_fp=console_filter_fp,
+                    extra_env=extra_env
+                )
+            review_t1 = time.time()
     
-    # Close additional log files
-    detail_fp.write("\n" + "=" * 80 + "\n")
-    detail_fp.write("PIPELINE EXECUTION COMPLETED\n")
-    detail_fp.write("=" * 80 + "\n")
-    detail_fp.close()
-    console_filter_fp.close()
+    finally:
+        # Always close additional log files, even if an error occurred
+        if detail_fp:
+            try:
+                detail_fp.write("\n" + "=" * 80 + "\n")
+                detail_fp.write("PIPELINE EXECUTION COMPLETED\n")
+                detail_fp.write("=" * 80 + "\n")
+                detail_fp.close()
+            except Exception as e:
+                logger.full_log(f"Warning: Could not close detail log properly: {e}")
+        
+        if console_filter_fp:
+            try:
+                console_filter_fp.close()
+            except Exception as e:
+                logger.full_log(f"Warning: Could not close console filter log properly: {e}")
 
     # 10) Collect metrics summary
     summary: Dict[str, Any] = {"dataset": dataset_name, "logs_dir": logs_dir, "stages": {}}

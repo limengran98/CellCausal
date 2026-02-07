@@ -461,8 +461,15 @@ def run_cmd_streamed(
         cwd: Working directory
         phase_fp: File handle for phase-specific log (experiment.log/review.log)
         detail_fp: File handle for complete detail log (execution_detail.log)
-        console_filter_fp: File handle for filtered console output (console_output.log)
+        console_filter_fp: File handle for filtered console output (console_filtered.log)
         extra_env: Additional environment variables
+    
+    Behavior Notes:
+        - When detail_fp is None: All subprocess output goes to console (backward compatible)
+        - When detail_fp is provided: Output is filtered by CONSOLE_VISIBLE_KEYWORDS
+          * Matching lines go to: console, console_filter_fp, detail_fp, and phase_fp
+          * Non-matching lines go to: detail_fp and phase_fp only (silent in console)
+        - This filtering ensures clean console while preserving complete logs
     """
     env = os.environ.copy()
     if extra_env:
