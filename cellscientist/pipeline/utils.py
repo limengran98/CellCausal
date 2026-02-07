@@ -472,19 +472,14 @@ def run_cmd_streamed(
             env[str(k)] = str(v)
 
     # Core workflow keywords that should be visible in console
+    # These are carefully selected to show only key milestones, not debug info
     CONSOLE_VISIBLE_KEYWORDS = [
-        "[CONSOLE_VISIBLE]",  # Explicit marker
-        "ITERATION",          # Iteration progress
-        "Score:",             # Metrics
-        "PCC =",
-        "MSE =",
-        "RMSE =",
-        "Strategy:",          # Strategy info
-        "Knowledge:",         # Knowledge retrieval
-        "Execute:",           # Execution status
-        "Success",            # Success messages
-        "Failed",             # Failure messages
-        "Best",               # Best result updates
+        "🔄 ITERATION",       # Iteration headers
+        "📈 [IMPROVEMENT]",   # Score improvements
+        "🎉 [SUCCESS]",       # Success messages  
+        "❌ [ERROR]",         # Critical errors (in iteration loop)
+        "🏁 LOOP FINISHED",   # Completion messages
+        "[ERROR]",            # Generic errors that should be visible
     ]
     
     def should_show_in_console(line: str) -> bool:
