@@ -53,9 +53,13 @@ def _log(msg: str, *, console: bool = False):
 
 
 def _format_token_count(tokens: int) -> str:
-    """Format token count for display (e.g., 12500 -> 12.5K)."""
+    """Format token count for display (e.g., 12500 -> 12.5K, 1000 -> 1K)."""
     if tokens >= 1000:
-        return f"{tokens / 1000:.1f}K"
+        k_value = tokens / 1000
+        # Use integer format for round thousands
+        if k_value == int(k_value):
+            return f"{int(k_value)}K"
+        return f"{k_value:.1f}K"
     return str(tokens)
 
 
