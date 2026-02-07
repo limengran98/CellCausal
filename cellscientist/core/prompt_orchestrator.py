@@ -9,6 +9,26 @@ from ..pipeline.utils import export_notebook_as_py, safe_copy
 from .experiment_report import write_experiment_report
 from .task_logger import get_task_logger
 
+# =============================================================================
+# Unified Logging Helper for Subprocess Module
+# =============================================================================
+
+def _log(msg: str, *, console: bool = False):
+    """Unified logging output for subprocess execution.
+    
+    All messages go through print (captured by parent's run_cmd_streamed).
+    - If console=True: Adds [CELL_CONSOLE] prefix → shown in console + all logs
+    - If console=False: Adds [DETAIL] prefix → only in detail logs, not console
+    
+    Args:
+        msg: Message to log
+        console: If True, message appears in console. If False, only in detail logs.
+    """
+    if console:
+        print(f"[CELL_CONSOLE] {msg}", flush=True)
+    else:
+        print(f"[DETAIL] {msg}", flush=True)
+
 # Import Visualization Tool
 try:
     from .prompt_viz import write_hypergraph_viz
@@ -59,10 +79,10 @@ def _audit_intermediate_files(trial_dir: str):
     Force audit and print files in intermediate directory to ensure visibility of the process.
     """
     inter_dir = os.path.join(trial_dir, "intermediate")
-    print(f"\n[ORCH] 🔎 Auditing Intermediate Results in: {inter_dir}", flush=True)
+    _log(f"\n[ORCH] 🔎 Auditing Intermediate Results in: {inter_dir}", console=True)
     
     if not os.path.exists(inter_dir):
-        print("   ⚠️ Directory NOT created by Notebook. (Did the model skip saving?)", flush=True)
+        _log("   ⚠️ Directory NOT created by Notebook. (Did the model skip saving?)", console=True)
         return
 
     files = []
@@ -77,13 +97,13 @@ def _audit_intermediate_files(trial_dir: str):
             files.append((rel_path, size_kb))
     
     if not files:
-        print("   ⚠️ Directory exists but is EMPTY.", flush=True)
+        _log("   ⚠️ Directory exists but is EMPTY.", console=True)
     else:
         # Sort by name
         files.sort()
         for fname, fsize in files:
-            print(f"   📄 {fname:<40} | {fsize:>6.1f} KB", flush=True)
-    print("", flush=True) # Spacer
+            _log(f"   📄 {fname:<40} | {fsize:>6.1f} KB", console=False)
+    _log("", console=False) # Spacer
 
 
 def _ensure_result_folders(trial_dir: str) -> Dict[str, str]:
@@ -117,9 +137,9 @@ def phase_generate(
         if os.path.exists(trial_dir):
             try:
                 shutil.rmtree(trial_dir)
-                print(f"[ORCH] 🧹 Cleaned up previous workspace: {trial_dir}", flush=True)
+                _log(f"[ORCH] 🧹 Cleaned up previous workspace: {trial_dir}", console=False)
             except OSError as e:
-                print(f"[ORCH][WARN] Failed to clean workspace {trial_dir}: {e}", flush=True)
+                _log(f"[ORCH][WARN] Failed to clean workspace {trial_dir}: {e}", console=False)
     else:
         # Standard mode: Timestamp + PID for safety (No 'prompt' subdir nesting)
         trial_dir = os.path.join(out_root, f"prompt_run_{ts_now}_{pid}")
@@ -141,7 +161,7 @@ def phase_generate(
     # [GENERATE] Write artifacts directly into the trial's debug_dir
     nb, _user_prompt, strategy_md = generate_notebook_content(cfg, spec_path, debug_dir)
     
-    print(f"[ORCH] 🧾 Debug artifacts written to: {debug_dir}", flush=True)
+    _log(f"[ORCH] 🧾 Debug artifacts written to: {debug_dir}", console=False)
     try:
         tlog.log_artifact('debug_prompt', debug_dir, 'Debug prompt artifacts')
     except Exception:
@@ -181,7 +201,7 @@ def phase_generate(
         tlog.log_step('phase_generate.end', 'Generation complete', trial_dir=os.path.abspath(trial_dir))
     except Exception:
         pass
-    print(f"[ORCH] Generation Complete. Trial: {trial_dir}", flush=True)
+    _log(f"[ORCH] Generation Complete. Trial: {trial_dir}", console=False)
     return {"trial_dir": trial_dir, "notebook_path": nb_path}
 
 def phase_execute(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[str, Any]:
@@ -224,10 +244,10 @@ def phase_execute(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[
     
     # Generate Hypergraph Visualization
     if write_hypergraph_viz:
-        print(f"[ORCH] Generating Hypergraph Visualization...", flush=True)
+        _log(f"[ORCH] Generating Hypergraph Visualization...", console=False)
         viz_out = write_hypergraph_viz(tdir, nb_path, fmt="mermaid")
         if viz_out.get("mermaid"):
-            print(f"[ORCH] Viz saved: {viz_out['mermaid']}", flush=True)
+            _log(f"[ORCH] Viz saved: {viz_out['mermaid']}", console=False)
             
     # Audit Intermediate Files
     _audit_intermediate_files(tdir)
@@ -263,7 +283,7 @@ def phase_analyze(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[
     tlog.log_step('phase_analyze.start', 'Begin report generation', trial_dir=os.path.abspath(tdir))
     m_path = os.path.join(tdir, "metrics.json")
     if not os.path.exists(m_path):
-        print(f"[ORCH] No metrics.json in {tdir}. Skipping report.", flush=True)
+        _log(f"[ORCH] No metrics.json in {tdir}. Skipping report.", console=False)
         return {}
         
     try:
@@ -273,7 +293,7 @@ def phase_analyze(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[
         pm = ((cfg.get("experiment") or {}).get("primary_metric") or "PCC")
         
         report_path = write_experiment_report(tdir, metrics, cfg, primary_metric=pm)
-        print(f"[ORCH] Report written: {report_path}", flush=True)
+        _log(f"[ORCH] Report written: {report_path}", console=False)
         try:
             tlog.log_artifact('report', report_path, 'Experiment report')
         except Exception:
@@ -287,7 +307,7 @@ def phase_analyze(cfg: Dict[str, Any], trial_dir: Optional[str] = None) -> Dict[
             pass
         return {"report_path": report_path}
     except Exception as e:
-        print(f"[ORCH] Analysis failed: {e}", flush=True)
+        _log(f"[ORCH] Analysis failed: {e}", console=False)
         return {}
 
 def run_full_pipeline(
@@ -296,14 +316,14 @@ def run_full_pipeline(
     run_name: Optional[str] = None # Pass down run_name
 ) -> Dict[str, Any]:
     
-    print("[ORCH] === STEP 1: GENERATE ===", flush=True)
+    _log("[ORCH] === STEP 1: GENERATE ===", console=True)
     # Pass run_name to control folder creation/overwriting
     gen_res = phase_generate(cfg, spec_path, run_name=run_name)
     
-    print("[ORCH] === STEP 2: EXECUTE ===", flush=True)
+    _log("[ORCH] === STEP 2: EXECUTE ===", console=True)
     exec_res = phase_execute(cfg, gen_res["trial_dir"])
     
-    print("[ORCH] === STEP 3: ANALYZE ===", flush=True)
+    _log("[ORCH] === STEP 3: ANALYZE ===", console=True)
     phase_analyze(cfg, gen_res["trial_dir"])
     
     return exec_res

@@ -14,6 +14,26 @@ from .llm_client import chat_json
 from .notebook_autofix import attempt_fix_notebook
 
 # =============================================================================
+# Unified Logging Helper for Subprocess Module
+# =============================================================================
+
+def _log(msg: str, *, console: bool = False):
+    """Unified logging output for subprocess execution.
+    
+    All messages go through print (captured by parent's run_cmd_streamed).
+    - If console=True: Adds [CELL_CONSOLE] prefix → shown in console + all logs
+    - If console=False: Adds [DETAIL] prefix → only in detail logs, not console
+    
+    Args:
+        msg: Message to log
+        console: If True, message appears in console. If False, only in detail logs.
+    """
+    if console:
+        print(f"[CELL_CONSOLE] {msg}", flush=True)
+    else:
+        print(f"[DETAIL] {msg}", flush=True)
+
+# =============================================================================
 # 0. Verbose Client
 # =============================================================================
 
@@ -23,14 +43,14 @@ class VerboseNotebookClient(NotebookClient):
     """
     
     def setup_kernel(self, **kwargs):
-        print(f"[EXEC] 🚀 Starting Kernel Manager...", flush=True)
+        _log(f"[EXEC] 🚀 Starting Kernel Manager...", console=True)
         return super().setup_kernel(**kwargs)
 
     def _log_start(self, cell, cell_index):
         cell_type = cell.get("cell_type", "unknown")
         snippet = cell.get("source", "").strip().split("\n")[0][:50]
         if cell_type == "code":
-            print(f"[EXEC] ⏳ Cell {cell_index} [CODE] Running... | {snippet}...", flush=True)
+            _log(f"[EXEC] ⏳ Cell {cell_index} [CODE] Running... | {snippet}...", console=True)
 
     def _log_outputs(self, cell, cell_index):
         """Helper to print stdout/stderr from the cell."""
@@ -42,24 +62,24 @@ class VerboseNotebookClient(NotebookClient):
             if out.get("output_type") == "stream" and out.get("name") == "stdout":
                 text = out.get("text", "").strip()
                 if text:
-                    print(f"       📝 [STDOUT]: {text}", flush=True)
+                    _log(f"       📝 [STDOUT]: {text}", console=False)
             
 
             elif out.get("output_type") == "stream" and out.get("name") == "stderr":
                 text = out.get("text", "").strip()
                 if text:
-                    print(f"       ⚠️ [STDERR]: {text}", flush=True)
+                    _log(f"       ⚠️ [STDERR]: {text}", console=False)
             
 
             elif out.get("output_type") == "error":
                 ename = out.get("ename", "Error")
                 evalue = out.get("evalue", "Unknown")
-                print(f"       ❌ [ERROR]: {ename} - {evalue}", flush=True)
+                _log(f"       ❌ [ERROR]: {ename} - {evalue}", console=True)
 
     def _log_end(self, cell, cell_index, success=True):
         if cell.get("cell_type") == "code":
             icon = "✅" if success else "❌"
-            print(f"[EXEC] {icon} Cell {cell_index} Done.", flush=True)
+            _log(f"[EXEC] {icon} Cell {cell_index} Done.", console=True)
 
 
     def execute_cell(self, cell, cell_index, execution_count=None, store_history=True):
@@ -112,15 +132,15 @@ def collect_cell_errors(nb: nbformat.NotebookNode) -> List[Dict[str, Any]]:
 def dump_error_log(workdir: str, errors: List[Dict], round_idx: int = 0) -> str:
     log_path = os.path.join(workdir, f"error_log_round_{round_idx}.txt")
     report = f"=== ERROR REPORT (Round {round_idx}) ===\n"
-    print(f"\n{'!'*60}")
-    print(f"[ERROR DUMP] Found {len(errors)} errors. Details saved to: {log_path}")
+    _log(f"\n{'!'*60}", console=False)
+    _log(f"[ERROR DUMP] Found {len(errors)} errors. Details saved to: {log_path}", console=False)
     
     for e in errors:
         idx = e['cell_index']
-        print(f"\n>> Cell {idx} Error: {e['ename']} - {e['evalue']}")
+        _log(f"\n>> Cell {idx} Error: {e['ename']} - {e['evalue']}", console=False)
 
         trace_tail = e['traceback'][-500:] if len(e['traceback']) > 500 else e['traceback']
-        print(f"   [Traceback]:\n{trace_tail}")
+        _log(f"   [Traceback]:\n{trace_tail}", console=False)
         
         entry = (
             f"\n{'-'*60}\n"
@@ -134,7 +154,7 @@ def dump_error_log(workdir: str, errors: List[Dict], round_idx: int = 0) -> str:
         )
         report += entry
 
-    print(f"{'!'*60}\n")
+    _log(f"{'!'*60}\n", console=False)
     with open(log_path, "w", encoding="utf-8") as f: f.write(report)
     return log_path
 
@@ -164,7 +184,7 @@ def run_notebook_pure(nb: nbformat.NotebookNode,
     ]
     
     if extra_env:
-        print(f"[EXEC] 💉 Injecting Code Variables: {list(extra_env.keys())}", flush=True)
+        _log(f"[EXEC] 💉 Injecting Code Variables: {list(extra_env.keys())}", console=False)
         for k, v in extra_env.items():
             setup_code.append(f"os.environ['{k}'] = {repr(v)}")
             
@@ -193,7 +213,7 @@ def run_notebook_pure(nb: nbformat.NotebookNode,
     try: 
         client.execute()
     except Exception as e: 
-        print(f"[EXEC] Kernel Exception (Partial): {e}")
+        _log(f"[EXEC] Kernel Exception (Partial): {e}", console=False)
     
     if len(client.nb.cells) > 0: client.nb.cells.pop(0) 
         
@@ -219,14 +239,14 @@ def execute_and_recover(nb_path: str, workdir: str, cfg: Dict[str, Any], mutable
     current_nb_path = nb_path
     
     nb = nbformat.read(current_nb_path, as_version=4)
-    print(f"\n[EXEC] 🟢 Starting Run: {os.path.basename(current_nb_path)}", flush=True)
+    _log(f"\n[EXEC] 🟢 Starting Run: {os.path.basename(current_nb_path)}", console=True)
     
     executed_nb, errors = run_notebook_pure(nb, workdir, timeout, cuda_device_id=None, extra_env=extra_env)
     
     if not errors:
         out_path = current_nb_path.replace(".ipynb", "_exec.ipynb")
         nbformat.write(executed_nb, out_path)
-        print(f"[EXEC] 🏁 Run Completed Successfully.", flush=True)
+        _log(f"[EXEC] 🏁 Run Completed Successfully.", console=True)
         return out_path, True
     
     fix_round = 0
@@ -234,22 +254,22 @@ def execute_and_recover(nb_path: str, workdir: str, cfg: Dict[str, Any], mutable
     
     while errors and fix_round < max_fixes:
         fix_round += 1
-        print(f"\n[EXEC] 🔴 Errors Found (Round {fix_round}) - Initiating Recovery...", flush=True)
+        _log(f"\n[EXEC] 🔴 Errors Found (Round {fix_round}) - Initiating Recovery...", console=True)
         dump_error_log(workdir, errors, round_idx=fix_round)
         
         fixed_nb, changed, method = attempt_fix_notebook(current_nb_obj, errors, cfg, mutable_indices)
         if not changed:
-            print(f"[EXEC] ⚠️ Could not generate valid fix ({method}). Stopping.", flush=True)
+            _log(f"[EXEC] ⚠️ Could not generate valid fix ({method}). Stopping.", console=False)
             break
-        print(f"[EXEC] 🔧 Applying Fix ({method}) -> Rerunning...", flush=True)
+        _log(f"[EXEC] 🔧 Applying Fix ({method}) -> Rerunning...", console=True)
         current_nb_obj, errors = run_notebook_pure(fixed_nb, workdir, timeout, cuda_device_id=None, extra_env=extra_env)
         if not errors:
-            print(f"[EXEC] ✅ Fixed successfully!", flush=True)
+            _log(f"[EXEC] ✅ Fixed successfully!", console=True)
             break
 
     final_out_path = nb_path.replace(".ipynb", "_exec.ipynb")
     nbformat.write(current_nb_obj, final_out_path)
     if errors:
-        print(f"[EXEC] ❌ Final Execution Failed.", flush=True)
+        _log(f"[EXEC] ❌ Final Execution Failed.", console=True)
         return final_out_path, False
     return final_out_path, True
