@@ -4,7 +4,7 @@ import json
 import re
 import ast
 import nbformat
-from typing import Dict, Any, Tuple, Union, List
+from typing import Dict, Any, Tuple, Union, List, Optional
 from pathlib import Path
 
 # Import centralized LLM tools
