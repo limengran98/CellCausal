@@ -300,7 +300,7 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
     try:
         for i in range(1, max_iters + 1):
             run_name = f"{workspace_prefix}_iter{i:03d}"
-            _log(f"\n{'='*40}\n🔄 ITERATION {i}/{max_iters} | run_name={run_name}\n{'='*40}", console=True)
+            _log(f"\n├─ 🔎 Iteration {i}/{max_iters}", console=True)
 
             # [TELEM] Reset meter at start of iteration to capture ONLY this iteration's usage
             TokenMeter.get_and_reset()
@@ -323,7 +323,12 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
 
                 # [TELEM] Capture Usage specific to this iteration
                 usage_stats = TokenMeter.get_and_reset()
-                _log(f"💰 Cost: {usage_stats['total_tokens']} tokens | {usage_stats['total_latency_sec']:.2f}s LLM time", console=True)
+                _log(f"├─ 💰 Cost: {usage_stats['total_tokens']/1000:.1f}K tokens | {usage_stats['total_latency_sec']:.1f}s LLM time", console=True)
+
+                # Format score output with tree structure
+                threshold_symbol = "✅" if criteria_met else "⚠️"
+                threshold_text = "Above threshold" if criteria_met else "Below threshold"
+                _log(f"└─ 📊 Score: {pm}={score:.4f} (Target: >{threshold}) {threshold_symbol} {threshold_text}", console=True)
 
                 if score > -999.0 and score > best_score:
                     prev_best = best_score

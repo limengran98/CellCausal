@@ -169,7 +169,7 @@ class GraphExecutor(NotebookClient):
 
     def execute_graph(self):
         """Main entry point for graph execution."""
-        _log(f"[GRAPH] 🚀 Initializing Kernel in {self.workdir}", console=True)
+        _log(f"[GRAPH] 🚀 Initializing Kernel in {self.workdir}", console=False)
         
         # 1. Setup Environment & Guard Code
         self._inject_setup_cells()
@@ -178,6 +178,12 @@ class GraphExecutor(NotebookClient):
         self.create_kernel_manager()
         self.start_new_kernel()
         self.start_new_kernel_client()
+
+        # Track execution statistics
+        total_cells = sum(1 for c in self.nb.cells if c.cell_type == 'code')
+        executed_cells = 0
+        failed_cells = 0
+        autofix_used = False
 
         try:
             # 3. Iterate Cells (Nodes)
@@ -194,7 +200,7 @@ class GraphExecutor(NotebookClient):
                 task_id = task_meta.get("id", f"Cell_{cell_idx}")
                 task_name = task_meta.get("name", "Unnamed")
                 
-                _log(f"[GRAPH] ▶️  Running Node {task_id}: {task_name} (Idx: {cell_idx})", console=True)
+                _log(f"├─ ⚙️  Execute: Cell {executed_cells + 1}/{total_cells} [{task_name}]", console=True)
 
                 try:
                     # Execute single cell using nbclient's low-level method
@@ -202,29 +208,37 @@ class GraphExecutor(NotebookClient):
                     
                     # If we are here, execution was successful
                     self._after_cell_success(cell_idx, task_id)
+                    executed_cells += 1
                     cell_idx += 1 
                 
                 except CellExecutionError:
-                    _log(f"[GRAPH] ❌ Error in Node {task_id}. Initiating Adaptive Fix...", console=True)
+                    _log(f"   ❌ Error in Cell {executed_cells + 1} ({task_name})", console=True)
                     self._after_cell_error(cell_idx, task_id)
                     
                     # Try to fix IN-PLACE
                     fixed = self._attempt_node_fix(cell_idx, task_id)
+                    autofix_used = True
                     
                     if fixed:
-                        _log(f"[GRAPH] 🔄 Patch applied to Node {task_id}. Retrying immediately...", console=True)
+                        _log(f"   🔧 Auto-fix applied → Retrying", console=True)
                         # We do NOT increment cell_idx, so the loop will re-execute the SAME cell index
                         # but with the new source code we just patched into self.nb
                         continue 
                     else:
-                        _log(f"[GRAPH] 🛑 Failed to fix Node {task_id} after {self.max_fix_rounds} rounds.", console=True)
+                        _log(f"   🛑 Auto-fix failed after {self.max_fix_rounds} rounds", console=True)
                         self.global_errors.append(f"Task {task_id} Failed.")
+                        failed_cells += 1
                         # Stop execution here to preserve partial results or debug
                         break
         
         finally:
-            _log("[GRAPH] 🛑 Shutting down kernel.", console=True)
+            _log("[GRAPH] 🛑 Shutting down kernel.", console=False)
             self._cleanup_kernel()
+            
+            # Print execution summary
+            success_status = "✅ Success" if failed_cells == 0 else f"❌ Failed ({failed_cells} errors)"
+            autofix_note = " (with autofix)" if autofix_used and failed_cells == 0 else " (no autofix)" if not autofix_used else ""
+            _log(f"└─ ⚙️  Execute: {executed_cells} cells → {success_status}{autofix_note}", console=True)
 
         return self.nb
 
@@ -357,7 +371,7 @@ print("[SETUP] Environment Configured.", "OUTPUT_DIR=", os.environ.get("OUTPUT_D
                 skipped += 1
 
         if copied > 0:
-            _log(f"[EXEC] 💾 Synced {copied} files to intermediate/ @ cell {cell_idx}", console=True)
+            _log(f"   💾 Synced {copied} files to intermediate/", console=False)
 
     def _after_cell_success(self, cell_idx: int, task_id: str):
         if self.checkpoint_each_cell:
@@ -452,12 +466,12 @@ print("[SETUP] Environment Configured.", "OUTPUT_DIR=", os.environ.get("OUTPUT_D
             self._cell_last_error_sig[key] = err_sig
 
             round_no = attempt + 1
-            _log(f"   [FIX] {task_id} | Round {round_no}/{self.max_fix_rounds} | Analyzing...", console=False)
+            _log(f"   🔧 Auto-fix (Round {round_no}/{self.max_fix_rounds})", console=True)
 
             # 1. Heuristics (Fast path)
             h_changes, _ = _apply_heuristics(self.nb, errors)
             if h_changes > 0:
-                _log(f"   [FIX] ⚡ Applied heuristic patch.", console=False)
+                _log(f"   ✅ Heuristic patch applied", console=False)
                 self._cell_fix_counts[key] = round_no
                 return True
 
@@ -478,11 +492,11 @@ print("[SETUP] Environment Configured.", "OUTPUT_DIR=", os.environ.get("OUTPUT_D
                 new_source = nb_fixed.cells[cell_idx].source
                 if self.nb.cells[cell_idx].source != new_source:
                     self.nb.cells[cell_idx].source = new_source
-                    _log(f"   [FIX] 🧠 LLM patch generated and applied.", console=False)
+                    _log(f"   ✅ LLM patch applied", console=False)
                     self._cell_fix_counts[key] = round_no
                     return True
                 else:
-                    _log(f"   [FIX] ⚠️ LLM returned identical code.", console=False)
+                    _log(f"   ⚠️ LLM returned identical code", console=False)
             
         return False
 

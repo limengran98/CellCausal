@@ -316,14 +316,14 @@ def run_full_pipeline(
     run_name: Optional[str] = None # Pass down run_name
 ) -> Dict[str, Any]:
     
-    _log("[ORCH] === STEP 1: GENERATE ===", console=True)
+    _log("├─ 🔎 STEP 1: GENERATE", console=True)
     # Pass run_name to control folder creation/overwriting
     gen_res = phase_generate(cfg, spec_path, run_name=run_name)
     
-    _log("[ORCH] === STEP 2: EXECUTE ===", console=True)
+    _log("├─ 🔎 STEP 2: EXECUTE", console=True)
     exec_res = phase_execute(cfg, gen_res["trial_dir"])
     
-    _log("[ORCH] === STEP 3: ANALYZE ===", console=True)
+    _log("└─ 🔎 STEP 3: ANALYZE", console=True)
     phase_analyze(cfg, gen_res["trial_dir"])
     
     return exec_res

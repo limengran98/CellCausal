@@ -371,6 +371,7 @@ def generate_notebook_content(
     # Controlled by cfg['literature']['enabled']. Uses Serper for search and (optionally) Jina Reader for scraping.
     external_knowledge_md = ""
     external_knowledge_section = ""
+    pack = None
     try:
         pack = retrieve_external_knowledge(
             cfg,
@@ -383,6 +384,23 @@ def generate_notebook_content(
             pack,
             max_chars=int(((cfg.get("literature") or {}) if isinstance(cfg.get("literature"), dict) else {}).get("prompt_max_chars", 6000) or 6000),
         )
+        
+        # Add knowledge retrieval summary to console
+        if pack and pack.items:
+            # Count by source type
+            biokb_count = sum(1 for item in pack.items if item.source == "biokb")
+            web_count = len(pack.items) - biokb_count
+            
+            # Format counts for display
+            parts = []
+            if web_count > 0:
+                parts.append(f"{web_count} papers")
+            if biokb_count > 0:
+                parts.append(f"{biokb_count} pathways")
+            
+            if parts:
+                _log(f"├─ 📚 Knowledge: Retrieved {' + '.join(parts)}", console=True)
+        
         # [DIAGNOSTIC] Explicitly warn if no items found
         if not pack.items:
             external_knowledge_section = "\n> [WARN] External knowledge search executed but returned NO results. Check logs/API key.\n"
@@ -407,6 +425,10 @@ def generate_notebook_content(
     if raw_ideas:
         strategy_md = _synthesize_strategy(cfg, raw_ideas, debug_dir)
         if strategy_md:
+            # Calculate and display strategy size
+            strategy_size_kb = len(strategy_md.encode('utf-8')) / 1024
+            _log(f"├─ 🧠 Generate: Strategy synthesized ({strategy_size_kb:.1f}KB)", console=True)
+            
             full_user_content = f"""
 ================================================================================
 # PART 1: RESEARCH STRATEGY (MANDATORY IMPLEMENTATION)
@@ -516,6 +538,11 @@ Follow these rules strictly:
         hypergraph_data = nb_json.get("hypergraph", {}) or {}
     elif isinstance(nb_json, list):
         cells_data = nb_json
+
+    # Calculate total code size
+    total_code_size = sum(len((c.get("code", "") or "").encode('utf-8')) for c in cells_data if isinstance(c, dict))
+    code_size_kb = total_code_size / 1024
+    _log(f"└─ 🧠 Generate: Code generated ({code_size_kb:.1f}KB, {len(cells_data)} cells)", console=True)
 
     if hypergraph_data:
         nb.metadata["execution"] = {"hypergraph": hypergraph_data}
