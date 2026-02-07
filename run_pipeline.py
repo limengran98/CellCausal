@@ -50,6 +50,7 @@ from cellscientist.pipeline.report import (
 from cellscientist.pipeline.advanced_metrics import (
     maybe_generate_advanced_metrics,
 )
+from cellscientist.pipeline.logging_system import create_tiered_logger
 
 
 def _default_stage_map() -> Dict[str, Dict[str, Any]]:
@@ -139,24 +140,48 @@ def main() -> None:
     # 3) Validate dataset_name is consistent
     dataset_name = validate_configs(stage_map)
 
-    # 4) Pretty plan
-    print_execution_plan(stage_map, dataset_name)
-
-    # 5) Logs
+    # 4) Create logs directory
     logs_dir = _make_logs_dir(dataset_name)
 
-    # 6) Run Experiment Stage
+    # 5) Initialize 4-Tier Logger
+    # Gather full config for logger initialization
+    # Note: Using lowercase keys ('experiment', 'review') for internal consistency
+    # while display names use title case ('Experiment', 'Review')
+    full_config = {
+        "pipeline": pipe_cfg,
+        "stages": {
+            "experiment": stage_map.get("Experiment", {}).get("_loaded_cfg", {}),
+            "review": stage_map.get("Review", {}).get("_loaded_cfg", {})
+        }
+    }
+    logger = create_tiered_logger(logs_dir, full_config, dataset_name)
+    
+    # Log pipeline initialization
+    logger.full_log("=" * 80)
+    logger.full_log("PIPELINE EXECUTION START")
+    logger.full_log("=" * 80)
+    logger.full_log(f"Dataset: {dataset_name}")
+    logger.full_log(f"Logs Directory: {logs_dir}")
+    
+    # 6) Pretty plan (using existing function - still outputs to console)
+    print_execution_plan(stage_map, dataset_name)
+
+    # 7) Run Experiment Stage
     exp_cfg = stage_map["Experiment"]["config"]
     exp_log = os.path.join(logs_dir, "experiment.log")
     exp_t0 = time.time()
 
     cmd2 = stage_map["Experiment"]["entry"] + ["--config", exp_cfg, "run"]
-    print(f"\n[PIPELINE] ▶ Running Experiment Stage\n  cmd: {' '.join(cmd2)}\n  log: {exp_log}\n", flush=True)
+    logger.console_info("")
+    logger.console_info("🔄 EXPERIMENT STAGE", level=0)
+    logger.full_log(f"Running Experiment Stage: {' '.join(cmd2)}")
+    logger.full_log(f"Experiment log: {exp_log}")
+    
     with open(exp_log, "w", encoding="utf-8") as fp:
         run_subprocess_streamed(cmd2, cwd=project_root(), phase_fp=fp, extra_env=extra_env)
     exp_t1 = time.time()
 
-    # 7) Discover Experiment output dir
+    # 8) Discover Experiment output dir
     # Prefer config-declared design_execution_root; runner extractor uses it as base_dir.
     exp_loaded = stage_map["Experiment"].get("_loaded_cfg") or {}
     ge_root = ((exp_loaded.get("paths") or {}).get("design_execution_root")
@@ -170,24 +195,31 @@ def main() -> None:
         # fall back to ge_root, review has its own selection logic
         experiment_out = ge_root
 
-    print(f"[PIPELINE] Experiment output directory: {experiment_out}", flush=True)
+    logger.console_info(f"Output directory: {experiment_out}", level=1, symbol="📁")
+    logger.full_log(f"Experiment output directory: {experiment_out}")
 
-    # 8) Run Review Stage
+    # 9) Run Review Stage
     review_log = os.path.join(logs_dir, "review.log")
     review_t0 = time.time()
 
     if args.skip_review:
-        print("\n[PIPELINE] ⏭ Skipping review/optimization stage (--skip-review).", flush=True)
+        logger.console_info("")
+        logger.console_info("⏭ Skipping review/optimization stage (--skip-review)", level=0)
+        logger.full_log("Review stage skipped by user")
         review_t1 = review_t0
     else:
         review_cfg = stage_map["Review"]["config"]
         cmd3 = stage_map["Review"]["entry"] + ["--config", review_cfg, "--source_path", experiment_out]
-        print(f"\n[PIPELINE] ▶ Running Review/Optimization Stage\n  cmd: {' '.join(cmd3)}\n  log: {review_log}\n", flush=True)
+        logger.console_info("")
+        logger.console_info("🔄 REVIEW STAGE", level=0)
+        logger.full_log(f"Running Review Stage: {' '.join(cmd3)}")
+        logger.full_log(f"Review log: {review_log}")
+        
         with open(review_log, "w", encoding="utf-8") as fp:
             run_subprocess_streamed(cmd3, cwd=project_root(), phase_fp=fp, extra_env=extra_env)
         review_t1 = time.time()
 
-    # 9) Collect metrics summary
+    # 10) Collect metrics summary
     summary: Dict[str, Any] = {"dataset": dataset_name, "logs_dir": logs_dir, "stages": {}}
 
     # Experiment metrics
@@ -256,15 +288,28 @@ def main() -> None:
     all_scores = list(exp_scores) + (list(summary["stages"].get("Review", {}).get("scores", [])) if False else [])
     # keep totals focused on rates/timing; per-stage averages already recorded.
     summary["stages"]["Total"] = {"time_sec": total_t}
+    
+    # Log timing summary
+    logger.console_info("")
+    logger.print_timing(f"Experiment completed in {exp_t1 - exp_t0:.1f}s")
+    if not args.skip_review:
+        logger.print_timing(f"Review completed in {review_t1 - review_t0:.1f}s")
+    logger.print_timing(f"Total pipeline time: {total_t:.1f}s")
 
+    # Display final scoreboard
     print_final_scoreboard(summary)
 
-    # 10) Final report + advanced metrics (runner post-processing)
+    # 11) Final report + advanced metrics (runner post-processing)
     if not args.skip_final_report:
+        logger.console_info("")
+        logger.console_info("📝 Generating final reports...", level=0)
         generate_final_report_and_exports(summary, stage_map, pipe_cfg)
         maybe_generate_advanced_metrics(summary, stage_map, pipe_cfg)
-
-    print(f"\n[PIPELINE] ✅ Completed. Logs: {logs_dir}\n", flush=True)
+    
+    # 12) Finalize logger (saves evidence chain)
+    logger.console_info("")
+    logger.console_info(f"✅ Pipeline completed. Logs: {logs_dir}", level=0)
+    logger.finalize()
 
 
 if __name__ == "__main__":
