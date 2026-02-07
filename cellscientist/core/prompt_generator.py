@@ -399,7 +399,8 @@ def generate_notebook_content(
                 parts.append(f"{biokb_count} pathways")
             
             if parts:
-                _log(f"├─ 📚 Knowledge: Retrieved {' + '.join(parts)}", console=True)
+                summary = " and ".join(parts) if len(parts) == 2 else parts[0]
+                _log(f"├─ 📚 Knowledge: Retrieved {summary}", console=True)
         
         # [DIAGNOSTIC] Explicitly warn if no items found
         if not pack.items:

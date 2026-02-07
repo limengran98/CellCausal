@@ -52,6 +52,13 @@ def _log(msg: str, *, console: bool = False):
         print(f"[DETAIL] {msg}", flush=True)
 
 
+def _format_token_count(tokens: int) -> str:
+    """Format token count for display (e.g., 12500 -> 12.5K)."""
+    if tokens >= 1000:
+        return f"{tokens / 1000:.1f}K"
+    return str(tokens)
+
+
 # =============================================================================
 # Setup Functions
 # =============================================================================
@@ -323,7 +330,7 @@ def run_loop(cfg: dict, prompt_file: Optional[str], use_idea: bool):
 
                 # [TELEM] Capture Usage specific to this iteration
                 usage_stats = TokenMeter.get_and_reset()
-                _log(f"├─ 💰 Cost: {usage_stats['total_tokens']/1000:.1f}K tokens | {usage_stats['total_latency_sec']:.1f}s LLM time", console=True)
+                _log(f"├─ 💰 Cost: {_format_token_count(usage_stats['total_tokens'])} tokens | {usage_stats['total_latency_sec']:.1f}s LLM time", console=True)
 
                 # Format score output with tree structure
                 threshold_symbol = "✅" if criteria_met else "⚠️"
