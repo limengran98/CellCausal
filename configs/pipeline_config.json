@@ -18,7 +18,7 @@
   
   "llm": {
     "base_url": "https://vip.yi-zhan.top/v1",
-    "api_key": "sk-00fKNXuFU5uFWIgC31666619E0044b78B64fB614904aCd9d",
+    "api_key": "sk-8SoR8BKCDl9Ruz3K373fC861FbB84f8eB508A4Eb265f26D4",
     "max_tokens": 40000,
     "timeout": 600,
     "model": "gemini-3-flash-preview",
@@ -28,7 +28,7 @@
   "llm_report": {
     "model": "gemini-3-pro-preview-thinking",
     "base_url": "https://vip.yi-zhan.top/v1",
-    "api_key": "sk-00fKNXuFU5uFWIgC31666619E0044b78B64fB614904aCd9d",
+    "api_key": "sk-8SoR8BKCDl9Ruz3K373fC861FbB84f8eB508A4Eb265f26D4",
     "max_tokens": 40000,
     "temperature": 0.7,
     "timeout": 600
