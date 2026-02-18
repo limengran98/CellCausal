@@ -52,25 +52,25 @@
     "max_abstract_chars": 3000,
     "prompt_max_chars": 60000,
     "task_keywords": "cell painting perturbation modeling",
-    "query": ""
-  },
-  
-  "bio_kb": {
-    "enabled": true,
-    "sampling_strategy": "adaptive",
-    "sampling_method": "cross_batch_first",
-    "max_total_smiles": null,
-    "adaptive_ratio": 0.25,
+    "query": "",
     
-    "_comment_inject": "Default: conservative for Experiment stage",
-    "inject_max_items": 10,
-    
-    "_comment_depth": "Default: moderate depth for initial exploration",
-    "max_targets_per_smiles": 8,
-    "max_pathways_per_target": 12,
-    
-    "cache_enabled": true,
-    "parallel_queries": 1
+    "bio_kb": {
+      "enabled": true,
+      "sampling_strategy": "adaptive",
+      "sampling_method": "cross_batch_first",
+      "max_total_smiles": null,
+      "adaptive_ratio": 0.25,
+      
+      "_comment_inject": "Default: conservative for Experiment stage",
+      "inject_max_items": 10,
+      
+      "_comment_depth": "Default: moderate depth for initial exploration",
+      "max_targets_per_smiles": 8,
+      "max_pathways_per_target": 12,
+      
+      "cache_enabled": true,
+      "parallel_queries": 1
+    }
   },
   
   "env": {},

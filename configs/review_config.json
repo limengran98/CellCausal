@@ -41,10 +41,12 @@
     "timeout_seconds": 18000
   },
   
-  "bio_kb": {
-    "_comment": "Review stage: more aggressive BioKB querying for optimization",
-    "inject_max_items": 12,
-    "max_targets_per_smiles": 10,
-    "max_pathways_per_target": 15
+  "literature": {
+    "bio_kb": {
+      "_comment": "Review stage: more aggressive BioKB querying for optimization",
+      "inject_max_items": 12,
+      "max_targets_per_smiles": 10,
+      "max_pathways_per_target": 15
+    }
   }
 }
