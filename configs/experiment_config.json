@@ -6,13 +6,13 @@
   },
   
   "llm": {
-    "model": "gemini-3-pro-all",
+    "model": null,
     "temperature": 0.5
   },
   
   "experiment": {
     "primary_metric": "PCC",
-    "max_iterations": 3,
+    "max_iterations": 5,
     "success_threshold": 0.5
   },
   
