@@ -27,11 +27,17 @@ import time
 import traceback
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .message_bus import SimpleMessageBus
 
 logger = logging.getLogger(__name__)
+
+
+def _now_iso() -> str:
+    """Return the current UTC time in ISO-8601 format."""
+    return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # =============================================================================
@@ -419,29 +425,51 @@ class ModelingAgent(BaseAgent):
             console=True,
         )
 
-        # Build a prompt for the LLM.
+        # Build a prompt for the LLM using PromptManager (falls back to hardcoded defaults).
         smiles_list: List[str] = insight_report.get("smiles_list") or []
         literature = (insight_report.get("literature_summary") or {}).get("markdown_summary") or ""
 
-        if error_logs and existing_code:
-            system_prompt = (
-                "You are an expert PyTorch/GNN engineer. "
-                "The code below raised errors. Fix ALL errors and return ONLY the corrected Python code."
-            )
-            user_content = (
-                f"## Error Logs\n{error_logs}\n\n"
-                f"## Existing Code\n```python\n{existing_code}\n```"
-            )
-        else:
-            system_prompt = (
-                "You are an expert PyTorch/GNN engineer specialising in cell perturbation modeling. "
-                "Write complete, runnable Python code for a GNN model that predicts cell painting "
-                "perturbation responses. Return ONLY the Python code."
-            )
-            user_content = (
-                f"## Biological Context\n{literature}\n\n"
-                f"## SMILES Compounds (sample)\n{smiles_list[:10]}"
-            )
+        try:
+            from .prompt_manager import get_default_prompt_manager  # type: ignore
+
+            pm = get_default_prompt_manager()
+            if error_logs and existing_code:
+                system_prompt = pm.get_prompt("modeling_agent", "self_correction_system_prompt")
+                user_content = pm.get_prompt(
+                    "modeling_agent",
+                    "self_correction_template",
+                    error_logs=error_logs,
+                    existing_code=existing_code,
+                )
+            else:
+                system_prompt = pm.get_prompt("modeling_agent", "system_prompt")
+                user_content = pm.get_prompt(
+                    "modeling_agent",
+                    "code_generation_template",
+                    literature=literature,
+                    smiles_list=str(smiles_list[:10]),
+                )
+        except Exception:
+            # Hard fallback if PromptManager is unavailable.
+            if error_logs and existing_code:
+                system_prompt = (
+                    "You are an expert PyTorch/GNN engineer. "
+                    "The code below raised errors. Fix ALL errors and return ONLY the corrected Python code."
+                )
+                user_content = (
+                    f"## Error Logs\n{error_logs}\n\n"
+                    f"## Existing Code\n```python\n{existing_code}\n```"
+                )
+            else:
+                system_prompt = (
+                    "You are an expert PyTorch/GNN engineer specialising in cell perturbation modeling. "
+                    "Write complete, runnable Python code for a GNN model that predicts cell painting "
+                    "perturbation responses. Return ONLY the Python code."
+                )
+                user_content = (
+                    f"## Biological Context\n{literature}\n\n"
+                    f"## SMILES Compounds (sample)\n{smiles_list[:10]}"
+                )
 
         code: str = ""
         try:
@@ -520,6 +548,8 @@ class ExecutionAgent(BaseAgent):
         timeout: int = int(
             (self.config.get("exec") or {}).get("timeout_seconds") or 300
         )
+        iteration: int = int(message.get("iteration") or 0)
+        task_id: str = str(message.get("_task_id") or "")
 
         stdout_val = ""
         stderr_val = ""
@@ -563,6 +593,26 @@ class ExecutionAgent(BaseAgent):
             console=True,
         )
 
+        # Build and persist a structured error report when execution fails.
+        if not success:
+            # Extract actual error type from the traceback string if available.
+            error_type = "ExecutionError"
+            if tb_val:
+                # Traceback lines end with: ExceptionClass: message
+                for line in reversed(tb_val.strip().splitlines()):
+                    stripped = line.strip()
+                    if stripped and ":" in stripped and not stripped.startswith(" "):
+                        error_type = stripped.split(":")[0].strip()
+                        break
+            self._save_error_report(
+                task_id=task_id,
+                iteration=iteration,
+                error_type=error_type,
+                error_message=stderr_val,
+                tb=tb_val,
+                code=code,
+            )
+
         return AgentResponse(
             status=status_val,
             data={
@@ -571,9 +621,63 @@ class ExecutionAgent(BaseAgent):
                 "traceback": tb_val,
                 "code": code,
                 "insight_report": insight_report,
+                "iteration": iteration,
             },
             next_recipient="evaluation",
         )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _save_error_report(
+        self,
+        task_id: str,
+        iteration: int,
+        error_type: str,
+        error_message: str,
+        tb: str,
+        code: str,
+    ) -> None:
+        """Persist a structured JSON error report via :class:`WorkspaceManager`.
+
+        The report can be read by :class:`ModelingAgent` for self-correction.
+
+        Args:
+            task_id: Pipeline task identifier.
+            iteration: Current iteration number.
+            error_type: Exception class name.
+            error_message: Short error description.
+            tb: Full traceback string.
+            code: The Python source that failed.
+        """
+        if not task_id:
+            return
+        try:
+            from .workspace_manager import WorkspaceManager  # type: ignore
+
+            wm = WorkspaceManager(task_id)
+            wm.ensure_dirs()
+            report = {
+                "error_type": error_type,
+                "error_message": error_message,
+                "traceback": tb,
+                "agent": self.__class__.__name__,
+                "state": "EXECUTING",
+                "timestamp": _now_iso(),
+                "context": {
+                    "task_id": task_id,
+                    "iteration": iteration,
+                    "code_snippet": code[:500],
+                },
+            }
+            wm.save_artifact(
+                "execution",
+                f"error_report_iter_{iteration}.json",
+                report,
+            )
+        except Exception as exc:
+            _log(f"[{self.agent_id}] Could not save error report: {exc}")
 
 
 # =============================================================================

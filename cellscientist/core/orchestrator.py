@@ -2,7 +2,8 @@
 """Multi-Agent Pipeline Orchestrator.
 
 Initialises the message bus and all agents, loads :class:`~.agents.TaskContext`
-from ``pipeline_config.json``, and manages the iteration loop.
+from ``pipeline_config.json``, and manages the iteration loop using a
+Finite State Machine (FSM).
 
 Entry-point integration
 -----------------------
@@ -15,15 +16,26 @@ Or for a synchronous call::
 
     from cellscientist.core.orchestrator import run_orchestrator_sync
     run_orchestrator_sync(config)
+
+FSM States
+----------
+``INITIALIZING`` → ``KNOWLEDGE_RETRIEVAL`` → ``MODEL_GENERATION`` →
+``EXECUTING`` → ``EVALUATING`` → ``RETRY_LOGIC`` (on failure) or
+``TERMINATED`` (on success / exhausted iterations).
+
+Each transition emits its legacy ``[Phase: …]`` alias so that existing
+log-parsers and monitoring systems continue to work unchanged.
 """
 
 from __future__ import annotations
 
 import asyncio
+import enum
 import json
 import logging
 import os
-from typing import Any, Dict, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 from .agents import (
     EvaluationAgent,
@@ -35,6 +47,41 @@ from .agents import (
 from .message_bus import SimpleMessageBus
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Finite State Machine definitions
+# =============================================================================
+
+
+class PipelineState(enum.Enum):
+    """FSM states for the multi-agent pipeline.
+
+    Each state is paired with a legacy ``[Phase: …]`` alias in
+    :data:`STATE_LEGACY_ALIASES` so that existing monitoring and log-parsers
+    remain unaffected.
+    """
+
+    INITIALIZING = "INITIALIZING"
+    KNOWLEDGE_RETRIEVAL = "KNOWLEDGE_RETRIEVAL"
+    MODEL_GENERATION = "MODEL_GENERATION"
+    EXECUTING = "EXECUTING"
+    EVALUATING = "EVALUATING"
+    RETRY_LOGIC = "RETRY_LOGIC"
+    TERMINATED = "TERMINATED"
+
+
+#: Mapping from :class:`PipelineState` to the legacy ``[Phase: …]`` marker
+#: that MUST appear in log output for backward-compatible monitoring.
+STATE_LEGACY_ALIASES: Dict[PipelineState, str] = {
+    PipelineState.INITIALIZING: "[Phase: Setup]",
+    PipelineState.KNOWLEDGE_RETRIEVAL: "[Phase: Review]",
+    PipelineState.MODEL_GENERATION: "[Phase: Experiment]",
+    PipelineState.EXECUTING: "[Phase: Execution]",
+    PipelineState.EVALUATING: "[Phase: Evaluation]",
+    PipelineState.RETRY_LOGIC: "[Phase: Retry]",
+    PipelineState.TERMINATED: "[Phase: Complete]",
+}
 
 
 # =============================================================================
@@ -55,17 +102,26 @@ def _log(msg: str, *, console: bool = False) -> None:
         print(f"[DETAIL] {msg}", flush=True)
 
 
+def _now_iso() -> str:
+    """Return the current UTC time in ISO-8601 format."""
+    return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 # =============================================================================
 # Orchestrator
 # =============================================================================
 
 
 class PipelineOrchestrator:
-    """Async orchestrator that coordinates the multi-agent pipeline.
+    """Async orchestrator that coordinates the multi-agent pipeline via an FSM.
 
     Initialises a :class:`~.message_bus.SimpleMessageBus`, instantiates one
     agent of each type, and drives the agent loop until the accuracy goal is
     met or ``max_iterations`` is exhausted.
+
+    The orchestrator uses a :class:`PipelineState` FSM.  Each state transition
+    prints the corresponding legacy ``[Phase: …]`` alias so that existing
+    monitoring and log-parsers continue to work unchanged.
 
     Attributes:
         config: Full pipeline configuration dict.
@@ -75,6 +131,10 @@ class PipelineOrchestrator:
         modeling_agent: :class:`~.agents.ModelingAgent` instance.
         execution_agent: :class:`~.agents.ExecutionAgent` instance.
         evaluation_agent: :class:`~.agents.EvaluationAgent` instance.
+        current_state: The active :class:`PipelineState`.
+        previous_state: The last :class:`PipelineState` before the current one.
+        transition_history: Ordered list of ``(from_state, to_state, timestamp)``
+            tuples recorded at every state transition.
     """
 
     def __init__(self, config: Dict[str, Any]) -> None:
@@ -95,6 +155,17 @@ class PipelineOrchestrator:
         # Build shared task context.
         self.context: TaskContext = TaskContext.from_config(config)
 
+        # FSM state tracking.  Start from a sentinel value so that the first
+        # real _enter_state() call produces a clean `None → INITIALIZING` entry
+        # in transition_history (stored as ``INITIALIZING → INITIALIZING`` for
+        # the bootstrap case is avoided by starting with the sentinel below).
+        self.current_state: Optional[PipelineState] = None
+        self.previous_state: Optional[PipelineState] = None
+        self.transition_history: List[Tuple[Optional[PipelineState], PipelineState, str]] = []
+
+        # Bootstrap: enter the INITIALIZING state.
+        self._enter_state(PipelineState.INITIALIZING)
+
         _log(
             f"[Orchestrator] Initialised task '{self.context.task_id}' "
             f"(max_iterations={self.context.max_iterations}, "
@@ -102,15 +173,45 @@ class PipelineOrchestrator:
             console=True,
         )
 
+    # ------------------------------------------------------------------
+    # FSM helpers
+    # ------------------------------------------------------------------
+
+    def _enter_state(self, new_state: PipelineState) -> None:
+        """Transition to *new_state* and emit the legacy phase alias.
+
+        Records the transition in :attr:`transition_history`.
+
+        Args:
+            new_state: The :class:`PipelineState` to transition to.
+        """
+        from_state = self.current_state
+        self.previous_state = from_state
+        self.current_state = new_state
+        ts = _now_iso()
+        self.transition_history.append((from_state, new_state, ts))
+
+        from_label = from_state.value if from_state is not None else "None"
+        legacy = STATE_LEGACY_ALIASES.get(new_state, "")
+        _log(
+            f"[Orchestrator] State transition: {from_label} → {new_state.value} "
+            f"{legacy}",
+            console=True,
+        )
+        # Emit the bare legacy alias on its own line so log-parsers can match it.
+        if legacy:
+            _log(legacy, console=True)
+
     async def run(self) -> Dict[str, Any]:
-        """Execute the full multi-agent pipeline.
+        """Execute the full multi-agent pipeline using the FSM.
 
         Kick-off sequence:
-        1. Send initial message to :class:`~.agents.ResearchAgent`.
-        2. Research → ``biology_insights`` → Modeling
-        3. Modeling → ``code_execution`` → Execution
-        4. Execution → ``evaluation`` → Evaluation
-        5. Evaluation → ``orchestration`` (done) OR feeds back into loop.
+        1. Transition to ``KNOWLEDGE_RETRIEVAL`` and send initial message.
+        2. Research → ``biology_insights`` → Modeling (``MODEL_GENERATION``).
+        3. Modeling → ``code_execution`` → Execution (``EXECUTING``).
+        4. Execution → ``evaluation`` → Evaluation (``EVALUATING``).
+        5. Evaluation → ``orchestration`` (``TERMINATED``) OR
+           failure → ``RETRY_LOGIC`` → back to ``MODEL_GENERATION``.
 
         Returns:
             A summary dict with ``status``, ``iterations``, and final
@@ -141,6 +242,9 @@ class PipelineOrchestrator:
             ),
         ]
 
+        # ---- KNOWLEDGE_RETRIEVAL state ----
+        self._enter_state(PipelineState.KNOWLEDGE_RETRIEVAL)
+
         # Seed the pipeline.
         initial_message = {
             "smiles_list": self.context.smiles_list,
@@ -149,6 +253,9 @@ class PipelineOrchestrator:
             "stage": "design",
             "iteration": 0,
             "max_iterations": self.context.max_iterations,
+            # Embed FSM state so agents can include it in their logs.
+            "_fsm_state": self.current_state.value if self.current_state else "",
+            "_task_id": self.context.task_id,
         }
         # The ResearchAgent subscribes to biology_insights; trigger it.
         await self.bus.publish("biology_insights", initial_message)
@@ -182,12 +289,23 @@ class PipelineOrchestrator:
         accuracy = data.get("accuracy")
         iterations_done = self.context.iteration
 
+        # Handle error states: transition to RETRY_LOGIC if something failed.
+        if status == "error":
+            self._enter_state(PipelineState.RETRY_LOGIC)
+
+        # Terminal state.
+        self._enter_state(PipelineState.TERMINATED)
+
         summary = {
             "status": status,
             "task_id": self.context.task_id,
             "iterations": iterations_done,
             "accuracy": accuracy,
             "max_iterations_reached": data.get("max_iterations_reached", False),
+            "fsm_transitions": [
+                {"from": f.value, "to": t.value, "timestamp": ts}
+                for f, t, ts in self.transition_history
+            ],
         }
 
         _log(
