@@ -316,6 +316,12 @@ def extract_json_from_text(text: str) -> Union[Dict[str, Any], List[Any]]:
     raw = text.strip()
     raw = _strip_think(raw)
 
+    # Strip markdown fenced code blocks before any other processing.
+    # Match opening fences: ``` optionally followed by any language identifier.
+    raw = re.sub(r"```[^\n`]*\n?", "", raw)
+    raw = re.sub(r"```\s*$", "", raw, flags=re.MULTILINE)
+    raw = raw.strip()
+
     # Phase-3 pre-processing: remove leading/trailing wrappers
     t = re.sub(r"^[^{\[]*", "", raw)
     t = re.sub(r"[^}\]]*$", "", t)
