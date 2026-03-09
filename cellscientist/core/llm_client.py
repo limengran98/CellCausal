@@ -589,24 +589,21 @@ def chat_json(
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": False,
+        "response_format": {"type": "json_object"},
     }
-
-    # Phase-2 requested response_format; preserve for llm_config style calls.
-    if llm_config is not None:
-        base_payload["response_format"] = {"type": "json_object"}
 
     last_error: Optional[Exception] = None
 
     for attempt in range(max_retries):
         payload = dict(base_payload)
 
-        # Phase-2 retry nudge: add a strict system reminder.
-        if attempt > 0 and llm_config is not None:
+        # Retry nudge: add a strict system reminder on subsequent attempts.
+        if attempt > 0:
             payload["messages"] = messages + [
                 {"role": "system", "content": "Return ONLY a valid JSON object. No markdown, no prose, no <think>."}
             ]
 
-        # Phase-3 retry behavior: slightly increase temperature for variety.
+        # Slightly increase temperature for variety on retries.
         if attempt > 0 and llm_config is None:
             payload["temperature"] = float(temperature) + (0.1 * attempt)
 

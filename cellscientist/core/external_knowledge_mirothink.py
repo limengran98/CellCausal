@@ -260,7 +260,22 @@ def _jina_scrape_url(
     base_url: str = "https://r.jina.ai",
     timeout: int = 60,
     max_chars: int = 12000,
+    fallback_snippet: str = "",
 ) -> str:
+    """Scrape a URL via Jina Reader.
+
+    Args:
+        url: Target URL to scrape.
+        api_key: Jina API key.
+        base_url: Jina Reader base URL.
+        timeout: Request timeout in seconds.
+        max_chars: Maximum characters to return.
+        fallback_snippet: Raw search snippet used as fallback when Jina is
+            unavailable (402 Payment Required or timeout).
+
+    Returns:
+        Scraped page content, or a fallback snippet string on 402/timeout.
+    """
     if not url or not url.startswith(("http://", "https://")):
         return f"Invalid URL: {url}"
 
@@ -277,8 +292,25 @@ def _jina_scrape_url(
 
     jina_url = f"{base_url.rstrip('/')}/{url}"
     headers = {"Authorization": f"Bearer {api_key}"}
-    r = requests.get(jina_url, headers=headers, timeout=timeout)
-    r.raise_for_status()
+    try:
+        r = requests.get(jina_url, headers=headers, timeout=timeout)
+        r.raise_for_status()
+    except requests.exceptions.Timeout:
+        print(
+            "[LIT] ⚠️ Jina scrape failed (402/timeout), using raw search snippets as fallback",
+            flush=True,
+        )
+        snippet = fallback_snippet or "(no snippet available)"
+        return f"[Jina unavailable] Raw snippet: {snippet}"
+    except requests.exceptions.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 402:
+            print(
+                "[LIT] ⚠️ Jina scrape failed (402/timeout), using raw search snippets as fallback",
+                flush=True,
+            )
+            snippet = fallback_snippet or "(no snippet available)"
+            return f"[Jina unavailable] Raw snippet: {snippet}"
+        raise
     content = _strip_markdown_links(r.text.strip())
     if max_chars and len(content) > max_chars:
         content = content[:max_chars] + "\n... (truncated)"
@@ -794,7 +826,7 @@ def retrieve_external_knowledge(
                         
                         for idx, it in enumerate(items_to_scrape, start=1):
                             try:
-                                raw = _jina_scrape_url(it.url, api_key=jina_key, base_url=jina_base, max_chars=30000)
+                                raw = _jina_scrape_url(it.url, api_key=jina_key, base_url=jina_base, max_chars=30000, fallback_snippet=it.snippet)
 
                                 # TIER 3: Only summarize up to summarize_max
                                 if idx <= summarize_max:
