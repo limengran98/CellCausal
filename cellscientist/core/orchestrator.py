@@ -67,6 +67,7 @@ class PipelineState(enum.Enum):
     MODEL_GENERATION = "MODEL_GENERATION"
     EXECUTING = "EXECUTING"
     EVALUATING = "EVALUATING"
+    FEEDBACK_ROUTING = "FEEDBACK_ROUTING"
     RETRY_LOGIC = "RETRY_LOGIC"
     TERMINATED = "TERMINATED"
 
@@ -79,6 +80,7 @@ STATE_LEGACY_ALIASES: Dict[PipelineState, str] = {
     PipelineState.MODEL_GENERATION: "[Phase: Experiment]",
     PipelineState.EXECUTING: "[Phase: Execution]",
     PipelineState.EVALUATING: "[Phase: Evaluation]",
+    PipelineState.FEEDBACK_ROUTING: "[Phase: Routing]",
     PipelineState.RETRY_LOGIC: "[Phase: Retry]",
     PipelineState.TERMINATED: "[Phase: Complete]",
 }
@@ -210,12 +212,19 @@ class PipelineOrchestrator:
         2. Research → ``biology_insights`` → Modeling (``MODEL_GENERATION``).
         3. Modeling → ``code_execution`` → Execution (``EXECUTING``).
         4. Execution → ``evaluation`` → Evaluation (``EVALUATING``).
-        5. Evaluation → ``orchestration`` (``TERMINATED``) OR
-           failure → ``RETRY_LOGIC`` → back to ``MODEL_GENERATION``.
+        5. Evaluation always publishes to ``orchestration``.
+        6. Orchestrator loops on ``orchestration``:
+           - ``decision == "SUCCESS"`` → ``TERMINATED``
+           - ``decision == "REFINE"`` + ``suggested_target == "research"`` →
+             ``FEEDBACK_ROUTING`` → ``KNOWLEDGE_RETRIEVAL`` (re-triggers RAG)
+           - ``decision == "REFINE"`` + ``suggested_target == "modeling"`` →
+             ``FEEDBACK_ROUTING`` → ``MODEL_GENERATION`` (re-triggers codegen)
+           - ``max_iterations_reached`` or timeout → ``TERMINATED``
 
         Returns:
-            A summary dict with ``status``, ``iterations``, and final
-            ``accuracy`` (if detected).
+            A summary dict with ``status``, ``iterations``, ``accuracy``,
+            ``best_accuracy``, ``experiment_success_count``, and
+            ``total_iterations``.
         """
         # Subscribe to the orchestration topic so we can detect completion.
         orchestration_queue = self.bus.subscribe("orchestration")
@@ -260,67 +269,244 @@ class PipelineOrchestrator:
         # The ResearchAgent subscribes to biology_insights; trigger it.
         await self.bus.publish("biology_insights", initial_message)
 
-        # Wait for the pipeline to signal completion via orchestration topic.
+        # Telemetry counters.
+        best_accuracy: float = 0.0
+        experiment_success_count: int = 0
+        total_iterations: int = 0
+
         pipeline_timeout: float = float(
             (self.config.get("exec") or {}).get("timeout_seconds") or 7200
         )
-        _log("[Orchestrator] Pipeline started; waiting for completion…", console=True)
-        result: Optional[Dict[str, Any]] = None
+        _log("[Orchestrator] Pipeline started; entering closed-loop…", console=True)
+
+        loop = asyncio.get_event_loop()
+        deadline: float = loop.time() + pipeline_timeout
+        final_result: Optional[Dict[str, Any]] = None
+
         try:
-            result = await asyncio.wait_for(
-                orchestration_queue.get(),
-                timeout=pipeline_timeout,
-            )
-        except asyncio.TimeoutError:
-            _log(
-                f"[Orchestrator] ⚠️ Pipeline timed out after {pipeline_timeout:.0f}s "
-                "before reaching orchestration topic.",
-                console=True,
-            )
-            result = {"status": "timeout", "data": {}}
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    _log(
+                        f"[Orchestrator] ⚠️ Pipeline timed out after "
+                        f"{pipeline_timeout:.0f}s.",
+                        console=True,
+                    )
+                    final_result = {"status": "timeout", "data": {}}
+                    break
+
+                try:
+                    msg = await asyncio.wait_for(
+                        orchestration_queue.get(),
+                        timeout=remaining,
+                    )
+                except asyncio.TimeoutError:
+                    _log(
+                        f"[Orchestrator] ⚠️ Pipeline timed out waiting on "
+                        f"orchestration queue.",
+                        console=True,
+                    )
+                    final_result = {"status": "timeout", "data": {}}
+                    break
+
+                status = (msg or {}).get("status", "unknown")
+                data = (msg or {}).get("data") or {}
+                accuracy = data.get("accuracy")
+                decision = data.get("decision")
+                total_iterations += 1
+                self.context.iteration = int(data.get("iteration") or self.context.iteration)
+
+                # Track execution successes (ExecutionAgent returning success).
+                if status == "success":
+                    experiment_success_count += 1
+
+                # Update best accuracy.
+                if accuracy is not None:
+                    try:
+                        acc_float = float(accuracy)
+                        if acc_float > best_accuracy:
+                            prev = best_accuracy
+                            best_accuracy = acc_float
+                            _log(
+                                f"📈 [IMPROVEMENT] New best score: {acc_float:.4f} "
+                                f"(Prev: {prev:.4f})",
+                                console=True,
+                            )
+                    except (TypeError, ValueError):
+                        pass
+
+                # ---- Handle ERROR ----
+                if status == "error":
+                    _log(
+                        f"[Orchestrator] ❌ Agent reported error. Full context:\n"
+                        f"  agent_id={data.get('agent_id', 'unknown')}\n"
+                        f"  error={data.get('error', 'unknown')}\n"
+                        f"  traceback={str(data.get('traceback', ''))[:500]}",
+                        console=True,
+                    )
+                    self._enter_state(PipelineState.RETRY_LOGIC)
+                    final_result = msg
+                    break
+
+                # ---- Handle SUCCESS ----
+                if decision == "SUCCESS" or status == "success":
+                    _log(
+                        f"[Orchestrator] ✅ SUCCESS — accuracy={accuracy}, "
+                        f"iterations={total_iterations}",
+                        console=True,
+                    )
+                    self._enter_state(PipelineState.TERMINATED)
+                    final_result = msg
+                    break
+
+                # ---- Handle max iterations exhausted ----
+                if data.get("max_iterations_reached"):
+                    _log(
+                        "[Orchestrator] ⚠️ Max iterations reached; terminating.",
+                        console=True,
+                    )
+                    self._enter_state(PipelineState.TERMINATED)
+                    final_result = msg
+                    break
+
+                # ---- Handle REFINE ----
+                if decision == "REFINE":
+                    self._enter_state(PipelineState.FEEDBACK_ROUTING)
+                    feedback_package = data.get("feedback_package") or {}
+                    suggested_target = feedback_package.get("suggested_target", "modeling")
+                    technical_feedback = feedback_package.get("technical_feedback", "")
+                    knowledge_gap = feedback_package.get("knowledge_gap", "")
+                    next_iteration = int(data.get("iteration") or 0) + 1
+
+                    # Save iteration artifacts.
+                    self._save_iteration_artifacts(
+                        iteration=int(data.get("iteration") or 0),
+                        agent_name="evaluation",
+                        data=data,
+                    )
+
+                    if suggested_target == "research":
+                        self._enter_state(PipelineState.KNOWLEDGE_RETRIEVAL)
+                        _log(
+                            f"[Orchestrator] 🔄 Routing to ResearchAgent (knowledge_gap='{knowledge_gap}')",
+                            console=True,
+                        )
+                        await self.bus.publish(
+                            "biology_insights",
+                            {
+                                "smiles_list": self.context.smiles_list,
+                                "h5_file_path": self.context.h5_file_path,
+                                "context_text": technical_feedback,
+                                "knowledge_gap": knowledge_gap,
+                                "stage": "refinement",
+                                "iteration": next_iteration,
+                                "max_iterations": self.context.max_iterations,
+                                "_fsm_state": self.current_state.value if self.current_state else "",
+                                "_task_id": self.context.task_id,
+                            },
+                        )
+                    else:
+                        self._enter_state(PipelineState.MODEL_GENERATION)
+                        _log(
+                            f"[Orchestrator] 🔄 Routing to ModelingAgent (feedback='{technical_feedback[:80]}…')",
+                            console=True,
+                        )
+                        await self.bus.publish(
+                            "modeling",
+                            {
+                                "biological_insight_report": data.get("insight_report") or {},
+                                "error_logs": data.get("stderr") or data.get("traceback") or "",
+                                "code": data.get("code") or "",
+                                "technical_feedback": technical_feedback,
+                                "iteration": next_iteration,
+                                "max_iterations": self.context.max_iterations,
+                                "_fsm_state": self.current_state.value if self.current_state else "",
+                                "_task_id": self.context.task_id,
+                            },
+                        )
+                    continue
+
+                # Unknown message — terminate to avoid infinite loop.
+                _log(
+                    f"[Orchestrator] ⚠️ Unknown orchestration message "
+                    f"(status={status}, decision={decision}). Terminating.",
+                    console=True,
+                )
+                final_result = msg
+                break
+
         finally:
             # Cancel all agent background tasks.
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
-        status = (result or {}).get("status", "unknown")
-        data = (result or {}).get("data") or {}
-        accuracy = data.get("accuracy")
-        iterations_done = self.context.iteration
+        # Ensure we always reach TERMINATED.
+        if self.current_state != PipelineState.TERMINATED:
+            self._enter_state(PipelineState.TERMINATED)
 
-        # Handle error states: log full context and transition to RETRY_LOGIC.
-        if status == "error":
-            _log(
-                f"[Orchestrator] ❌ Agent reported error. Full context:\n"
-                f"  agent_id={data.get('agent_id', 'unknown')}\n"
-                f"  error={data.get('error', 'unknown')}\n"
-                f"  traceback={str(data.get('traceback', ''))[:500]}",
-                console=True,
-            )
-            self._enter_state(PipelineState.RETRY_LOGIC)
+        status_final = (final_result or {}).get("status", "unknown")
+        data_final = (final_result or {}).get("data") or {}
+        accuracy_final = data_final.get("accuracy") or (best_accuracy if best_accuracy > 0 else None)
 
-        # Terminal state.
-        self._enter_state(PipelineState.TERMINATED)
+        _log(
+            f"🏁 LOOP FINISHED | Success: {experiment_success_count}/{total_iterations} "
+            f"| Best PCC: {best_accuracy:.4f}",
+            console=True,
+        )
 
         summary = {
-            "status": status,
+            "status": status_final,
             "task_id": self.context.task_id,
-            "iterations": iterations_done,
-            "accuracy": accuracy,
-            "max_iterations_reached": data.get("max_iterations_reached", False),
+            "iterations": self.context.iteration,
+            "total_iterations": total_iterations,
+            "accuracy": accuracy_final,
+            "best_accuracy": best_accuracy,
+            "experiment_success_count": experiment_success_count,
+            "max_iterations_reached": data_final.get("max_iterations_reached", False),
             "fsm_transitions": [
-                {"from": f.value, "to": t.value, "timestamp": ts}
+                {"from": f.value if f else "None", "to": t.value if t else "None", "timestamp": ts}
                 for f, t, ts in self.transition_history
             ],
         }
 
         _log(
-            f"[Orchestrator] Pipeline finished: status={status}, "
-            f"accuracy={accuracy}, iterations={iterations_done}",
+            f"[Orchestrator] Pipeline finished: status={status_final}, "
+            f"best_accuracy={best_accuracy:.4f}, "
+            f"success_count={experiment_success_count}/{total_iterations}",
             console=True,
         )
         return summary
+
+    # ------------------------------------------------------------------
+    # Artifact persistence helpers
+    # ------------------------------------------------------------------
+
+    def _save_iteration_artifacts(
+        self,
+        iteration: int,
+        agent_name: str,
+        data: Dict[str, Any],
+    ) -> None:
+        """Persist agent output for a given iteration.
+
+        Saves to ``runs/{task_id}/{iteration}/{agent_name}/`` using
+        :class:`~.workspace_manager.WorkspaceManager`.
+
+        Args:
+            iteration: Current iteration number.
+            agent_name: Name of the agent producing the data.
+            data: Arbitrary payload to persist as JSON.
+        """
+        try:
+            from .workspace_manager import WorkspaceManager  # type: ignore
+
+            wm = WorkspaceManager(self.context.task_id)
+            filename = f"artifacts_{agent_name}_iter{iteration}.json"
+            wm.ensure_dirs()
+            wm.save_artifact("execution", filename, data)
+        except Exception as exc:
+            _log(f"[Orchestrator] Could not save iteration artifacts: {exc}")
 
 
 # =============================================================================

@@ -34,6 +34,7 @@ from .base_tools import (
     safe_json_parse,
     resolve_config_path,
 )
+from .agent_monitor import monitor_agent, Heartbeat
 
 __all__ = [
     # message_bus
@@ -73,4 +74,7 @@ __all__ = [
     "extract_smiles_from_h5",
     "safe_json_parse",
     "resolve_config_path",
+    # agent_monitor
+    "monitor_agent",
+    "Heartbeat",
 ]
