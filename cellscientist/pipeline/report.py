@@ -597,3 +597,91 @@ def generate_final_report_and_exports(
         metric=metric,
         output_dir=logs_dir if logs_dir else None,
     )
+
+
+def generate_report_from_orchestrator(
+    result: Dict[str, Any],
+    pipe_cfg: Dict[str, Any],
+    dataset_name: str,
+    logs_dir: str,
+) -> Optional[str]:
+    """Generate a Markdown pipeline report directly from an orchestrator result dict.
+
+    This function is the FSM-driven replacement for
+    :func:`generate_final_report_and_exports`.  It does **not** require a
+    ``stage_map`` or log-file paths — all data is sourced from the orchestrator's
+    summary.
+
+    Args:
+        result: Summary dict returned by
+            :func:`~cellscientist.core.orchestrator.run_orchestrator`.
+        pipe_cfg: Pipeline configuration dict (used for dataset metadata).
+        dataset_name: Human-readable dataset identifier (e.g. ``"BBBC036"``).
+        logs_dir: Directory where the report file will be written.
+
+    Returns:
+        Absolute path to the generated ``pipeline_report.md``, or ``None`` if
+        writing failed.
+    """
+    try:
+        task_id = result.get("task_id", "unknown")
+        status = result.get("status", "unknown")
+        best_accuracy = result.get("best_accuracy", 0.0)
+        total_iterations = result.get("total_iterations", 0)
+        success_count = result.get("experiment_success_count", 0)
+        max_reached = result.get("max_iterations_reached", False)
+        metric_name = result.get("metric", "PCC")
+        success_rate = (success_count / total_iterations * 100) if total_iterations > 0 else 0.0
+        transitions = result.get("fsm_transitions", [])
+        ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+
+        lines = [
+            "# CellCausal Pipeline Report",
+            "",
+            f"**Generated:** {ts}",
+            f"**Dataset:** {dataset_name}",
+            f"**Task ID:** `{task_id}`",
+            "",
+            "## Summary",
+            "",
+            f"| Field | Value |",
+            f"|-------|-------|",
+            f"| Status | `{status}` |",
+            f"| Best Accuracy ({metric_name}) | `{best_accuracy:.4f}` |",
+            f"| Total Iterations | `{total_iterations}` |",
+            f"| Successful Iterations | `{success_count}` |",
+            f"| Success Rate | `{success_rate:.1f}%` |",
+            f"| Max Iterations Reached | `{max_reached}` |",
+            "",
+            "## FSM Transitions",
+            "",
+            f"Total transitions: **{len(transitions)}**",
+            "",
+            "| # | From | To | Timestamp |",
+            "|---|------|----|-----------|",
+        ]
+        for i, t in enumerate(transitions, 1):
+            lines.append(
+                f"| {i} | `{t.get('from', '')}` | `{t.get('to', '')}` | {t.get('timestamp', '')} |"
+            )
+
+        lines += [
+            "",
+            "## Configuration",
+            "",
+            "```json",
+            json.dumps(
+                {k: v for k, v in pipe_cfg.items() if not k.startswith("_")},
+                indent=2,
+                default=str,
+            ),
+            "```",
+        ]
+
+        report_path = os.path.join(logs_dir, "pipeline_report.md")
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return report_path
+    except Exception as exc:
+        print(f"[DETAIL] [Report] Warning: could not generate pipeline report — {exc}", flush=True)
+        return None

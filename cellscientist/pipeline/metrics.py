@@ -593,3 +593,43 @@ def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
                 f"BugRate={row.get('bug_rate')}, Avg={row.get('avg_at_budget')}, Best={row.get('best_at_budget')}, "
                 f"Metric={row.get('best_metric')}, Time={row.get('time_sec')}"
             )
+
+
+def scoreboard_from_orchestrator(
+    result: Dict[str, Any],
+    dataset_name: str,
+    total_time: float,
+) -> Dict[str, Any]:
+    """Convert an orchestrator result dict into the legacy scoreboard format.
+
+    This is the canonical conversion used by ``run_pipeline.py`` to bridge the
+    FSM orchestrator's internal statistics to :func:`print_final_scoreboard`.
+
+    Args:
+        result: Summary dict returned by :func:`~cellscientist.core.orchestrator.run_orchestrator`.
+        dataset_name: Human-readable dataset identifier (e.g. ``"BBBC036"``).
+        total_time: Wall-clock seconds for the entire pipeline run.
+
+    Returns:
+        A ``summary`` dict compatible with :func:`print_final_scoreboard`.
+    """
+    best = result.get("best_accuracy", 0.0)
+    total = result.get("total_iterations", 0)
+    success = result.get("experiment_success_count", 0)
+    sr = (success / total) if total > 0 else 0.0
+    metric = result.get("metric", "PCC")
+    return {
+        "dataset": dataset_name,
+        "stages": {
+            "Experiment": {
+                "attempted": total,
+                "succeeded": success,
+                "success_rate": sr,
+                "best_at_budget": best if best > 0 else None,
+                "best_metric": metric,
+                "budget": total,
+                "time_sec": total_time,
+            },
+            "Total": {"time_sec": total_time},
+        },
+    }

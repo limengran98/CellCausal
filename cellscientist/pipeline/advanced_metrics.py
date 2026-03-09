@@ -419,24 +419,57 @@ def perform_advanced_analysis(
 
 
 def maybe_generate_advanced_metrics(
-    pipeline_summary: Dict[str, Any],
-    stage_map: Dict[str, Dict[str, Any]],
+    pipeline_summary: Optional[Dict[str, Any]] = None,
+    stage_map: Optional[Dict[str, Any]] = None,
     pipe_cfg: Optional[Dict[str, Any]] = None,
+    *,
+    orchestrator_result: Optional[Dict[str, Any]] = None,
+    logs_dir: Optional[str] = None,
+    results_root: Optional[str] = None,
+    dataset_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Compatibility wrapper used by the unified runner.
 
-    The advanced metrics module historically exposed a helper called
-    `maybe_generate_advanced_metrics(...)`. During refactor, the core entry
-    function was renamed to `perform_advanced_analysis(...)`.
+    Supports two calling conventions:
 
-    This wrapper preserves the original runner contract.
+    **Legacy** (from old ``run_pipeline.py``)::
+
+        maybe_generate_advanced_metrics(pipeline_summary, stage_map, pipe_cfg)
+
+    **FSM-driven** (from new ``run_pipeline.py``)::
+
+        maybe_generate_advanced_metrics(
+            orchestrator_result=result,
+            logs_dir=logs_dir,
+            results_root=results_root,
+            dataset_name=dataset_name,
+        )
+
+    If the expected artifact directories do not exist (e.g. because the
+    orchestrator writes to different paths), a warning is logged and the
+    function returns ``None`` gracefully instead of raising.
     """
+    # Resolve parameters from either calling convention
+    if dataset_name is None and pipeline_summary is not None:
+        dataset_name = str(pipeline_summary.get("dataset") or "")
+    if logs_dir is None and pipeline_summary is not None:
+        logs_dir = str(pipeline_summary.get("logs_dir") or "")
 
-    dataset_name = str(pipeline_summary.get("dataset") or "")
-    logs_dir = str(pipeline_summary.get("logs_dir") or "")
     if not dataset_name or not logs_dir:
         return None
-    return perform_advanced_analysis(dataset_name=dataset_name, logs_dir=logs_dir, pipe_cfg=pipe_cfg)
+
+    try:
+        return perform_advanced_analysis(
+            dataset_name=dataset_name,
+            logs_dir=logs_dir,
+            pipe_cfg=pipe_cfg,
+        )
+    except Exception as exc:
+        print(
+            f"[DETAIL] [AdvancedMetrics] Warning: skipping advanced metrics — {exc}",
+            flush=True,
+        )
+        return None
 
 def _now_iso() -> str:
     import datetime
