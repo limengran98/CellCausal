@@ -547,6 +547,7 @@ def chat_text(
 
         content = _extract_text_from_response(data)
         if content:
+            _log(f"[LLM] Response preview (first 200 chars): {content[:200]!r}", console=True)
             return content
 
         _dump_llm_response_if_needed(data, kind="empty_text")
@@ -624,6 +625,7 @@ def chat_json(
                 time.sleep(0.8 + 0.8 * attempt)
                 continue
 
+            _log(f"[LLM] Response preview (first 200 chars): {content[:200]!r}", console=True)
             parsed = extract_json_from_text(content)
             if isinstance(parsed, dict):
                 return parsed
@@ -638,5 +640,7 @@ def chat_json(
             _log(f"[LLM] JSON Parse/Net Error (Attempt {attempt+1}/{max_retries}): {e}", console=False)
             time.sleep(0.8 + 0.8 * attempt)
 
-    _log(f"[LLM] Failed to parse JSON after retries. Last error: {last_error}", console=False)
-    return {}
+    raise RuntimeError(
+        f"chat_json: failed to obtain valid JSON from LLM after {max_retries} retries. "
+        f"Last error: {last_error}"
+    )

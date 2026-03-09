@@ -194,7 +194,7 @@ class PipelineOrchestrator:
         from_label = from_state.value if from_state is not None else "None"
         legacy = STATE_LEGACY_ALIASES.get(new_state, "")
         _log(
-            f"[Orchestrator] State transition: {from_label} → {new_state.value} "
+            f"🚀 [Orchestrator] State Change: {from_label} -> {new_state.value} "
             f"{legacy}",
             console=True,
         )
@@ -289,8 +289,15 @@ class PipelineOrchestrator:
         accuracy = data.get("accuracy")
         iterations_done = self.context.iteration
 
-        # Handle error states: transition to RETRY_LOGIC if something failed.
+        # Handle error states: log full context and transition to RETRY_LOGIC.
         if status == "error":
+            _log(
+                f"[Orchestrator] ❌ Agent reported error. Full context:\n"
+                f"  agent_id={data.get('agent_id', 'unknown')}\n"
+                f"  error={data.get('error', 'unknown')}\n"
+                f"  traceback={str(data.get('traceback', ''))[:500]}",
+                console=True,
+            )
             self._enter_state(PipelineState.RETRY_LOGIC)
 
         # Terminal state.

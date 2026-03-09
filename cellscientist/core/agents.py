@@ -296,6 +296,24 @@ class BaseAgent(abc.ABC):
                     console=True,
                 )
                 logger.exception("[%s] Unhandled error in run loop.", self.agent_id)
+                try:
+                    await self.bus.publish(
+                        "orchestration",
+                        {
+                            "status": "error",
+                            "data": {
+                                "error": str(exc),
+                                "agent_id": self.agent_id,
+                                "traceback": traceback.format_exc(),
+                            },
+                            "next_recipient": "orchestration",
+                        },
+                    )
+                except Exception as pub_exc:
+                    _log(
+                        f"[{self.agent_id}] ❌ Could not publish error to orchestration: {pub_exc}",
+                        console=True,
+                    )
             finally:
                 inbox.task_done()
 
@@ -385,7 +403,7 @@ class ResearchAgent(BaseAgent):
         return AgentResponse(
             status="success",
             data={"biological_insight_report": report},
-            next_recipient="biology_insights",
+            next_recipient="modeling",
         )
 
 
