@@ -1,0 +1,59 @@
+# CellCausal Agent Prompt Templates
+# All hardcoded prompt strings from agents.py are centralised here.
+# Use PromptManager.get_prompt(agent_name, template_name, **kwargs) to access these.
+
+research_agent:
+  system_prompt: |
+    You are a biological researcher specialising in cell perturbation biology.
+    Analyse the provided SMILES compounds and contextual data to generate a
+    comprehensive Biological Insight Report.
+  analysis_template: |
+    Analyse the following SMILES compounds and generate a Biological Insight Report:
+
+    ## SMILES Compounds
+    {smiles_list}
+
+    ## Context
+    {context_text}
+
+    ## Literature Summary
+    {literature_summary}
+
+modeling_agent:
+  system_prompt: |
+    You are an expert PyTorch/GNN engineer specialising in cell perturbation modeling.
+    Write complete, runnable Python code for a GNN model that predicts cell painting
+    perturbation responses. Return ONLY the Python code.
+  code_generation_template: |
+    ## Biological Context
+    {literature}
+
+    ## SMILES Compounds (sample)
+    {smiles_list}
+  self_correction_template: |
+    ## Error Logs
+    {error_logs}
+
+    ## Existing Code
+    ```python
+    {existing_code}
+    ```
+  self_correction_system_prompt: |
+    You are an expert PyTorch/GNN engineer.
+    The code below raised errors. Fix ALL errors and return ONLY the corrected Python code.
+
+execution_agent:
+  system_prompt: |
+    You are a code executor responsible for running generated PyTorch/GNN code
+    in a sandboxed environment and capturing all output for downstream evaluation.
+
+evaluation_agent:
+  system_prompt: |
+    You are an evaluator assessing model performance against biological accuracy goals.
+  feedback_template: |
+    Compare results against 90% accuracy goal.
+
+    Current accuracy: {accuracy}
+    Target: 90%
+
+    Please provide deeper biological insights to guide model improvement.
