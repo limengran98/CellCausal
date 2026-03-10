@@ -47,6 +47,20 @@ class ConfigurationError(Exception):
 
 
 # =============================================================================
+# Constants
+# =============================================================================
+
+#: The five datasets that MUST exist inside the HDF5 ``combined`` group.
+MANDATORY_HDF5_DATASETS: List[str] = [
+    "morphology_pre",
+    "morphology_post",
+    "smiles",
+    "dose",
+    "split_id",
+]
+
+
+# =============================================================================
 # Internal Helpers
 # =============================================================================
 
@@ -120,19 +134,21 @@ def validate_h5_smiles_path(config: dict) -> str:
 
 
 def validate_h5_columns(h5_path: str) -> List[str]:
-    """Open an H5 file and verify that a SMILES/molecule column is present.
+    """Open an H5 file and verify that all mandatory datasets are present.
 
-    Logs all top-level keys found in the file.
+    Navigates to the ``combined`` group if it exists, otherwise falls back to
+    root-level keys.  Validates that every dataset in
+    :data:`MANDATORY_HDF5_DATASETS` is present and raises
+    :class:`ConfigurationError` with an actionable message if any are missing.
 
     Args:
         h5_path: Path to the H5 file to inspect.
 
     Returns:
-        List of all top-level column/key names found in the file.
+        List of all key names found inside the ``combined`` group (or root).
 
     Raises:
-        ConfigurationError: If neither 'SMILES' nor 'molecule' column is
-            present in the file.
+        ConfigurationError: If one or more mandatory datasets are missing.
         ImportError: If the ``h5py`` package is not installed.
     """
     try:
@@ -144,15 +160,31 @@ def validate_h5_columns(h5_path: str) -> List[str]:
         ) from exc
 
     with h5py.File(h5_path, "r") as f:
-        columns: List[str] = list(f.keys())
+        root_keys: List[str] = list(f.keys())
+        _log(f"[SMILES] Root-level keys in {h5_path}: {root_keys}")
 
-    _log(f"[SMILES] Columns found in {h5_path}: {columns}")
+        if "combined" in f:
+            group = f["combined"]
+            columns: List[str] = list(group.keys())
+            _log(f"[SMILES] Keys inside 'combined' group: {columns}")
+        else:
+            _log(
+                f"[SMILES] No 'combined' group found in {h5_path}; "
+                "using root-level keys."
+            )
+            columns = root_keys
 
     lower_cols = [c.lower() for c in columns]
-    if "smiles" not in lower_cols and "molecule" not in lower_cols:
+    missing = [
+        ds for ds in MANDATORY_HDF5_DATASETS if ds.lower() not in lower_cols
+    ]
+    if missing:
         raise ConfigurationError(
-            f"Required column 'SMILES' or 'molecule' not found in {h5_path}. "
-            f"Available columns: {columns}"
+            f"Missing mandatory HDF5 datasets in '{h5_path}' "
+            f"(group: 'combined'): {missing}. "
+            f"Available keys: {columns}. "
+            "Ensure the HDF5 file contains a 'combined' group with all "
+            f"required datasets: {MANDATORY_HDF5_DATASETS}"
         )
 
     return columns
@@ -162,7 +194,8 @@ def resolve_smiles(config: dict) -> List[str]:
     """Validate configuration and return the list of SMILES strings.
 
     Calls :func:`validate_h5_smiles_path` and :func:`validate_h5_columns`
-    then reads and returns the SMILES (or molecule) column from the H5 file.
+    then reads and returns the ``smiles`` dataset from the ``combined`` group
+    (or root level) of the H5 file.
 
     Args:
         config: Top-level pipeline configuration dict.
@@ -184,17 +217,20 @@ def resolve_smiles(config: dict) -> List[str]:
         ) from exc
 
     h5_path = validate_h5_smiles_path(config)
-    columns = validate_h5_columns(h5_path)
-
-    # Prefer 'SMILES' column; fall back to 'molecule'.
-    lower_cols = [c.lower() for c in columns]
-    if "smiles" in lower_cols:
-        col_name = columns[lower_cols.index("smiles")]
-    else:
-        col_name = columns[lower_cols.index("molecule")]
+    # validate_h5_columns also confirms all mandatory datasets exist.
+    validate_h5_columns(h5_path)
 
     with h5py.File(h5_path, "r") as f:
-        raw = f[col_name][:]
+        # Prefer the 'combined' group; fall back to root.
+        if "combined" in f:
+            group = f["combined"]
+        else:
+            group = f
+
+        # Read the 'smiles' dataset (validated to exist by validate_h5_columns).
+        lower_keys = {k.lower(): k for k in group.keys()}
+        col_name = lower_keys.get("smiles", "smiles")
+        raw = group[col_name][:]
 
     # Decode bytes to str if necessary.
     smiles_list: List[str] = []
@@ -204,5 +240,5 @@ def resolve_smiles(config: dict) -> List[str]:
         else:
             smiles_list.append(str(item))
 
-    _log(f"[SMILES] Loaded {len(smiles_list)} SMILES strings from '{col_name}' column.")
+    _log(f"[SMILES] Loaded {len(smiles_list)} SMILES strings from '{col_name}' dataset.")
     return smiles_list
