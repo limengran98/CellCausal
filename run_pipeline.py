@@ -179,6 +179,7 @@ def main() -> None:
         logger.console_info("")
         logger.console_info("🧬 AGENT MODE — Falsifiable Scientific Discovery Loop", level=0)
 
+        from cellscientist.core.config_loader import load_yaml_prompts
         from cellscientist.core.orchestrator import run_orchestrator_sync
         from cellscientist.pipeline.metrics import scoreboard_from_orchestrator
         from cellscientist.pipeline.report import generate_report_from_orchestrator
@@ -197,6 +198,9 @@ def main() -> None:
                 merged_cfg[key] = val
             elif isinstance(val, dict) and isinstance(merged_cfg.get(key), dict):
                 merged_cfg[key] = {**merged_cfg[key], **val}
+
+        # Preserve the full legacy prompt/config contract in agent-mode.
+        merged_cfg["prompts"] = load_yaml_prompts(os.path.join(project_root(), "prompts"))
 
         agent_t0 = time.time()
         try:

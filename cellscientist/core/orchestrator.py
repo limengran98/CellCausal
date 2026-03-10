@@ -195,6 +195,14 @@ class PipelineOrchestrator:
         self.best_metric_score: float = -float("inf")
         self.best_code: str = ""
         self.best_artifacts_path: str = ""
+        self.best_notebook_json: str = ""
+        self.best_artifact_type: str = ""
+        self.best_modeling_metadata: Dict[str, Any] = {}
+
+        # Notebook-aware best/accepted artifacts for agent-mode.
+        self.last_accepted_notebook_json: str = ""
+        self.last_accepted_artifact_type: str = ""
+        self.last_accepted_modeling_metadata: Dict[str, Any] = {}
 
         # ---- Falsifiable Iteration Protocol state ----
         # Per-iteration metric history for accept/reject decisions.
@@ -277,6 +285,9 @@ class PipelineOrchestrator:
         previous_score = self.last_accepted_metrics.get("accuracy")
         code = data.get("code") or ""
         metrics = data.get("metrics") or {}
+        notebook_json = data.get("notebook_json") or ""
+        artifact_type = data.get("artifact_type") or ""
+        modeling_metadata = data.get("modeling_metadata") or {}
 
         record = {
             "iteration": iteration,
@@ -292,6 +303,9 @@ class PipelineOrchestrator:
             if current_score is not None:
                 self.last_accepted_code = code
                 self.last_accepted_metrics = {"accuracy": current_score, **metrics}
+                self.last_accepted_notebook_json = notebook_json or self.last_accepted_notebook_json
+                self.last_accepted_artifact_type = artifact_type or self.last_accepted_artifact_type
+                self.last_accepted_modeling_metadata = dict(modeling_metadata or {})
                 self.consecutive_rejections = 0
             _log(
                 f"[Falsifiable] ✅ ACCEPT (first iteration, "
@@ -315,6 +329,9 @@ class PipelineOrchestrator:
                 # Improvement or no change — ACCEPT / LOCK.
                 self.last_accepted_code = code
                 self.last_accepted_metrics = {"accuracy": current_score, **metrics}
+                self.last_accepted_notebook_json = notebook_json or self.last_accepted_notebook_json
+                self.last_accepted_artifact_type = artifact_type or self.last_accepted_artifact_type
+                self.last_accepted_modeling_metadata = dict(modeling_metadata or {})
                 self.consecutive_rejections = 0
                 _log(
                     f"[Falsifiable] ✅ ACCEPT — score improved: "
@@ -355,6 +372,12 @@ class PipelineOrchestrator:
                 }
 
         # Metrics not available — accept tentatively.
+        if notebook_json:
+            self.last_accepted_notebook_json = notebook_json
+            self.last_accepted_artifact_type = artifact_type or self.last_accepted_artifact_type
+            self.last_accepted_modeling_metadata = dict(modeling_metadata or {})
+        if code:
+            self.last_accepted_code = code
         _log(
             f"[Falsifiable] ⚠️ ACCEPT (no comparable metrics; "
             f"current={current_score}, previous={previous_score})",
@@ -367,6 +390,47 @@ class PipelineOrchestrator:
             "previous_score": previous_score,
             "forced_new_hypothesis": False,
         }
+
+    def _build_history_entry(
+        self,
+        *,
+        iteration: int,
+        data: Dict[str, Any],
+        verdict_info: Dict[str, Any],
+        suggested_target: str,
+        technical_feedback: str,
+        knowledge_gap: str,
+    ) -> Dict[str, Any]:
+        """Build a compact history record compatible with legacy review flows."""
+        modeling_metadata = data.get("modeling_metadata") or {}
+        accuracy = data.get("accuracy")
+        try:
+            accuracy_val = float(accuracy) if accuracy is not None else None
+        except (TypeError, ValueError):
+            accuracy_val = None
+        verdict = str(verdict_info.get("verdict") or "").upper()
+        return {
+            "iter": int(iteration),
+            "strategy": modeling_metadata.get("selected_strategy") or "",
+            "decision": modeling_metadata.get("decision_type") or verdict or "REFINE",
+            "focus": modeling_metadata.get("focus_area") or suggested_target,
+            "reflection": (technical_feedback or "")[:2000],
+            "critique": technical_feedback or "",
+            "semantic_gradient": modeling_metadata.get("semantic_gradient_analysis") or "",
+            "status": "IMPROVED" if verdict == "ACCEPT" else "REJECTED",
+            "score": accuracy_val,
+            "metric_delta": verdict_info.get("metric_delta"),
+            "target_metric": data.get("target_metric") or "",
+            "knowledge_gap": knowledge_gap or "",
+            "artifact_type": data.get("artifact_type") or "",
+            "tasks": modeling_metadata.get("used_evidence_ids") or [],
+            "task_names": modeling_metadata.get("used_evidence_ids") or [],
+        }
+
+    def _record_history_entry(self, entry: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Append *entry* to shared history and return a shallow copy."""
+        self.context.results.append(dict(entry))
+        return list(self.context.results)
 
     async def run(self) -> Dict[str, Any]:
         """Execute the full multi-agent pipeline using the FSM.
@@ -426,6 +490,8 @@ class PipelineOrchestrator:
             "stage": "design",
             "iteration": 0,
             "max_iterations": self.context.max_iterations,
+            "history_summary": [],
+            "best_metric_score": None,
             # Embed FSM state so agents can include it in their logs.
             "_fsm_state": self.current_state.value if self.current_state else "",
             "_task_id": self.context.task_id,
@@ -504,6 +570,9 @@ class PipelineOrchestrator:
                         if acc_float > self.best_metric_score:
                             self.best_metric_score = acc_float
                             self.best_code = data.get("code") or ""
+                            self.best_notebook_json = data.get("notebook_json") or self.best_notebook_json
+                            self.best_artifact_type = data.get("artifact_type") or self.best_artifact_type
+                            self.best_modeling_metadata = dict(data.get("modeling_metadata") or self.best_modeling_metadata)
                             self.best_artifacts_path = _interpolate_path(
                                 (
                                     (self.config.get("paths") or {}).get(
@@ -553,6 +622,12 @@ class PipelineOrchestrator:
                     best_data = dict(data)
                     if self.best_code:
                         best_data["code"] = self.best_code
+                    if self.best_notebook_json:
+                        best_data["notebook_json"] = self.best_notebook_json
+                    if self.best_artifact_type:
+                        best_data["artifact_type"] = self.best_artifact_type
+                    if self.best_modeling_metadata:
+                        best_data["modeling_metadata"] = self.best_modeling_metadata
                     if self.best_metric_score > -float("inf"):
                         best_data["accuracy"] = self.best_metric_score
                         best_data["best_metric_score"] = self.best_metric_score
@@ -576,19 +651,37 @@ class PipelineOrchestrator:
                     verdict_info = self._evaluate_iteration(data, next_iteration)
                     verdict = verdict_info["verdict"]
 
-                    # On REJECT: revert code to last accepted state and augment
-                    # feedback to force a different hypothesis.
+                    # On REJECT: revert the working artifact to the last accepted
+                    # notebook/code state and augment feedback to force a new idea.
                     code_for_next = data.get("code") or ""
-                    if verdict == "REJECT" and self.last_accepted_code:
-                        code_for_next = self.last_accepted_code
-                        revert_note = (
-                            f"[FALSIFICATION] The previous change DEGRADED "
-                            f"the metric ({verdict_info['previous_score']:.4f} → "
-                            f"{verdict_info['current_score']:.4f}). "
-                            f"Code has been REVERTED to the last accepted state. "
-                            f"Please try a fundamentally different approach."
-                        )
-                        technical_feedback = f"{revert_note}\n\n{technical_feedback}"
+                    notebook_for_next = data.get("notebook_json") or ""
+                    artifact_type_for_next = data.get("artifact_type") or ""
+                    modeling_metadata_for_next = dict(data.get("modeling_metadata") or {})
+                    if verdict == "REJECT":
+                        if self.last_accepted_code:
+                            code_for_next = self.last_accepted_code
+                        if self.last_accepted_notebook_json:
+                            notebook_for_next = self.last_accepted_notebook_json
+                        if self.last_accepted_artifact_type:
+                            artifact_type_for_next = self.last_accepted_artifact_type
+                        if self.last_accepted_modeling_metadata:
+                            modeling_metadata_for_next = dict(self.last_accepted_modeling_metadata)
+                        prev_score = verdict_info.get("previous_score")
+                        curr_score = verdict_info.get("current_score")
+                        if prev_score is not None and curr_score is not None:
+                            revert_note = (
+                                f"[FALSIFICATION] The previous change DEGRADED "
+                                f"the metric ({prev_score:.4f} → {curr_score:.4f}). "
+                                f"The working artifact has been REVERTED to the last accepted state. "
+                                f"Please try a fundamentally different approach."
+                            )
+                        else:
+                            revert_note = (
+                                "[FALSIFICATION] The previous change was rejected. "
+                                "The working artifact has been REVERTED to the last accepted state. "
+                                "Please try a fundamentally different approach."
+                            )
+                        technical_feedback = f"{revert_note}\n\n{technical_feedback}".strip()
 
                     # On consecutive rejections: force route to research for a
                     # new biological hypothesis rather than more code tweaks.
@@ -600,9 +693,33 @@ class PipelineOrchestrator:
                             "response prediction beyond current approach"
                         )
 
+                    history_entry = self._build_history_entry(
+                        iteration=next_iteration,
+                        data=data,
+                        verdict_info=verdict_info,
+                        suggested_target=suggested_target,
+                        technical_feedback=technical_feedback,
+                        knowledge_gap=knowledge_gap,
+                    )
+                    history_summary = self._record_history_entry(history_entry)
+                    current_metrics_payload = data.get("raw_metrics") or data.get("metrics") or {}
+                    previous_iteration_logs = {
+                        "stdout": data.get("stdout") or "",
+                        "stderr": data.get("stderr") or "",
+                        "traceback": data.get("traceback") or "",
+                        "metrics": data.get("metrics") or {},
+                        "raw_metrics": data.get("raw_metrics") or {},
+                        "code": code_for_next,
+                        "notebook_json": notebook_for_next,
+                        "artifact_type": artifact_type_for_next,
+                        "modeling_metadata": modeling_metadata_for_next,
+                    }
+
                     # Save iteration artifacts.
                     artifact_data = dict(data)
                     artifact_data["falsifiable_verdict"] = verdict_info
+                    artifact_data["history_entry"] = history_entry
+                    artifact_data["history_summary"] = history_summary
                     self._save_iteration_artifacts(
                         iteration=int(data.get("iteration") or 0),
                         agent_name="evaluation",
@@ -625,12 +742,9 @@ class PipelineOrchestrator:
                                 "stage": "refinement",
                                 "iteration": next_iteration,
                                 "max_iterations": self.context.max_iterations,
-                                "previous_iteration_logs": {
-                                    "stdout": data.get("stdout") or "",
-                                    "stderr": data.get("stderr") or "",
-                                    "metrics": data.get("metrics") or {},
-                                    "code": code_for_next,
-                                },
+                                "previous_iteration_logs": previous_iteration_logs,
+                                "history_summary": history_summary,
+                                "best_metric_score": self.best_metric_score if self.best_metric_score > -float("inf") else None,
                                 "falsifiable_verdict": verdict_info,
                                 "_fsm_state": self.current_state.value if self.current_state else "",
                                 "_task_id": self.context.task_id,
@@ -648,7 +762,13 @@ class PipelineOrchestrator:
                                 "biological_insight_report": data.get("insight_report") or {},
                                 "error_logs": data.get("stderr") or data.get("traceback") or "",
                                 "code": code_for_next,
+                                "notebook_json": notebook_for_next,
+                                "artifact_type": artifact_type_for_next or data.get("artifact_type") or "",
+                                "modeling_metadata": modeling_metadata_for_next,
+                                "current_metrics": current_metrics_payload,
                                 "technical_feedback": technical_feedback,
+                                "history_summary": history_summary,
+                                "best_metric_score": self.best_metric_score if self.best_metric_score > -float("inf") else None,
                                 "iteration": next_iteration,
                                 "max_iterations": self.context.max_iterations,
                                 "falsifiable_verdict": verdict_info,
@@ -696,6 +816,9 @@ class PipelineOrchestrator:
             "best_accuracy": best_accuracy,
             "best_metric_score": self.best_metric_score if self.best_metric_score > -float("inf") else None,
             "best_code": self.best_code,
+            "best_notebook_json": self.best_notebook_json,
+            "best_artifact_type": self.best_artifact_type,
+            "best_modeling_metadata": self.best_modeling_metadata,
             "best_artifacts_path": self.best_artifacts_path,
             "experiment_success_count": experiment_success_count,
             "max_iterations_reached": data_final.get("max_iterations_reached", False),

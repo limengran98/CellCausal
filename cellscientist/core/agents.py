@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import contextlib
 import functools
+import io
 import json
 import logging
 import os
@@ -137,6 +139,50 @@ def _interpolate_path(path_template: str, config: Dict[str, Any]) -> str:
         if isinstance(value, str):
             result = result.replace(f"${{{key}}}", value)
     return result
+
+
+def _project_root() -> str:
+    """Return the absolute repository root for this package tree."""
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def _resolve_project_path(path_value: str) -> str:
+    """Resolve *path_value* relative to the repository root when needed."""
+    if not path_value:
+        return ""
+    if os.path.isabs(path_value):
+        return path_value
+    return os.path.abspath(os.path.join(_project_root(), path_value))
+
+
+def _notebook_to_script_text(nb: Any) -> str:
+    """Flatten notebook code cells into a single Python script string."""
+    parts: List[str] = []
+    for cell in getattr(nb, "cells", []) or []:
+        if getattr(cell, "cell_type", "") == "code":
+            src = getattr(cell, "source", "") or ""
+            if src.strip():
+                parts.append(src.rstrip())
+    return "\n\n".join(parts).strip()
+
+
+def _ensure_task_workspace(task_id: str, category: str, iteration: int) -> str:
+    """Create and return a per-task, per-iteration workspace directory."""
+    safe_task_id = task_id or f"agent_task_{uuid.uuid4().hex[:8]}"
+    try:
+        from .workspace_manager import WorkspaceManager  # type: ignore
+
+        wm = WorkspaceManager(safe_task_id)
+        wm.ensure_dirs()
+        base_dir = wm.get_task_dir() / category
+        base_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = base_dir / f"iter_{int(iteration):03d}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return str(out_dir)
+    except Exception:
+        out_dir = os.path.join(_project_root(), "runs", safe_task_id, category, f"iter_{int(iteration):03d}")
+        os.makedirs(out_dir, exist_ok=True)
+        return out_dir
 
 
 # =============================================================================
@@ -362,6 +408,25 @@ class BaseAgent(abc.ABC):
         self.bus: SimpleMessageBus = bus
         self.config: Dict[str, Any] = config or {}
 
+    @staticmethod
+    def _unwrap_message(message: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Return the inner payload when *message* is a bus envelope."""
+        if not isinstance(message, dict):
+            return {}
+        data = message.get("data")
+        if (
+            isinstance(data, dict)
+            and "status" in message
+            and "next_recipient" in message
+        ):
+            payload = dict(data)
+            for key, value in message.items():
+                if key in {"status", "data", "next_recipient"}:
+                    continue
+                payload.setdefault(key, value)
+            return payload
+        return message
+
     @abc.abstractmethod
     async def process(self, message: Dict[str, Any]) -> AgentResponse:
         """Process an incoming message and return a validated response.
@@ -385,9 +450,10 @@ class BaseAgent(abc.ABC):
         _log(f"[{self.agent_id}] Agent started, waiting for messages…")
         while True:
             message: Dict[str, Any] = await inbox.get()
-            _log(f"[{self.agent_id}] Received message (stage={message.get('stage', '?')})")
+            payload = self._unwrap_message(message)
+            _log(f"[{self.agent_id}] Received message (stage={payload.get('stage', '?')})")
             try:
-                response = await self.process(message)
+                response = await self.process(payload)
                 await self.bus.publish(response.next_recipient, response.to_dict())
                 _log(
                     f"[{self.agent_id}] Published to '{response.next_recipient}' "
@@ -459,6 +525,8 @@ class ResearchAgent(BaseAgent):
             :class:`AgentResponse` directed to ``modeling`` with a structured
             Causal Context Payload.
         """
+        message = self._unwrap_message(message)
+
         smiles_list: List[str] = message.get("smiles_list") or []
         h5_file_path: str = message.get("h5_file_path") or ""
         context_text: str = message.get("context_text") or ""
@@ -499,7 +567,11 @@ class ResearchAgent(BaseAgent):
             if bio_kb_cfg.get("enabled", True) and smiles_list:
                 bio_kb_data = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: generate_biokb_semantic_table(smiles_list, bio_kb_cfg),
+                    lambda: generate_biokb_semantic_table(
+                        self.config,
+                        stage,
+                        lambda msg: _log(f"[{self.agent_id}] {msg}"),
+                    ),
                 )
         except Exception as exc:
             _log(f"[{self.agent_id}] BioKB enrichment skipped: {exc}")
@@ -562,7 +634,14 @@ class ResearchAgent(BaseAgent):
 
         return AgentResponse(
             status="success",
-            data={"biological_insight_report": report},
+            data={
+                "biological_insight_report": report,
+                "iteration": int(message.get("iteration") or 0),
+                "max_iterations": int(message.get("max_iterations") or 5),
+                "history_summary": message.get("history_summary") or [],
+                "best_metric_score": message.get("best_metric_score"),
+                "_task_id": message.get("_task_id") or "",
+            },
             next_recipient="modeling",
         )
 
@@ -577,30 +656,89 @@ class ResearchAgent(BaseAgent):
     ) -> List[Dict[str, Any]]:
         """Construct SMILES → Target → Pathway causal chains from BioKB data.
 
-        When BioKB enrichment is available, this extracts the compound–target–
-        pathway relationships.  When it is absent, returns a minimal list of
-        SMILES-only entries that the ModelingAgent can use as a structural
-        anchor (Innovation 2).
-
-        Args:
-            smiles_list: List of SMILES strings.
-            bio_kb_data: Dict returned by :func:`generate_biokb_semantic_table`
-                (may be empty).
-
-        Returns:
-            List of dicts with keys ``smiles``, ``targets``, ``pathways``,
-            and ``mechanism_summary``.
+        Supports both the legacy flat ``records``/``rows`` layouts and the
+        current BioKB ``molecules`` layout. When no enrichment is available, a
+        minimal SMILES-only prior is returned so downstream agents still keep a
+        semantic anchor.
         """
         priors: List[Dict[str, Any]] = []
-
-        # Extract compound-level records from BioKB table if available.
-        records = bio_kb_data.get("records") or bio_kb_data.get("rows") or []
+        if not smiles_list:
+            return priors
 
         smiles_to_record: Dict[str, Dict[str, Any]] = {}
+
+        records = bio_kb_data.get("records") or bio_kb_data.get("rows") or []
         for rec in records:
+            if not isinstance(rec, dict):
+                continue
             smi = rec.get("smiles") or rec.get("SMILES") or ""
             if smi:
-                smiles_to_record[smi] = rec
+                smiles_to_record[str(smi)] = dict(rec)
+
+        molecules = bio_kb_data.get("molecules") or []
+        for mol in molecules:
+            if not isinstance(mol, dict):
+                continue
+            smi = mol.get("smiles") or mol.get("canonical_smiles") or ""
+            if not smi:
+                continue
+
+            targets_raw = mol.get("targets") or []
+            target_names: List[str] = []
+            mechanism_bits: List[str] = []
+            for target in targets_raw:
+                if isinstance(target, dict):
+                    target_name = (
+                        target.get("gene_symbol")
+                        or target.get("target_name")
+                        or target.get("accession")
+                        or target.get("target_chembl_id")
+                        or ""
+                    )
+                    if target_name:
+                        target_names.append(str(target_name))
+                    mechanism = (
+                        target.get("mechanism")
+                        or target.get("mechanism_of_action")
+                        or target.get("action_type")
+                        or ""
+                    )
+                    if mechanism:
+                        mechanism_bits.append(str(mechanism))
+                elif target:
+                    target_names.append(str(target))
+
+            pathways_raw = mol.get("pathways") or []
+            pathway_names: List[str] = []
+            for pathway in pathways_raw:
+                if isinstance(pathway, dict):
+                    pathway_name = (
+                        pathway.get("display_name")
+                        or pathway.get("pathway_name")
+                        or pathway.get("name")
+                        or pathway.get("pathway_id")
+                        or ""
+                    )
+                    if pathway_name:
+                        pathway_names.append(str(pathway_name))
+                elif pathway:
+                    pathway_names.append(str(pathway))
+
+            if mechanism_bits:
+                mechanism_summary = "; ".join(dict.fromkeys(mechanism_bits))
+            else:
+                process_names = []
+                for proc in mol.get("inferred_processes") or []:
+                    if isinstance(proc, dict) and proc.get("process"):
+                        process_names.append(str(proc.get("process")))
+                mechanism_summary = "; ".join(dict.fromkeys(process_names))
+
+            smiles_to_record[str(smi)] = {
+                "smiles": smi,
+                "targets": target_names,
+                "pathways": pathway_names,
+                "mechanism_of_action": mechanism_summary,
+            }
 
         for smi in smiles_list[:20]:
             rec = smiles_to_record.get(smi, {})
@@ -613,12 +751,13 @@ class ResearchAgent(BaseAgent):
                 pathways = [p.strip() for p in pathways.split(",") if p.strip()]
             priors.append({
                 "smiles": smi,
-                "targets": targets,
-                "pathways": pathways,
-                "mechanism_summary": mechanism,
+                "targets": list(dict.fromkeys([str(t) for t in targets if str(t).strip()])),
+                "pathways": list(dict.fromkeys([str(p) for p in pathways if str(p).strip()])),
+                "mechanism_summary": str(mechanism or ""),
             })
 
         return priors
+
 
 
 # =============================================================================
@@ -752,6 +891,257 @@ class ModelingAgent(BaseAgent):
             "hypergraph_hint": hypergraph_hint,
         }
 
+    def _use_legacy_notebook_mode(
+        self,
+        message: Dict[str, Any],
+        insight_report: Dict[str, Any],
+    ) -> bool:
+        """Return True when agent-mode should preserve the legacy notebook contract."""
+        prompt_branch = self.config.get("prompt_branch") or {}
+        output_type = str(prompt_branch.get("output_type") or "").lower()
+        previous_logs = insight_report.get("previous_iteration_logs") or {}
+        return (
+            output_type == "notebook"
+            or bool(message.get("notebook_json"))
+            or bool(previous_logs.get("notebook_json"))
+            or str(message.get("artifact_type") or previous_logs.get("artifact_type") or "").startswith("notebook")
+        )
+
+    def _resolve_legacy_prompt_file(self) -> str:
+        """Resolve the legacy generation prompt file used by Experiment stage."""
+        prompt_branch = self.config.get("prompt_branch") or {}
+        prompt_file = str(prompt_branch.get("prompt_file") or "prompts/pipeline_prompt.yaml")
+        resolved = _resolve_project_path(prompt_file)
+        if not os.path.isfile(resolved):
+            raise FileNotFoundError(f"Legacy prompt file not found: {resolved}")
+        return resolved
+
+    def _build_legacy_agent_context(
+        self,
+        *,
+        literature: str,
+        mechanism_context: str,
+        falsifiable_context: str,
+        technical_feedback: str,
+        sci_rules: Dict[str, Any],
+        previous_logs: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, str]:
+        """Build additive context while preserving the legacy prompt contract."""
+        protected_str = ", ".join(sci_rules.get("protected_sections") or [])
+        target_str = ", ".join(sci_rules.get("target_sections") or [])
+        hierarchy_str = "\n".join(sci_rules.get("optimization_hierarchy") or [])
+        hypergraph_hint = str(sci_rules.get("hypergraph_hint") or "")
+        cell_granularity_hint = str(sci_rules.get("cell_granularity_hint") or "")
+
+        system_appendix = (
+            "## MULTI-AGENT VIRTUAL CELL CONTEXT (ADDITIVE, DO NOT OVERRIDE LEGACY CONTRACT)\n"
+            "Follow the ORIGINAL prompt schema and response format exactly.\n"
+            "Treat the information below as extra scientific constraints layered on top of the existing legacy prompt.\n"
+            "Mechanism consistency is mandatory: architectural changes must be biologically justified, not random hyperparameter drift.\n"
+        )
+
+        sections: List[str] = [
+            "## LEGACY CONTRACT GUARDRAILS\n"
+            f"LOCKED sections: {protected_str or 'N/A'}\n"
+            f"MUTABLE sections: {target_str or 'N/A'}\n"
+            f"Optimization hierarchy:\n{hierarchy_str or 'N/A'}\n"
+            f"Hypergraph hint:\n{hypergraph_hint or 'N/A'}\n"
+            f"Cell granularity hint:\n{cell_granularity_hint or 'N/A'}",
+        ]
+
+        if mechanism_context:
+            sections.append(
+                "## MECHANISM-CONSTRAINED HYPOTHESIS GENERATION\n"
+                "Every meaningful modeling change must map to a plausible Target → Pathway → Phenotype rationale.\n"
+                "Use the SMILES-derived weak supervision below as a semantic anchor, not as a perfect oracle.\n"
+                f"{mechanism_context}"
+            )
+
+        if literature:
+            sections.append(
+                "## RESEARCH AGENT LITERATURE CONTEXT\n"
+                f"{literature[:30000]}"
+            )
+
+        if previous_logs:
+            prev_metrics = previous_logs.get("raw_metrics") or previous_logs.get("metrics") or {}
+            prev_stdout = str(previous_logs.get("stdout") or "")
+            prev_stderr = str(previous_logs.get("stderr") or "")
+            sections.append(
+                "## PREVIOUS ITERATION TRACE\n"
+                f"Metrics JSON: {json.dumps(prev_metrics, ensure_ascii=False)[:5000]}\n"
+                f"stdout tail: {prev_stdout[-1000:]}\n"
+                f"stderr tail: {prev_stderr[-1000:]}"
+            )
+
+        if technical_feedback:
+            sections.append(
+                "## EVALUATION AGENT FEEDBACK\n"
+                f"{technical_feedback}"
+            )
+
+        if falsifiable_context:
+            sections.append(falsifiable_context.strip())
+
+        return {
+            "system_appendix": system_appendix,
+            "context_dump": "\n\n".join(section for section in sections if section),
+        }
+
+    async def _generate_legacy_notebook_artifact(
+        self,
+        *,
+        insight_report: Dict[str, Any],
+        literature: str,
+        mechanism_context: str,
+        falsifiable_context: str,
+        technical_feedback: str,
+        sci_rules: Dict[str, Any],
+        iteration: int,
+        task_id: str,
+    ) -> Dict[str, Any]:
+        """Generate a notebook artifact via the legacy ``pipeline_prompt.yaml`` contract."""
+        import nbformat  # type: ignore
+        import yaml  # type: ignore
+
+        from .execution_workflow import _inject_api_key, _setup_stage1_resources  # type: ignore
+        from .prompt_generator import generate_notebook_content  # type: ignore
+
+        workspace = _ensure_task_workspace(task_id, "modeling", iteration)
+        debug_dir = os.path.join(workspace, "debug_prompt")
+        os.makedirs(debug_dir, exist_ok=True)
+
+        prompt_path = self._resolve_legacy_prompt_file()
+        with open(prompt_path, "r", encoding="utf-8") as fh:
+            spec = yaml.safe_load(fh) or {}
+
+        previous_logs = insight_report.get("previous_iteration_logs") or {}
+        context_payload = self._build_legacy_agent_context(
+            literature=literature,
+            mechanism_context=mechanism_context,
+            falsifiable_context=falsifiable_context,
+            technical_feedback=technical_feedback,
+            sci_rules=sci_rules,
+            previous_logs=previous_logs,
+        )
+
+        original_system = str(spec.get("system") or "You are an expert.")
+        spec["system"] = f"{original_system.rstrip()}\n\n{context_payload['system_appendix'].strip()}\n"
+        spec["agent_mode_virtual_cell_context"] = context_payload["context_dump"]
+
+        augmented_prompt_path = os.path.join(
+            workspace,
+            f"agent_mode_pipeline_prompt_iter_{int(iteration):03d}.yaml",
+        )
+        with open(augmented_prompt_path, "w", encoding="utf-8") as fh:
+            yaml.safe_dump(spec, fh, sort_keys=False, allow_unicode=True)
+
+        _inject_api_key(self.config)
+        _setup_stage1_resources(self.config, True, spec_path=augmented_prompt_path)
+
+        nb, _user_prompt, strategy_md = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: generate_notebook_content(self.config, augmented_prompt_path, debug_dir),
+        )
+
+        notebook_json = nbformat.writes(nb)
+        script_text = _notebook_to_script_text(nb)
+        metadata = {
+            "generation_mode": "legacy_initial_generation",
+            "selected_strategy": (strategy_md or "").splitlines()[0].strip() if strategy_md else "",
+            "decision_type": "EXPLORE",
+            "focus_area": "All",
+            "legacy_prompt_file": prompt_path,
+            "augmented_prompt_file": augmented_prompt_path,
+        }
+        return {
+            "artifact_type": "notebook_ipynb",
+            "notebook_json": notebook_json,
+            "code": script_text,
+            "modeling_metadata": metadata,
+        }
+
+    async def _revise_legacy_notebook_artifact(
+        self,
+        *,
+        notebook_json: str,
+        current_metrics: Dict[str, Any],
+        history_summary: List[Dict[str, Any]],
+        best_metric_score: Optional[float],
+        technical_feedback: str,
+        mechanism_context: str,
+        falsifiable_context: str,
+        iteration: int,
+        task_id: str,
+    ) -> Dict[str, Any]:
+        """Revise an existing notebook artifact via the legacy review protocol."""
+        import nbformat  # type: ignore
+
+        from .notebook_autofix import apply_llm_edits  # type: ignore
+        from .review_workflow import (  # type: ignore
+            _inject_llm_env,
+            generate_optimization_suggestion,
+            identify_mutable_cells,
+        )
+
+        if not notebook_json:
+            raise ValueError("Legacy notebook refinement requires notebook_json.")
+
+        workspace = _ensure_task_workspace(task_id, "modeling", iteration)
+        nb = nbformat.reads(notebook_json, as_version=4)
+        mutable_indices = identify_mutable_cells(nb, self.config)
+        _inject_llm_env(self.config)
+
+        task_graph_state = (
+            "# AGENT MODE CONTEXT\n"
+            f"best_metric_score: {best_metric_score}\n\n"
+            "# MECHANISM CONTEXT\n"
+            f"{mechanism_context or 'N/A'}\n\n"
+            "# FALSIFIABLE CONTEXT\n"
+            f"{falsifiable_context or 'N/A'}\n\n"
+            "# EVALUATION FEEDBACK\n"
+            f"{technical_feedback or 'N/A'}"
+        )
+
+        suggestion = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: generate_optimization_suggestion(
+                self.config,
+                nb,
+                mutable_indices,
+                current_metrics or {},
+                iteration,
+                float(best_metric_score or 0.0),
+                workspace,
+                history_summary or [],
+                task_graph_state_text=task_graph_state,
+            ),
+        )
+        if not isinstance(suggestion, dict):
+            raise RuntimeError("Review optimization did not return a JSON object.")
+
+        applied_changes = apply_llm_edits(nb, suggestion.get("edits") or [])
+        updated_notebook_json = nbformat.writes(nb)
+        script_text = _notebook_to_script_text(nb)
+        metadata = {
+            "generation_mode": "legacy_review_refinement",
+            "selected_strategy": suggestion.get("selected_strategy") or "",
+            "decision_type": suggestion.get("decision_type") or "",
+            "focus_area": suggestion.get("focus_area") or "",
+            "critique": suggestion.get("critique") or "",
+            "semantic_gradient_analysis": suggestion.get("semantic_gradient_analysis") or "",
+            "used_evidence_ids": suggestion.get("used_evidence_ids") or [],
+            "mutable_indices": mutable_indices,
+            "applied_changes": int(applied_changes),
+            "suggestion": suggestion,
+        }
+        return {
+            "artifact_type": "notebook_ipynb",
+            "notebook_json": updated_notebook_json,
+            "code": script_text,
+            "modeling_metadata": metadata,
+        }
+
     @monitor_agent
     @retry_llm_call()
     async def process(self, message: Dict[str, Any]) -> AgentResponse:
@@ -770,9 +1160,17 @@ class ModelingAgent(BaseAgent):
         Returns:
             :class:`AgentResponse` directed to ``code_execution``.
         """
+        message = self._unwrap_message(message)
+
         insight_report: Dict[str, Any] = message.get("biological_insight_report") or {}
+        previous_iteration_logs: Dict[str, Any] = insight_report.get("previous_iteration_logs") or {}
         raw_error_logs: Optional[str] = message.get("error_logs")
-        existing_code: Optional[str] = message.get("code")
+        existing_code: Optional[str] = message.get("code") or previous_iteration_logs.get("code")
+        existing_notebook_json: str = (
+            message.get("notebook_json")
+            or previous_iteration_logs.get("notebook_json")
+            or ""
+        )
         technical_feedback: str = message.get("technical_feedback") or ""
         falsifiable_verdict: Dict[str, Any] = (
             message.get("falsifiable_verdict")
@@ -815,6 +1213,17 @@ class ModelingAgent(BaseAgent):
             action_desc = "generating initial model code"
         _log(f"[CODE] 💻 ModelingAgent is {action_desc}…", console=True)
 
+        current_metrics: Dict[str, Any] = (
+            message.get("current_metrics")
+            or message.get("raw_metrics")
+            or previous_iteration_logs.get("raw_metrics")
+            or previous_iteration_logs.get("metrics")
+            or {}
+        )
+        history_summary: List[Dict[str, Any]] = message.get("history_summary") or []
+        best_metric_score = message.get("best_metric_score")
+        task_id: str = str(message.get("_task_id") or "")
+
         # Load scientific protocol rules from config/YAML files.
         sci_rules = self._load_scientific_rules()
         protected_str = ", ".join(sci_rules["protected_sections"])
@@ -831,6 +1240,55 @@ class ModelingAgent(BaseAgent):
             or {}
         )
         literature = lit_source.get("markdown_summary") or ""
+
+        if self._use_legacy_notebook_mode(message, insight_report):
+            try:
+                if existing_notebook_json:
+                    artifact_payload = await self._revise_legacy_notebook_artifact(
+                        notebook_json=existing_notebook_json,
+                        current_metrics=current_metrics,
+                        history_summary=history_summary,
+                        best_metric_score=best_metric_score,
+                        technical_feedback=technical_feedback,
+                        mechanism_context=mechanism_context,
+                        falsifiable_context=falsifiable_context,
+                        iteration=iteration,
+                        task_id=task_id,
+                    )
+                else:
+                    artifact_payload = await self._generate_legacy_notebook_artifact(
+                        insight_report=insight_report,
+                        literature=literature,
+                        mechanism_context=mechanism_context,
+                        falsifiable_context=falsifiable_context,
+                        technical_feedback=technical_feedback,
+                        sci_rules=sci_rules,
+                        iteration=iteration,
+                        task_id=task_id,
+                    )
+                artifact_payload.update({
+                    "insight_report": insight_report,
+                    "iteration": iteration,
+                    "max_iterations": int(message.get("max_iterations") or 5),
+                    "_task_id": task_id,
+                })
+                return AgentResponse(
+                    status="success",
+                    data=artifact_payload,
+                    next_recipient="code_execution",
+                )
+            except Exception as exc:
+                logger.exception("[%s] Legacy notebook-mode modeling failed.", self.agent_id)
+                return AgentResponse(
+                    status="error",
+                    data={
+                        "error": f"Legacy notebook agent-mode modeling failed: {exc}",
+                        "traceback": traceback.format_exc(),
+                        "iteration": iteration,
+                        "_task_id": task_id,
+                    },
+                    next_recipient="orchestration",
+                )
 
         try:
             from .prompt_manager import get_default_prompt_manager  # type: ignore
@@ -932,6 +1390,11 @@ class ModelingAgent(BaseAgent):
                 "insight_report": insight_report,
                 "iteration": iteration,
                 "max_iterations": int(message.get("max_iterations") or 5),
+                "artifact_type": "raw_python",
+                "modeling_metadata": {
+                    "generation_mode": "raw_code_fallback",
+                    "decision_type": "REFINE" if error_logs else "EXPLORE",
+                },
                 "_task_id": message.get("_task_id") or "",
             },
             next_recipient="code_execution",
@@ -986,6 +1449,87 @@ class ExecutionAgent(BaseAgent):
     role = "code_executor"
     tools = ["subprocess"]
 
+    def _is_notebook_artifact(self, message: Dict[str, Any]) -> bool:
+        """Return True when the payload carries a legacy notebook artifact."""
+        artifact_type = str(message.get("artifact_type") or "")
+        return artifact_type.startswith("notebook") or bool(message.get("notebook_json"))
+
+    async def _execute_legacy_notebook_artifact(
+        self,
+        message: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Execute a notebook artifact using the legacy execution stack."""
+        import nbformat  # type: ignore
+
+        from .config_loader import load_yaml_prompts  # type: ignore
+        from .execution_workflow import _inject_api_key, _setup_stage1_resources  # type: ignore
+        from .prompt_orchestrator import phase_analyze, phase_execute  # type: ignore
+
+        notebook_json = str(message.get("notebook_json") or "")
+        if not notebook_json.strip():
+            raise ValueError("Notebook artifact missing notebook_json payload.")
+
+        iteration = int(message.get("iteration") or 0)
+        task_id = str(message.get("_task_id") or "")
+        workspace = _ensure_task_workspace(task_id, "execution", iteration)
+        trial_dir = os.path.join(workspace, "trial")
+        os.makedirs(trial_dir, exist_ok=True)
+
+        if not isinstance(self.config.get("prompts"), dict):
+            self.config["prompts"] = load_yaml_prompts(_resolve_project_path("prompts"))
+
+        nb = nbformat.reads(notebook_json, as_version=4)
+        nb_path = os.path.join(trial_dir, "notebook_prompt.ipynb")
+        with open(nb_path, "w", encoding="utf-8") as fh:
+            nbformat.write(nb, fh)
+
+        prompt_file = str((self.config.get("prompt_branch") or {}).get("prompt_file") or "prompts/pipeline_prompt.yaml")
+        _inject_api_key(self.config)
+        _setup_stage1_resources(self.config, True, spec_path=_resolve_project_path(prompt_file))
+
+        stdout_buffer = io.StringIO()
+        stderr_buffer = io.StringIO()
+        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+            exec_res = phase_execute(self.config, trial_dir)
+            try:
+                phase_analyze(self.config, trial_dir)
+            except Exception as exc:  # pragma: no cover - best effort only
+                print(f"[DETAIL] [ExecutionAgent] phase_analyze skipped: {exc}", flush=True)
+
+        stdout_val = stdout_buffer.getvalue()
+        stderr_val = stderr_buffer.getvalue()
+        raw_metrics = exec_res.get("metrics") or {}
+
+        executed_nb_path = exec_res.get("exec_notebook") or os.path.join(trial_dir, "notebook_prompt_exec.ipynb")
+        if os.path.exists(executed_nb_path):
+            executed_nb = nbformat.read(executed_nb_path, as_version=4)
+            final_notebook_json = nbformat.writes(executed_nb)
+            code_text = _notebook_to_script_text(executed_nb)
+        else:
+            final_notebook_json = notebook_json
+            code_text = _notebook_to_script_text(nb)
+
+        global_errors = []
+        if isinstance(raw_metrics, dict):
+            global_errors = list(raw_metrics.get("global_errors") or [])
+        success = bool(raw_metrics) and not global_errors and raw_metrics.get("status") != "MISSING_METRICS_JSON"
+
+        traceback_text = ""
+        if not success:
+            traceback_text = stderr_val or stdout_val[-4000:]
+
+        return {
+            "status": "success" if success else "error",
+            "stdout": stdout_val,
+            "stderr": stderr_val,
+            "traceback": traceback_text,
+            "code": code_text,
+            "raw_metrics": raw_metrics,
+            "notebook_json": final_notebook_json,
+            "artifact_type": "notebook_ipynb",
+            "trial_dir": trial_dir,
+        }
+
     @monitor_agent
     async def process(self, message: Dict[str, Any]) -> AgentResponse:
         """Run the code contained in *message* and capture all output.
@@ -997,8 +1541,60 @@ class ExecutionAgent(BaseAgent):
             :class:`AgentResponse` directed to ``evaluation`` with
             ``stdout``, ``stderr``, and ``traceback`` fields.
         """
+        message = self._unwrap_message(message)
+
         raw_code: str = message.get("code") or ""
         insight_report: Dict[str, Any] = message.get("insight_report") or {}
+        modeling_metadata: Dict[str, Any] = message.get("modeling_metadata") or {}
+        iteration: int = int(message.get("iteration") or 0)
+        task_id: str = str(message.get("_task_id") or "")
+        max_iterations: int = int(message.get("max_iterations") or 5)
+
+        if self._is_notebook_artifact(message):
+            try:
+                exec_payload = await self._execute_legacy_notebook_artifact(message)
+            except Exception as exc:
+                exec_payload = {
+                    "status": "error",
+                    "stdout": "",
+                    "stderr": str(exc),
+                    "traceback": traceback.format_exc(),
+                    "code": message.get("code") or "",
+                    "raw_metrics": {},
+                    "notebook_json": message.get("notebook_json") or "",
+                    "artifact_type": str(message.get("artifact_type") or "notebook_ipynb"),
+                }
+
+            success = exec_payload.get("status") == "success"
+            if not success:
+                self._save_error_report(
+                    task_id=task_id,
+                    iteration=iteration,
+                    error_type="NotebookExecutionError",
+                    error_message=str(exec_payload.get("stderr") or exec_payload.get("traceback") or "Notebook execution failed."),
+                    tb=str(exec_payload.get("traceback") or ""),
+                    code=str(exec_payload.get("code") or ""),
+                )
+
+            return AgentResponse(
+                status="success" if success else "error",
+                data={
+                    "stdout": exec_payload.get("stdout") or "",
+                    "stderr": exec_payload.get("stderr") or "",
+                    "traceback": exec_payload.get("traceback") or "",
+                    "code": exec_payload.get("code") or "",
+                    "raw_metrics": exec_payload.get("raw_metrics") or {},
+                    "notebook_json": exec_payload.get("notebook_json") or message.get("notebook_json") or "",
+                    "artifact_type": exec_payload.get("artifact_type") or "notebook_ipynb",
+                    "trial_dir": exec_payload.get("trial_dir") or "",
+                    "insight_report": insight_report,
+                    "modeling_metadata": modeling_metadata,
+                    "iteration": iteration,
+                    "max_iterations": max_iterations,
+                    "_task_id": task_id,
+                },
+                next_recipient="evaluation",
+            )
 
         if not raw_code.strip():
             return AgentResponse(
@@ -1009,6 +1605,11 @@ class ExecutionAgent(BaseAgent):
                     "stderr": "",
                     "traceback": "",
                     "insight_report": insight_report,
+                    "artifact_type": str(message.get("artifact_type") or "raw_python"),
+                    "modeling_metadata": modeling_metadata,
+                    "iteration": iteration,
+                    "max_iterations": max_iterations,
+                    "_task_id": task_id,
                 },
                 next_recipient="evaluation",
             )
@@ -1025,8 +1626,6 @@ class ExecutionAgent(BaseAgent):
         timeout: int = int(
             (self.config.get("exec") or {}).get("timeout_seconds") or 300
         )
-        iteration: int = int(message.get("iteration") or 0)
-        task_id: str = str(message.get("_task_id") or "")
 
         stdout_val = ""
         stderr_val = ""
@@ -1097,8 +1696,13 @@ class ExecutionAgent(BaseAgent):
                 "stderr": stderr_val,
                 "traceback": tb_val,
                 "code": code,
+                "raw_metrics": {},
+                "artifact_type": str(message.get("artifact_type") or "raw_python"),
+                "modeling_metadata": modeling_metadata,
                 "insight_report": insight_report,
                 "iteration": iteration,
+                "max_iterations": max_iterations,
+                "_task_id": task_id,
             },
             next_recipient="evaluation",
         )
@@ -1261,6 +1865,72 @@ class EvaluationAgent(BaseAgent):
             return val <= pass_threshold
         return val >= pass_threshold
 
+    @staticmethod
+    def _extract_metric_from_model_payload(
+        model_payload: Dict[str, Any],
+        metric_name: str,
+    ) -> Optional[float]:
+        """Extract a metric from ``aggregate`` or averaged ``per_fold`` fields."""
+        try:
+            if isinstance(model_payload.get("aggregate"), dict):
+                val = model_payload["aggregate"].get(metric_name)
+                if val is not None:
+                    return float(val)
+            if isinstance(model_payload.get("per_fold"), dict):
+                vals: List[float] = []
+                for fold_payload in model_payload["per_fold"].values():
+                    if not isinstance(fold_payload, dict):
+                        continue
+                    val = fold_payload.get(metric_name)
+                    if val is None and isinstance(fold_payload.get("metrics"), dict):
+                        val = fold_payload["metrics"].get(metric_name)
+                    if val is None:
+                        continue
+                    try:
+                        vals.append(float(val))
+                    except Exception:
+                        continue
+                if vals:
+                    return float(sum(vals) / len(vals))
+            if metric_name in model_payload:
+                return float(model_payload.get(metric_name))
+        except Exception:
+            return None
+        return None
+
+    @classmethod
+    def _parse_metrics_payload(
+        cls,
+        raw_metrics: Dict[str, Any],
+    ) -> Dict[str, Optional[float]]:
+        """Parse the DEG metric suite from ``metrics.json``-style payloads."""
+        metrics: Dict[str, Optional[float]] = {name: None for name, _ in _DEG_METRIC_PATTERNS}
+        if not isinstance(raw_metrics, dict) or not raw_metrics:
+            return metrics
+
+        models = raw_metrics.get("models") if isinstance(raw_metrics.get("models"), dict) else None
+        if not models:
+            models = {
+                key: value
+                for key, value in raw_metrics.items()
+                if isinstance(value, dict) and key not in {"winner", "config", "methods", "trial_dir", "status", "note", "global_errors"}
+            }
+        if not models:
+            return metrics
+
+        winner = raw_metrics.get("winner")
+        if not winner or winner not in models:
+            non_baseline = [
+                key for key in models.keys()
+                if "baseline" not in key.lower() and "reference" not in key.lower() and key != "config"
+            ]
+            winner = non_baseline[-1] if non_baseline else next(iter(models.keys()))
+
+        model_payload = models.get(winner) or {}
+        for metric_name in metrics.keys():
+            metrics[metric_name] = cls._extract_metric_from_model_payload(model_payload, metric_name)
+        return metrics
+
     # ------------------------------------------------------------------
     # Core process method
     # ------------------------------------------------------------------
@@ -1279,10 +1949,16 @@ class EvaluationAgent(BaseAgent):
             ``decision`` set to ``"SUCCESS"`` or ``"REFINE"``.  When
             ``"REFINE"``, a ``feedback_package`` dict is included.
         """
+        message = self._unwrap_message(message)
+
         stdout: str = message.get("stdout") or ""
         stderr: str = message.get("stderr") or ""
         tb: str = message.get("traceback") or ""
         code: str = message.get("code") or ""
+        raw_metrics: Dict[str, Any] = message.get("raw_metrics") or {}
+        artifact_type: str = str(message.get("artifact_type") or "raw_python")
+        notebook_json: str = str(message.get("notebook_json") or "")
+        modeling_metadata: Dict[str, Any] = message.get("modeling_metadata") or {}
         insight_report: Dict[str, Any] = message.get("insight_report") or {}
         iteration: int = int(message.get("iteration") or 0)
         max_iterations: int = int(message.get("max_iterations") or 5)
@@ -1300,8 +1976,12 @@ class EvaluationAgent(BaseAgent):
             console=True,
         )
 
-        # Parse the full DEG metric suite from stdout.
-        all_metrics: Dict[str, Optional[float]] = self._parse_all_metrics(stdout)
+        # Parse the full DEG metric suite from raw metrics first, then fill gaps from stdout.
+        all_metrics: Dict[str, Optional[float]] = self._parse_metrics_payload(raw_metrics)
+        stdout_metrics = self._parse_all_metrics(stdout)
+        for metric_name, metric_value in stdout_metrics.items():
+            if all_metrics.get(metric_name) is None and metric_value is not None:
+                all_metrics[metric_name] = metric_value
         primary_value: Optional[float] = all_metrics.get(target_metric)
 
         _log(
@@ -1347,12 +2027,20 @@ class EvaluationAgent(BaseAgent):
                     "decision": "SUCCESS",
                     "accuracy": accuracy,
                     "metrics": all_metrics,
+                    "raw_metrics": raw_metrics,
                     "metric_delta": metric_delta,
                     "metric_trend": metric_trend,
                     "target_metric": target_metric,
                     "stdout": stdout,
+                    "stderr": stderr,
+                    "traceback": tb,
+                    "code": code,
+                    "artifact_type": artifact_type,
+                    "notebook_json": notebook_json,
+                    "modeling_metadata": modeling_metadata,
                     "insight_report": insight_report,
                     "iteration": iteration,
+                    "max_iterations": max_iterations,
                 },
                 next_recipient="orchestration",
             )
@@ -1377,11 +2065,18 @@ class EvaluationAgent(BaseAgent):
                     "feedback_package": feedback_package,
                     "accuracy": accuracy,
                     "metrics": all_metrics,
+                    "raw_metrics": raw_metrics,
                     "metric_delta": metric_delta,
                     "metric_trend": metric_trend,
                     "target_metric": target_metric,
                     "max_iterations_reached": True,
                     "stdout": stdout,
+                    "stderr": stderr,
+                    "traceback": tb,
+                    "code": code,
+                    "artifact_type": artifact_type,
+                    "notebook_json": notebook_json,
+                    "modeling_metadata": modeling_metadata,
                     "insight_report": insight_report,
                     "iteration": iteration,
                     "max_iterations": max_iterations,
@@ -1409,6 +2104,7 @@ class EvaluationAgent(BaseAgent):
                 "feedback_package": feedback_package,
                 "accuracy": accuracy,
                 "metrics": all_metrics,
+                "raw_metrics": raw_metrics,
                 "metric_delta": metric_delta,
                 "metric_trend": metric_trend,
                 "target_metric": target_metric,
@@ -1416,6 +2112,9 @@ class EvaluationAgent(BaseAgent):
                 "stderr": stderr,
                 "traceback": tb,
                 "code": code,
+                "artifact_type": artifact_type,
+                "notebook_json": notebook_json,
+                "modeling_metadata": modeling_metadata,
                 "insight_report": insight_report,
                 "iteration": iteration,
                 "max_iterations": max_iterations,
