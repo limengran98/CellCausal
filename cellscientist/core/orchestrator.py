@@ -196,6 +196,15 @@ class PipelineOrchestrator:
         self.best_code: str = ""
         self.best_artifacts_path: str = ""
 
+        # ---- Falsifiable Iteration Protocol state ----
+        # Per-iteration metric history for accept/reject decisions.
+        self.iteration_history: List[Dict[str, Any]] = []
+        # The last accepted (improving) code; used for revert on regression.
+        self.last_accepted_code: str = ""
+        self.last_accepted_metrics: Dict[str, Any] = {}
+        # Counter for consecutive rejections; triggers forced new hypothesis.
+        self.consecutive_rejections: int = 0
+
         # Bootstrap: enter the INITIALIZING state.
         self._enter_state(PipelineState.INITIALIZING)
 
@@ -234,6 +243,130 @@ class PipelineOrchestrator:
         # Emit the bare legacy alias on its own line so log-parsers can match it.
         if legacy:
             _log(legacy, console=True)
+
+    # ------------------------------------------------------------------
+    # Falsifiable Iteration Protocol
+    # ------------------------------------------------------------------
+
+    def _evaluate_iteration(
+        self, data: Dict[str, Any], iteration: int
+    ) -> Dict[str, Any]:
+        """Apply the Falsifiable Iteration Protocol to an evaluation result.
+
+        Compares current metrics with the previously accepted state.  Returns
+        a verdict dict that the orchestrator uses to decide whether to
+        **accept** (lock improvement) or **reject** (revert to best state and
+        force a new hypothesis).
+
+        Args:
+            data: Evaluation payload containing ``accuracy``, ``metrics``, and
+                ``code``.
+            iteration: Current iteration number.
+
+        Returns:
+            Dict with keys ``verdict`` (``"ACCEPT"`` or ``"REJECT"``),
+            ``metric_delta``, ``current_score``, ``previous_score``, and
+            ``forced_new_hypothesis`` (bool).
+        """
+        current_score: Optional[float] = None
+        try:
+            current_score = float(data.get("accuracy") or 0)
+        except (TypeError, ValueError):
+            current_score = None
+
+        previous_score = self.last_accepted_metrics.get("accuracy")
+        code = data.get("code") or ""
+        metrics = data.get("metrics") or {}
+
+        record = {
+            "iteration": iteration,
+            "score": current_score,
+            "metrics": metrics,
+            "code_len": len(code),
+            "timestamp": _now_iso(),
+        }
+
+        # First iteration — always accept.
+        if not self.iteration_history:
+            self.iteration_history.append(record)
+            if current_score is not None:
+                self.last_accepted_code = code
+                self.last_accepted_metrics = {"accuracy": current_score, **metrics}
+                self.consecutive_rejections = 0
+            _log(
+                f"[Falsifiable] ✅ ACCEPT (first iteration, "
+                f"score={current_score})",
+                console=True,
+            )
+            return {
+                "verdict": "ACCEPT",
+                "metric_delta": 0.0,
+                "current_score": current_score,
+                "previous_score": None,
+                "forced_new_hypothesis": False,
+            }
+
+        self.iteration_history.append(record)
+
+        # Compare with the previous accepted score.
+        if current_score is not None and previous_score is not None:
+            delta = current_score - previous_score
+            if delta >= 0:
+                # Improvement or no change — ACCEPT / LOCK.
+                self.last_accepted_code = code
+                self.last_accepted_metrics = {"accuracy": current_score, **metrics}
+                self.consecutive_rejections = 0
+                _log(
+                    f"[Falsifiable] ✅ ACCEPT — score improved: "
+                    f"{previous_score:.4f} → {current_score:.4f} "
+                    f"(Δ={delta:+.4f})",
+                    console=True,
+                )
+                return {
+                    "verdict": "ACCEPT",
+                    "metric_delta": delta,
+                    "current_score": current_score,
+                    "previous_score": previous_score,
+                    "forced_new_hypothesis": False,
+                }
+            else:
+                # Degradation — REJECT / REVERT.
+                self.consecutive_rejections += 1
+                force_new = self.consecutive_rejections >= 2
+                _log(
+                    f"[Falsifiable] ❌ REJECT — score degraded: "
+                    f"{previous_score:.4f} → {current_score:.4f} "
+                    f"(Δ={delta:+.4f}, consecutive_rejections="
+                    f"{self.consecutive_rejections})",
+                    console=True,
+                )
+                if force_new:
+                    _log(
+                        "[Falsifiable] 🔬 Forcing NEW HYPOTHESIS "
+                        "(consecutive rejections ≥ 2)",
+                        console=True,
+                    )
+                return {
+                    "verdict": "REJECT",
+                    "metric_delta": delta,
+                    "current_score": current_score,
+                    "previous_score": previous_score,
+                    "forced_new_hypothesis": force_new,
+                }
+
+        # Metrics not available — accept tentatively.
+        _log(
+            f"[Falsifiable] ⚠️ ACCEPT (no comparable metrics; "
+            f"current={current_score}, previous={previous_score})",
+            console=True,
+        )
+        return {
+            "verdict": "ACCEPT",
+            "metric_delta": 0.0,
+            "current_score": current_score,
+            "previous_score": previous_score,
+            "forced_new_hypothesis": False,
+        }
 
     async def run(self) -> Dict[str, Any]:
         """Execute the full multi-agent pipeline using the FSM.
@@ -438,11 +571,42 @@ class PipelineOrchestrator:
                     # incremented above (Bug 1 fix).
                     next_iteration = self.context.iteration
 
+                    # ---- Falsifiable Iteration Protocol ----
+                    # Evaluate this iteration vs. the last accepted state.
+                    verdict_info = self._evaluate_iteration(data, next_iteration)
+                    verdict = verdict_info["verdict"]
+
+                    # On REJECT: revert code to last accepted state and augment
+                    # feedback to force a different hypothesis.
+                    code_for_next = data.get("code") or ""
+                    if verdict == "REJECT" and self.last_accepted_code:
+                        code_for_next = self.last_accepted_code
+                        revert_note = (
+                            f"[FALSIFICATION] The previous change DEGRADED "
+                            f"the metric ({verdict_info['previous_score']:.4f} → "
+                            f"{verdict_info['current_score']:.4f}). "
+                            f"Code has been REVERTED to the last accepted state. "
+                            f"Please try a fundamentally different approach."
+                        )
+                        technical_feedback = f"{revert_note}\n\n{technical_feedback}"
+
+                    # On consecutive rejections: force route to research for a
+                    # new biological hypothesis rather than more code tweaks.
+                    if verdict_info.get("forced_new_hypothesis"):
+                        suggested_target = "research"
+                        knowledge_gap = (
+                            knowledge_gap
+                            or "novel biological mechanism for cell perturbation "
+                            "response prediction beyond current approach"
+                        )
+
                     # Save iteration artifacts.
+                    artifact_data = dict(data)
+                    artifact_data["falsifiable_verdict"] = verdict_info
                     self._save_iteration_artifacts(
                         iteration=int(data.get("iteration") or 0),
                         agent_name="evaluation",
-                        data=data,
+                        data=artifact_data,
                     )
 
                     if suggested_target == "research":
@@ -461,6 +625,13 @@ class PipelineOrchestrator:
                                 "stage": "refinement",
                                 "iteration": next_iteration,
                                 "max_iterations": self.context.max_iterations,
+                                "previous_iteration_logs": {
+                                    "stdout": data.get("stdout") or "",
+                                    "stderr": data.get("stderr") or "",
+                                    "metrics": data.get("metrics") or {},
+                                    "code": code_for_next,
+                                },
+                                "falsifiable_verdict": verdict_info,
                                 "_fsm_state": self.current_state.value if self.current_state else "",
                                 "_task_id": self.context.task_id,
                             },
@@ -476,10 +647,11 @@ class PipelineOrchestrator:
                             {
                                 "biological_insight_report": data.get("insight_report") or {},
                                 "error_logs": data.get("stderr") or data.get("traceback") or "",
-                                "code": data.get("code") or "",
+                                "code": code_for_next,
                                 "technical_feedback": technical_feedback,
                                 "iteration": next_iteration,
                                 "max_iterations": self.context.max_iterations,
+                                "falsifiable_verdict": verdict_info,
                                 "_fsm_state": self.current_state.value if self.current_state else "",
                                 "_task_id": self.context.task_id,
                             },
@@ -527,6 +699,8 @@ class PipelineOrchestrator:
             "best_artifacts_path": self.best_artifacts_path,
             "experiment_success_count": experiment_success_count,
             "max_iterations_reached": data_final.get("max_iterations_reached", False),
+            "iteration_history": self.iteration_history,
+            "consecutive_rejections": self.consecutive_rejections,
             "fsm_transitions": [
                 {"from": f.value if f else "None", "to": t.value if t else "None", "timestamp": ts}
                 for f, t, ts in self.transition_history

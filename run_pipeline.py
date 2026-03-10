@@ -111,6 +111,16 @@ def main() -> None:
         action="store_true",
         help="Skip final report and export logic (runner post-processing).",
     )
+    parser.add_argument(
+        "--agent-mode",
+        action="store_true",
+        help=(
+            "Run the pipeline through the multi-agent FSM orchestrator "
+            "instead of subprocess-based linear execution.  Enables the "
+            "Falsifiable Scientific Discovery Loop with ResearchAgent, "
+            "ModelingAgent, ExecutionAgent, and EvaluationAgent."
+        ),
+    )
     args = parser.parse_args()
 
     ensure_project_cwd()
@@ -160,6 +170,67 @@ def main() -> None:
     logger.full_log("=" * 80)
     logger.full_log(f"Dataset: {dataset_name}")
     logger.full_log(f"Logs Directory: {logs_dir}")
+
+    # =====================================================================
+    # Agent-Mode: Multi-Agent FSM Orchestrator
+    # =====================================================================
+    if args.agent_mode:
+        logger.full_log("MODE: Multi-Agent FSM Orchestrator (--agent-mode)")
+        logger.console_info("")
+        logger.console_info("🧬 AGENT MODE — Falsifiable Scientific Discovery Loop", level=0)
+
+        from cellscientist.core.orchestrator import run_orchestrator_sync
+        from cellscientist.pipeline.metrics import scoreboard_from_orchestrator
+        from cellscientist.pipeline.report import generate_report_from_orchestrator
+
+        # Merge configs into a single dict for the orchestrator.
+        merged_cfg = dict(pipe_cfg)
+        exp_loaded = stage_map["Experiment"].get("_loaded_cfg") or {}
+        review_loaded = stage_map["Review"].get("_loaded_cfg") or {}
+        for key, val in exp_loaded.items():
+            if key not in merged_cfg:
+                merged_cfg[key] = val
+            elif isinstance(val, dict) and isinstance(merged_cfg.get(key), dict):
+                merged_cfg[key] = {**merged_cfg[key], **val}
+        for key, val in review_loaded.items():
+            if key not in merged_cfg:
+                merged_cfg[key] = val
+            elif isinstance(val, dict) and isinstance(merged_cfg.get(key), dict):
+                merged_cfg[key] = {**merged_cfg[key], **val}
+
+        agent_t0 = time.time()
+        try:
+            result = run_orchestrator_sync(merged_cfg)
+        except Exception as exc:
+            logger.console_info(f"❌ Agent-mode pipeline failed: {exc}", level=0)
+            logger.full_log(f"Agent-mode pipeline exception: {exc}")
+            import traceback as _tb
+            logger.full_log(_tb.format_exc())
+            sys.exit(1)
+        agent_t1 = time.time()
+
+        total_t = agent_t1 - agent_t0
+        logger.print_timing(f"Agent-mode pipeline completed in {total_t:.1f}s")
+
+        # Convert orchestrator result to legacy scoreboard format.
+        summary = scoreboard_from_orchestrator(result, dataset_name, total_t)
+        print_final_scoreboard(summary)
+
+        # Generate report if requested.
+        if not args.skip_final_report:
+            logger.console_info("")
+            logger.console_info("📝 Generating final reports...", level=0)
+            generate_report_from_orchestrator(result, pipe_cfg, dataset_name, logs_dir)
+
+        logger.console_info("")
+        logger.console_info(f"✅ Pipeline completed (agent-mode). Logs: {logs_dir}", level=0)
+        logger.finalize()
+        return
+
+    # =====================================================================
+    # Subprocess-Mode: Legacy Linear Execution (default)
+    # =====================================================================
+    logger.full_log("MODE: Subprocess-based linear execution (default)")
 
     # 6) Pretty plan (using existing function - still outputs to console)
     print_execution_plan(stage_map, dataset_name)
