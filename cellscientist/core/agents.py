@@ -440,7 +440,15 @@ class ResearchAgent(BaseAgent):
     @monitor_agent
     @retry_llm_call()
     async def process(self, message: Dict[str, Any]) -> AgentResponse:
-        """Analyse SMILES and contextual data to produce a biology report.
+        """Analyse SMILES and contextual data to produce a Causal Context Payload.
+
+        The output is a structured payload containing:
+        - ``smiles_mechanism_prior``: SMILES → Target → Pathway causal chains
+          (Innovation 2: SMILES-Driven Mechanism Prior)
+        - ``biokb_evidence``: BioKB semantic enrichment data
+        - ``literature_context``: Web search / literature results
+        - ``previous_iteration_logs``: Execution logs and metrics from the
+          previous iteration (if available)
 
         Args:
             message: Payload that should contain ``smiles_list``, ``h5_file_path``,
@@ -448,12 +456,15 @@ class ResearchAgent(BaseAgent):
                 second-pass RAG retrieval.
 
         Returns:
-            :class:`AgentResponse` directed to ``biology_insights``.
+            :class:`AgentResponse` directed to ``modeling`` with a structured
+            Causal Context Payload.
         """
         smiles_list: List[str] = message.get("smiles_list") or []
         h5_file_path: str = message.get("h5_file_path") or ""
         context_text: str = message.get("context_text") or ""
         knowledge_gap: str = message.get("knowledge_gap") or ""
+        previous_iteration_logs: Dict[str, Any] = message.get("previous_iteration_logs") or {}
+        falsifiable_verdict: Dict[str, Any] = message.get("falsifiable_verdict") or {}
 
         # Use "refinement" stage for second-pass RAG, "design" for initial pass.
         stage: str = "refinement" if knowledge_gap else (message.get("stage") or "design")
@@ -516,20 +527,98 @@ class ResearchAgent(BaseAgent):
         except Exception as exc:
             _log(f"[{self.agent_id}] Literature retrieval skipped: {exc}")
 
+        # ---- Innovation 2: SMILES-Driven Mechanism Prior ----
+        # Build weak-supervision mechanism priors from SMILES chemical
+        # structures.  This serves as a semantic anchor constraining the
+        # ModelingAgent to biologically plausible modifications.
+        smiles_mechanism_prior = self._build_smiles_mechanism_prior(
+            smiles_list, bio_kb_data
+        )
+
+        # Assemble the structured Causal Context Payload.
         report = {
             "smiles_list": smiles_list,
             "h5_file_path": h5_file_path,
-            "bio_kb_summary": bio_kb_data,
-            "literature_summary": literature_data,
+            "smiles_mechanism_prior": smiles_mechanism_prior,
+            "biokb_evidence": bio_kb_data,
+            "literature_context": literature_data,
             "context_text": context_text,
             "knowledge_gap": knowledge_gap,
+            "previous_iteration_logs": previous_iteration_logs,
+            "falsifiable_verdict": falsifiable_verdict,
+            # Legacy keys preserved for backward compatibility.
+            "bio_kb_summary": bio_kb_data,
+            "literature_summary": literature_data,
         }
+
+        _log(
+            f"[{self.agent_id}] Causal Context Payload assembled: "
+            f"smiles_priors={len(smiles_mechanism_prior)}, "
+            f"biokb={'yes' if bio_kb_data else 'no'}, "
+            f"literature={'yes' if literature_data else 'no'}, "
+            f"prev_logs={'yes' if previous_iteration_logs else 'no'}",
+            console=True,
+        )
 
         return AgentResponse(
             status="success",
             data={"biological_insight_report": report},
             next_recipient="modeling",
         )
+
+    # ------------------------------------------------------------------
+    # SMILES-Driven Mechanism Prior builder
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_smiles_mechanism_prior(
+        smiles_list: List[str],
+        bio_kb_data: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Construct SMILES → Target → Pathway causal chains from BioKB data.
+
+        When BioKB enrichment is available, this extracts the compound–target–
+        pathway relationships.  When it is absent, returns a minimal list of
+        SMILES-only entries that the ModelingAgent can use as a structural
+        anchor (Innovation 2).
+
+        Args:
+            smiles_list: List of SMILES strings.
+            bio_kb_data: Dict returned by :func:`generate_biokb_semantic_table`
+                (may be empty).
+
+        Returns:
+            List of dicts with keys ``smiles``, ``targets``, ``pathways``,
+            and ``mechanism_summary``.
+        """
+        priors: List[Dict[str, Any]] = []
+
+        # Extract compound-level records from BioKB table if available.
+        records = bio_kb_data.get("records") or bio_kb_data.get("rows") or []
+
+        smiles_to_record: Dict[str, Dict[str, Any]] = {}
+        for rec in records:
+            smi = rec.get("smiles") or rec.get("SMILES") or ""
+            if smi:
+                smiles_to_record[smi] = rec
+
+        for smi in smiles_list[:20]:
+            rec = smiles_to_record.get(smi, {})
+            targets = rec.get("targets") or rec.get("target_names") or []
+            pathways = rec.get("pathways") or rec.get("pathway_names") or []
+            mechanism = rec.get("mechanism_of_action") or rec.get("mechanism") or ""
+            if isinstance(targets, str):
+                targets = [t.strip() for t in targets.split(",") if t.strip()]
+            if isinstance(pathways, str):
+                pathways = [p.strip() for p in pathways.split(",") if p.strip()]
+            priors.append({
+                "smiles": smi,
+                "targets": targets,
+                "pathways": pathways,
+                "mechanism_summary": mechanism,
+            })
+
+        return priors
 
 
 # =============================================================================
@@ -666,12 +755,17 @@ class ModelingAgent(BaseAgent):
     @monitor_agent
     @retry_llm_call()
     async def process(self, message: Dict[str, Any]) -> AgentResponse:
-        """Generate or revise model code based on biology insights or error logs.
+        """Generate or revise model code based on the Causal Context Payload.
+
+        Innovation 1 (Mechanism-Constrained Virtual Cell Modeling):
+        Code modifications are constrained by biological semantic context
+        from the ResearchAgent's Causal Context Payload.  Blind
+        hyperparameter tuning is explicitly forbidden.
 
         Args:
-            message: May contain ``biological_insight_report`` (from
-                :class:`ResearchAgent`) or ``error_logs`` (from
-                :class:`ExecutionAgent`) for self-correction.
+            message: May contain ``biological_insight_report`` (Causal Context
+                Payload from :class:`ResearchAgent`), ``error_logs``,
+                ``technical_feedback``, and ``falsifiable_verdict``.
 
         Returns:
             :class:`AgentResponse` directed to ``code_execution``.
@@ -680,6 +774,31 @@ class ModelingAgent(BaseAgent):
         raw_error_logs: Optional[str] = message.get("error_logs")
         existing_code: Optional[str] = message.get("code")
         technical_feedback: str = message.get("technical_feedback") or ""
+        falsifiable_verdict: Dict[str, Any] = (
+            message.get("falsifiable_verdict")
+            or insight_report.get("falsifiable_verdict")
+            or {}
+        )
+
+        # ---- Innovation 2: Extract SMILES mechanism prior ----
+        smiles_mechanism_prior: List[Dict[str, Any]] = (
+            insight_report.get("smiles_mechanism_prior") or []
+        )
+        mechanism_context = self._format_mechanism_prior(smiles_mechanism_prior)
+
+        # ---- Falsifiable context ----
+        falsifiable_context = ""
+        if falsifiable_verdict:
+            verdict = falsifiable_verdict.get("verdict", "")
+            delta = falsifiable_verdict.get("metric_delta", 0)
+            if verdict == "REJECT":
+                falsifiable_context = (
+                    f"\n## ⚠️ FALSIFICATION ALERT\n"
+                    f"The previous iteration DEGRADED the metric (Δ={delta:+.4f}).\n"
+                    f"The code has been reverted to the last accepted state.\n"
+                    f"You MUST propose a FUNDAMENTALLY DIFFERENT approach — "
+                    f"do NOT repeat or incrementally tweak the rejected change.\n"
+                )
 
         # Merge error_logs with technical_feedback from EvaluationAgent when present.
         if technical_feedback and raw_error_logs:
@@ -706,7 +825,7 @@ class ModelingAgent(BaseAgent):
 
         # Build a prompt for the LLM using PromptManager (falls back to hardcoded defaults).
         smiles_list: List[str] = insight_report.get("smiles_list") or []
-        literature = (insight_report.get("literature_summary") or {}).get("markdown_summary") or ""
+        literature = (insight_report.get("literature_summary") or insight_report.get("literature_context") or {}).get("markdown_summary") or ""
 
         try:
             from .prompt_manager import get_default_prompt_manager  # type: ignore
@@ -732,6 +851,19 @@ class ModelingAgent(BaseAgent):
             # Hard fallback if PromptManager is unavailable.
             # Inject scientific protocol rules so the LLM respects the
             # Hypergraph Node decomposition and Cell Granularity structure.
+            _mechanism_constraint = (
+                "\n\n## MECHANISM-CONSTRAINED MODELING (MANDATORY)\n"
+                "Every code change MUST map to a 'Target → Pathway' causal chain.\n"
+                "You MUST NOT perform random hyperparameter tuning.\n"
+                "Every architectural decision MUST have a biological justification.\n"
+                "Include a comment block '# MECHANISM JUSTIFICATION:' explaining the "
+                "biological rationale for each major modeling decision.\n"
+            )
+            if mechanism_context:
+                _mechanism_constraint += (
+                    f"\n### SMILES Mechanism Prior (use as semantic anchor)\n"
+                    f"{mechanism_context}\n"
+                )
             _sci_preamble = (
                 f"\n\n## SCIENTIFIC PROTOCOL CONSTRAINTS\n\n"
                 f"### Hypergraph Node Architecture\n{hypergraph_hint}\n\n"
@@ -740,6 +872,7 @@ class ModelingAgent(BaseAgent):
                 f"### Section Constraints\n"
                 f"LOCKED (do NOT modify): {protected_str}\n"
                 f"MUTABLE (optimise these): {target_str}\n"
+                + _mechanism_constraint
             )
             if error_logs and existing_code:
                 system_prompt = (
@@ -747,6 +880,7 @@ class ModelingAgent(BaseAgent):
                     "The code below raised errors or did not meet the metric goals. "
                     "Fix ONLY the mutable cells/sections. Return ONLY the corrected Python code."
                     + _sci_preamble
+                    + falsifiable_context
                 )
                 user_content = (
                     f"## Error Logs / Evaluation Feedback\n{error_logs}\n\n"
@@ -797,6 +931,39 @@ class ModelingAgent(BaseAgent):
             },
             next_recipient="code_execution",
         )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _format_mechanism_prior(
+        priors: List[Dict[str, Any]],
+    ) -> str:
+        """Format SMILES mechanism priors into a human-readable string.
+
+        Args:
+            priors: List of mechanism prior dicts from
+                :meth:`ResearchAgent._build_smiles_mechanism_prior`.
+
+        Returns:
+            Formatted string for inclusion in the LLM prompt.
+        """
+        if not priors:
+            return ""
+        lines: List[str] = []
+        for p in priors[:10]:
+            smi = p.get("smiles") or "?"
+            targets = p.get("targets") or []
+            pathways = p.get("pathways") or []
+            mech = p.get("mechanism_summary") or ""
+            target_str = ", ".join(targets[:5]) if targets else "unknown"
+            pathway_str = ", ".join(pathways[:5]) if pathways else "unknown"
+            line = f"- {smi[:60]}… → Targets: [{target_str}] → Pathways: [{pathway_str}]"
+            if mech:
+                line += f" | Mechanism: {mech[:100]}"
+            lines.append(line)
+        return "\n".join(lines)
 
 
 # =============================================================================
@@ -1031,6 +1198,11 @@ class EvaluationAgent(BaseAgent):
     role = "evaluator"
     tools = ["metrics_parser"]
 
+    def __init__(self, bus: SimpleMessageBus, config: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(bus, config)
+        self._previous_metrics: Dict[str, Optional[float]] = {}
+        self._previous_primary: Optional[float] = None
+
     # ------------------------------------------------------------------
     # Config-driven metric helpers
     # ------------------------------------------------------------------
@@ -1137,6 +1309,22 @@ class EvaluationAgent(BaseAgent):
             console=True,
         )
 
+        # ---- Innovation 3: Falsifiable metric comparison ----
+        metric_delta: Optional[float] = None
+        metric_trend: str = "unknown"
+        if primary_value is not None and self._previous_primary is not None:
+            metric_delta = primary_value - self._previous_primary
+            metric_trend = "improved" if metric_delta >= 0 else "degraded"
+            _log(
+                f"[{self.agent_id}] 📈 Metric trend: {self._previous_primary:.4f} → "
+                f"{primary_value:.4f} (Δ={metric_delta:+.4f}, {metric_trend})",
+                console=True,
+            )
+
+        # Update previous metrics for next iteration comparison.
+        self._previous_metrics = dict(all_metrics)
+        self._previous_primary = primary_value
+
         # Convenience alias kept for orchestrator's best-accuracy tracking.
         accuracy: Optional[float] = primary_value
 
@@ -1154,6 +1342,8 @@ class EvaluationAgent(BaseAgent):
                     "decision": "SUCCESS",
                     "accuracy": accuracy,
                     "metrics": all_metrics,
+                    "metric_delta": metric_delta,
+                    "metric_trend": metric_trend,
                     "target_metric": target_metric,
                     "stdout": stdout,
                     "insight_report": insight_report,
@@ -1173,6 +1363,8 @@ class EvaluationAgent(BaseAgent):
                 stdout, stderr, tb, code, all_metrics, target_metric,
                 pass_threshold, direction,
             )
+            feedback_package["metric_delta"] = metric_delta
+            feedback_package["metric_trend"] = metric_trend
             return AgentResponse(
                 status="needs_iteration",
                 data={
@@ -1180,6 +1372,8 @@ class EvaluationAgent(BaseAgent):
                     "feedback_package": feedback_package,
                     "accuracy": accuracy,
                     "metrics": all_metrics,
+                    "metric_delta": metric_delta,
+                    "metric_trend": metric_trend,
                     "target_metric": target_metric,
                     "max_iterations_reached": True,
                     "stdout": stdout,
@@ -1195,6 +1389,8 @@ class EvaluationAgent(BaseAgent):
             stdout, stderr, tb, code, all_metrics, target_metric,
             pass_threshold, direction,
         )
+        feedback_package["metric_delta"] = metric_delta
+        feedback_package["metric_trend"] = metric_trend
         suggested_target = feedback_package.get("suggested_target", "modeling")
         _log(
             f"[{self.agent_id}] 🔄 REFINE decision (target={suggested_target}). "
@@ -1208,6 +1404,8 @@ class EvaluationAgent(BaseAgent):
                 "feedback_package": feedback_package,
                 "accuracy": accuracy,
                 "metrics": all_metrics,
+                "metric_delta": metric_delta,
+                "metric_trend": metric_trend,
                 "target_metric": target_metric,
                 "stdout": stdout,
                 "stderr": stderr,
