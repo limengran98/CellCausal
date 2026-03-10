@@ -109,6 +109,24 @@ def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _interpolate_path(path_template: str, config: Dict[str, Any]) -> str:
+    """Replace ``${key}`` placeholders in *path_template* with config values.
+
+    Args:
+        path_template: Path string that may contain ``${key}`` placeholders.
+        config: Pipeline configuration dict supplying replacement values.
+
+    Returns:
+        The interpolated path string.  Unrecognised placeholders are left
+        unchanged.
+    """
+    result = path_template
+    for key, value in config.items():
+        if isinstance(value, str):
+            result = result.replace(f"${{{key}}}", value)
+    return result
+
+
 # =============================================================================
 # Orchestrator
 # =============================================================================
@@ -137,6 +155,12 @@ class PipelineOrchestrator:
         previous_state: The last :class:`PipelineState` before the current one.
         transition_history: Ordered list of ``(from_state, to_state, timestamp)``
             tuples recorded at every state transition.
+        best_metric_score: Globally best primary metric value seen across all
+            iterations.  Used to return the optimal checkpoint when
+            ``max_iterations`` is reached.
+        best_code: Python source that produced :attr:`best_metric_score`.
+        best_artifacts_path: File-system path where the best iteration's
+            artifacts were persisted.
     """
 
     def __init__(self, config: Dict[str, Any]) -> None:
@@ -164,6 +188,13 @@ class PipelineOrchestrator:
         self.current_state: Optional[PipelineState] = None
         self.previous_state: Optional[PipelineState] = None
         self.transition_history: List[Tuple[Optional[PipelineState], PipelineState, str]] = []
+
+        # Global Best Checkpoint (Bug 1 fix): track the historically optimal
+        # code and metric so the system returns the best state even when the
+        # last iteration regressed.
+        self.best_metric_score: float = -float("inf")
+        self.best_code: str = ""
+        self.best_artifacts_path: str = ""
 
         # Bootstrap: enter the INITIALIZING state.
         self._enter_state(PipelineState.INITIALIZING)
@@ -314,13 +345,17 @@ class PipelineOrchestrator:
                 accuracy = data.get("accuracy")
                 decision = data.get("decision")
                 total_iterations += 1
-                self.context.iteration = int(data.get("iteration") or self.context.iteration)
+
+                # Bug 1 fix: always increment self.context.iteration so that
+                # EvaluationAgent's `iteration >= max_iterations - 1` guard
+                # eventually triggers and prevents an infinite loop.
+                self.context.iteration += 1
 
                 # Track execution successes (ExecutionAgent returning success).
                 if status == "success":
                     experiment_success_count += 1
 
-                # Update best accuracy.
+                # Update best accuracy and Global Best Checkpoint (Bug 1 fix).
                 if accuracy is not None:
                     try:
                         acc_float = float(accuracy)
@@ -331,6 +366,19 @@ class PipelineOrchestrator:
                                 f"📈 [IMPROVEMENT] New best score: {acc_float:.4f} "
                                 f"(Prev: {prev:.4f})",
                                 console=True,
+                            )
+                        # Track Global Best Checkpoint.
+                        if acc_float > self.best_metric_score:
+                            self.best_metric_score = acc_float
+                            self.best_code = data.get("code") or ""
+                            self.best_artifacts_path = _interpolate_path(
+                                (
+                                    (self.config.get("paths") or {}).get(
+                                        "generate_execution_root"
+                                    )
+                                    or "./results/${dataset_name}/generate_execution"
+                                ),
+                                self.config,
                             )
                     except (TypeError, ValueError):
                         pass
@@ -362,11 +410,21 @@ class PipelineOrchestrator:
                 # ---- Handle max iterations exhausted ----
                 if data.get("max_iterations_reached"):
                     _log(
-                        "[Orchestrator] ⚠️ Max iterations reached; terminating.",
+                        f"[Orchestrator] ⚠️ Max iterations reached; "
+                        f"returning Global Best (score={self.best_metric_score:.4f}).",
                         console=True,
                     )
                     self._enter_state(PipelineState.TERMINATED)
-                    final_result = msg
+                    # Return the historically best result instead of the last
+                    # (possibly regressed) one.
+                    best_data = dict(data)
+                    if self.best_code:
+                        best_data["code"] = self.best_code
+                    if self.best_metric_score > -float("inf"):
+                        best_data["accuracy"] = self.best_metric_score
+                        best_data["best_metric_score"] = self.best_metric_score
+                    best_data["best_artifacts_path"] = self.best_artifacts_path
+                    final_result = {"status": msg.get("status", "needs_iteration"), "data": best_data}
                     break
 
                 # ---- Handle REFINE ----
@@ -376,7 +434,9 @@ class PipelineOrchestrator:
                     suggested_target = feedback_package.get("suggested_target", "modeling")
                     technical_feedback = feedback_package.get("technical_feedback", "")
                     knowledge_gap = feedback_package.get("knowledge_gap", "")
-                    next_iteration = int(data.get("iteration") or 0) + 1
+                    # next_iteration uses self.context.iteration which was already
+                    # incremented above (Bug 1 fix).
+                    next_iteration = self.context.iteration
 
                     # Save iteration artifacts.
                     self._save_iteration_artifacts(
@@ -462,6 +522,9 @@ class PipelineOrchestrator:
             "total_iterations": total_iterations,
             "accuracy": accuracy_final,
             "best_accuracy": best_accuracy,
+            "best_metric_score": self.best_metric_score if self.best_metric_score > -float("inf") else None,
+            "best_code": self.best_code,
+            "best_artifacts_path": self.best_artifacts_path,
             "experiment_success_count": experiment_success_count,
             "max_iterations_reached": data_final.get("max_iterations_reached", False),
             "fsm_transitions": [

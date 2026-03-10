@@ -22,6 +22,8 @@ import asyncio
 import functools
 import json
 import logging
+import os
+import re
 import subprocess
 import time
 import traceback
@@ -42,6 +44,55 @@ def _now_iso() -> str:
 
 
 # =============================================================================
+# Code extraction helpers (Bug 2)
+# =============================================================================
+
+#: Compiled regex to strip <think>...</think> blocks produced by reasoning LLMs.
+_THINK_RE = re.compile(r"<think>.*?</think>", flags=re.IGNORECASE | re.DOTALL)
+
+#: Compiled regex to extract Python source from markdown code fences.
+#: Matches ```python ... ``` or plain ``` ... ```.
+_CODE_FENCE_RE = re.compile(
+    r"```(?:python)?\s*\n(.*?)```", flags=re.DOTALL
+)
+
+
+def _extract_python_code(raw_text: str) -> str:
+    """Strip ``<think>`` tags and extract Python code from markdown fences.
+
+    Applied by :class:`ExecutionAgent` before passing LLM output to the
+    Python interpreter so that markdown-formatted responses do not cause
+    :class:`SyntaxError`.
+
+    Resolution order:
+
+    1. Remove all ``<think>…</think>`` blocks.
+    2. If a ````` ```python … ``` ````` or ````` ``` … ``` ````` fence is
+       found, return the content of the **first** (longest) fence.
+    3. Otherwise return the stripped text as-is (the LLM may have output
+       plain Python without any fences).
+
+    Args:
+        raw_text: Raw text returned by the LLM, potentially containing
+            markdown fences and/or ``<think>`` reasoning blocks.
+
+    Returns:
+        Clean Python source code ready for execution.
+    """
+    # 1. Strip <think>...</think> blocks.
+    text = _THINK_RE.sub("", raw_text).strip()
+
+    # 2. Extract the first (and typically only) fenced code block.
+    matches = _CODE_FENCE_RE.findall(text)
+    if matches:
+        # Pick the longest match in case there are multiple fences.
+        return max(matches, key=len).strip()
+
+    # 3. No fences found — return stripped text directly.
+    return text
+
+
+# =============================================================================
 # Logging helper (consistent with other core modules)
 # =============================================================================
 
@@ -57,6 +108,35 @@ def _log(msg: str, *, console: bool = False) -> None:
         print(f"[CELL_CONSOLE] {msg}", flush=True)
     else:
         print(f"[DETAIL] {msg}", flush=True)
+
+
+# =============================================================================
+# Path interpolation helper (Bug 4)
+# =============================================================================
+
+
+def _interpolate_path(path_template: str, config: Dict[str, Any]) -> str:
+    """Replace ``${key}`` placeholders in *path_template* with config values.
+
+    Recognises the following template variables (checked in order):
+
+    * Top-level config keys (e.g. ``dataset_name``, ``split_name``).
+    * The special key ``task_id`` if present under ``context``.
+
+    Args:
+        path_template: Path string that may contain ``${key}`` placeholders.
+        config: Pipeline configuration dict supplying replacement values.
+
+    Returns:
+        The interpolated path string.  Unrecognised placeholders are left
+        unchanged so that downstream code can detect them.
+    """
+    result = path_template
+    # Substitute top-level scalar config values first.
+    for key, value in config.items():
+        if isinstance(value, str):
+            result = result.replace(f"${{{key}}}", value)
+    return result
 
 
 # =============================================================================
@@ -145,24 +225,46 @@ class TaskContext:
     def from_config(cls, config: dict) -> "TaskContext":
         """Construct a :class:`TaskContext` from a pipeline config dict.
 
+        Path templates containing ``${dataset_name}`` / ``${split_name}`` etc.
+        are interpolated using :func:`_interpolate_path` so that no literal
+        ``${…}`` strings appear in the resolved paths.
+
         Args:
             config: Full pipeline configuration (``pipeline_config.json``).
 
         Returns:
             A populated :class:`TaskContext`.
         """
+        # Interpolate the H5 path template before resolution (Bug 4).
+        paths_cfg: Dict[str, Any] = config.get("paths") or {}
+        h5_raw = paths_cfg.get("data_h5_path") or paths_cfg.get("data_h5_filename") or ""
+        h5_interpolated = _interpolate_path(h5_raw, config) if h5_raw else h5_raw
+
+        # Build a shallow copy of config with the interpolated path so that
+        # validate_h5_smiles_path() sees the resolved value.
+        resolved_config = dict(config)
+        resolved_paths = dict(paths_cfg)
+        if h5_interpolated and h5_interpolated != h5_raw:
+            if paths_cfg.get("data_h5_path"):
+                resolved_paths["data_h5_path"] = h5_interpolated
+            else:
+                resolved_paths["data_h5_filename"] = h5_interpolated
+            resolved_config["paths"] = resolved_paths
+
         # Lazily import to avoid hard dependency when not using smiles_resolver.
         try:
             from .smiles_resolver import resolve_smiles, validate_h5_smiles_path
-            h5_path = validate_h5_smiles_path(config)
-            smiles = resolve_smiles(config)
+            h5_path = validate_h5_smiles_path(resolved_config)
+            smiles = resolve_smiles(resolved_config)
         except Exception as exc:
             _log(
                 f"[TaskContext] ⚠️ Could not load SMILES from H5 file: {exc}. "
                 "Continuing with empty SMILES list.",
                 console=False,
             )
-            h5_path = (config.get("paths") or {}).get("data_h5_path") or ""
+            h5_path = _interpolate_path(
+                (config.get("paths") or {}).get("data_h5_path") or "", config
+            )
             smiles = []
 
         max_iter = (
@@ -440,10 +542,118 @@ class ModelingAgent(BaseAgent):
 
     Subscribes to ``biology_insights`` and ``evaluation`` topics.
     Publishes generated code to ``code_execution``.
+
+    Scientific rules (Hypergraph Nodes, Cell Granularity, protected/target
+    sections) are loaded from ``configs/review_config.json`` and
+    ``prompts/review_optimize.yaml`` at process time so that no scientific
+    protocol details are hardcoded.
     """
 
     role = "model_architect"
     tools = ["LLM_codegen"]
+
+    # ------------------------------------------------------------------
+    # Scientific protocol helpers
+    # ------------------------------------------------------------------
+
+    def _load_scientific_rules(self) -> Dict[str, Any]:
+        """Load Hypergraph Node and Cell Granularity rules from config/prompts.
+
+        Sources (in priority order):
+        1. ``self.config["review"]`` — protected_sections, target_sections,
+           optimization_hierarchy from ``review_config.json``.
+        2. ``prompts/review_optimize.yaml`` — Hypergraph Node decomposition.
+        3. ``prompts/pipeline_prompt.yaml`` — Cell Granularity (T0-T6) and
+           HDF5 mandatory datasets.
+
+        Returns:
+            Dict with keys ``protected_sections``, ``target_sections``,
+            ``optimization_hierarchy``, ``cell_granularity_hint``,
+            ``hypergraph_hint``, and ``mandatory_datasets``.
+        """
+        review_cfg: Dict[str, Any] = self.config.get("review") or {}
+        protected_sections: List[str] = review_cfg.get("protected_sections") or [
+            "SECTION 1", "SECTION 2", "Data Loading", "Evaluation"
+        ]
+        target_sections: List[str] = review_cfg.get("target_sections") or [
+            "SECTION 3", "Innovation", "Modeling", "Training"
+        ]
+        optimization_hierarchy: List[str] = review_cfg.get("optimization_hierarchy") or [
+            "1. Model Architecture (Backbone/Encoder)",
+            "2. Data Fusion Mechanism (Interaction/Attention)",
+            "3. Loss Function & Optimization Strategy",
+        ]
+
+        # Load YAML prompts for richer context; degrade gracefully on failure.
+        hypergraph_hint = (
+            "Decompose the model as a Hypergraph with three sub-nodes:\n"
+            "  Node A (Architecture): The backbone/encoder.\n"
+            "  Node B (Fusion): How morphology images + molecular fingerprints interact.\n"
+            "  Node C (Loss): The training objective."
+        )
+        cell_granularity_hint = (
+            "Structure the solution as Jupyter Notebook cells (T0-T6):\n"
+            "  T0: Imports & setup.\n"
+            "  T1: HDF5 data loading (LOCKED — do NOT modify).\n"
+            "  T2: Preprocessing.\n"
+            "  T3: Model definition (MUTABLE — primary target).\n"
+            "  T4: Training loop (MUTABLE).\n"
+            "  T5: Evaluation & metric reporting (LOCKED).\n"
+            "  T6: Results serialisation.\n"
+            "Mandatory HDF5 datasets: morphology_pre, morphology_post, smiles, dose, split_id."
+        )
+
+        try:
+            import yaml  # type: ignore
+
+            prompts_dir = os.path.join(
+                os.path.dirname(__file__), "..", "..", "prompts"
+            )
+            ro_path = os.path.join(prompts_dir, "review_optimize.yaml")
+            if os.path.isfile(ro_path):
+                with open(ro_path, "r", encoding="utf-8") as fh:
+                    ro_data = yaml.safe_load(fh) or {}
+                sys_text: str = ro_data.get("system") or ""
+                if sys_text:
+                    # Extract the Hypergraph section from the system prompt.
+                    hypergraph_section = ""
+                    in_block = False
+                    for line in sys_text.splitlines():
+                        if "Hypergraph" in line or "Node A" in line or "Node B" in line or "Node C" in line:
+                            in_block = True
+                        if in_block:
+                            hypergraph_section += line + "\n"
+                            if line.strip() == "" and hypergraph_section.count("\n") > 5:
+                                break
+                    if hypergraph_section.strip():
+                        hypergraph_hint = hypergraph_section.strip()
+
+            pp_path = os.path.join(prompts_dir, "pipeline_prompt.yaml")
+            if os.path.isfile(pp_path):
+                with open(pp_path, "r", encoding="utf-8") as fh:
+                    pp_data = yaml.safe_load(fh) or {}
+                pp_sys: str = pp_data.get("system") or ""
+                if pp_sys and "T0" in pp_sys and "T1" in pp_sys:
+                    # Use the raw section 1 text as the granularity hint.
+                    lines = pp_sys.splitlines()
+                    t_lines = [
+                        ln for ln in lines
+                        if any(tag in ln for tag in ["T0", "T1", "T2", "T3", "T4", "T5", "T6",
+                                                      "morphology_pre", "morphology_post",
+                                                      "split_id", "dose", "smiles"])
+                    ]
+                    if t_lines:
+                        cell_granularity_hint = "\n".join(t_lines[:20])
+        except Exception:
+            pass  # Fall back to hardcoded hints above.
+
+        return {
+            "protected_sections": protected_sections,
+            "target_sections": target_sections,
+            "optimization_hierarchy": optimization_hierarchy,
+            "cell_granularity_hint": cell_granularity_hint,
+            "hypergraph_hint": hypergraph_hint,
+        }
 
     @monitor_agent
     @retry_llm_call()
@@ -478,6 +688,14 @@ class ModelingAgent(BaseAgent):
             action_desc = "generating initial model code"
         _log(f"[CODE] 💻 ModelingAgent is {action_desc}…", console=True)
 
+        # Load scientific protocol rules from config/YAML files.
+        sci_rules = self._load_scientific_rules()
+        protected_str = ", ".join(sci_rules["protected_sections"])
+        target_str = ", ".join(sci_rules["target_sections"])
+        hierarchy_str = "\n".join(sci_rules["optimization_hierarchy"])
+        hypergraph_hint: str = sci_rules["hypergraph_hint"]
+        cell_granularity_hint: str = sci_rules["cell_granularity_hint"]
+
         # Build a prompt for the LLM using PromptManager (falls back to hardcoded defaults).
         smiles_list: List[str] = insight_report.get("smiles_list") or []
         literature = (insight_report.get("literature_summary") or {}).get("markdown_summary") or ""
@@ -504,20 +722,35 @@ class ModelingAgent(BaseAgent):
                 )
         except Exception:
             # Hard fallback if PromptManager is unavailable.
+            # Inject scientific protocol rules so the LLM respects the
+            # Hypergraph Node decomposition and Cell Granularity structure.
+            _sci_preamble = (
+                f"\n\n## SCIENTIFIC PROTOCOL CONSTRAINTS\n\n"
+                f"### Hypergraph Node Architecture\n{hypergraph_hint}\n\n"
+                f"### Cell Granularity (Jupyter T0-T6)\n{cell_granularity_hint}\n\n"
+                f"### Optimization Hierarchy\n{hierarchy_str}\n\n"
+                f"### Section Constraints\n"
+                f"LOCKED (do NOT modify): {protected_str}\n"
+                f"MUTABLE (optimise these): {target_str}\n"
+            )
             if error_logs and existing_code:
                 system_prompt = (
-                    "You are an expert PyTorch/GNN engineer. "
-                    "The code below raised errors. Fix ALL errors and return ONLY the corrected Python code."
+                    "You are a Principal AI Scientist and expert PyTorch/GNN engineer. "
+                    "The code below raised errors or did not meet the metric goals. "
+                    "Fix ONLY the mutable cells/sections. Return ONLY the corrected Python code."
+                    + _sci_preamble
                 )
                 user_content = (
-                    f"## Error Logs\n{error_logs}\n\n"
+                    f"## Error Logs / Evaluation Feedback\n{error_logs}\n\n"
                     f"## Existing Code\n```python\n{existing_code}\n```"
                 )
             else:
                 system_prompt = (
-                    "You are an expert PyTorch/GNN engineer specialising in cell perturbation modeling. "
-                    "Write complete, runnable Python code for a GNN model that predicts cell painting "
-                    "perturbation responses. Return ONLY the Python code."
+                    "You are a Principal AI Scientist and expert PyTorch/GNN engineer "
+                    "specialising in cell perturbation modeling. "
+                    "Write complete, runnable Python code for a novel model that predicts "
+                    "cell painting perturbation responses. Return ONLY the Python code."
+                    + _sci_preamble
                 )
                 user_content = (
                     f"## Biological Context\n{literature}\n\n"
@@ -584,10 +817,10 @@ class ExecutionAgent(BaseAgent):
             :class:`AgentResponse` directed to ``evaluation`` with
             ``stdout``, ``stderr``, and ``traceback`` fields.
         """
-        code: str = message.get("code") or ""
+        raw_code: str = message.get("code") or ""
         insight_report: Dict[str, Any] = message.get("insight_report") or {}
 
-        if not code.strip():
+        if not raw_code.strip():
             return AgentResponse(
                 status="error",
                 data={
@@ -600,7 +833,14 @@ class ExecutionAgent(BaseAgent):
                 next_recipient="evaluation",
             )
 
-        _log(f"[EXEC] ⚙️ ExecutionAgent is running code in Sandbox ({len(code)} chars)…", console=True)
+        # Bug 2 fix: strip <think> tags and extract Python from markdown fences
+        # before passing the source to the Python interpreter.
+        code: str = _extract_python_code(raw_code)
+        _log(
+            f"[EXEC] ⚙️ ExecutionAgent is running code in Sandbox "
+            f"({len(raw_code)} raw → {len(code)} extracted chars)…",
+            console=True,
+        )
 
         timeout: int = int(
             (self.config.get("exec") or {}).get("timeout_seconds") or 300
@@ -742,12 +982,33 @@ class ExecutionAgent(BaseAgent):
 # =============================================================================
 
 
+#: Ordered list of (metric_name, regex_pattern) pairs for the full DEG suite.
+#: Patterns match lines emitted by the generated execution scripts.
+_DEG_METRIC_PATTERNS: List[tuple] = [
+    ("PCC",        r"(?:global_?pcc|(?<!\w)pcc(?!\w)|pearson)[:\s=]+([0-9]+\.?[0-9]*)"),
+    ("MSE",        r"(?:global_?mse|(?<!\w)mse(?!\w))[:\s=]+([0-9]+\.?[0-9]*)"),
+    ("R2",         r"(?:global_?r2|(?<!\w)r2(?!\w)|r_?squared)[:\s=]+([0-9]+\.?[0-9]*)"),
+    ("DEG_RMSE_20", r"deg_?rmse_?20[:\s=]+([0-9]+\.?[0-9]*)"),
+    ("DEG_PCC_20",  r"deg_?pcc_?20[:\s=]+([0-9]+\.?[0-9]*)"),
+    ("DEG_RMSE_50", r"deg_?rmse_?50[:\s=]+([0-9]+\.?[0-9]*)"),
+    ("DEG_PCC_50",  r"deg_?pcc_?50[:\s=]+([0-9]+\.?[0-9]*)"),
+    ("MSE_DM",     r"mse_?dm[:\s=]+([0-9]+\.?[0-9]*)"),
+    ("PCC_DM",     r"pcc_?dm[:\s=]+([0-9]+\.?[0-9]*)"),
+    ("R2_DM",      r"r2_?dm[:\s=]+([0-9]+\.?[0-9]*)"),
+]
+
+
 class EvaluationAgent(BaseAgent):
     """Evaluates execution results and decides whether to iterate.
 
     Subscribes to ``evaluation`` topic.
     Always publishes to ``orchestration`` — including REFINE decisions — so the
     orchestrator can update the FSM and route feedback to the correct agent.
+
+    The target metric, pass threshold, and direction are loaded from config
+    (``review.target_metric``, ``review.pass_threshold``, ``review.direction``).
+    The full DEG metric suite (PCC, MSE, R2, DEG_RMSE_20/50, DEG_PCC_20/50) is
+    parsed from stdout and included in every response payload.
 
     When the goal is not yet met, uses the LLM to generate a structured
     ``feedback_package`` containing:
@@ -760,8 +1021,62 @@ class EvaluationAgent(BaseAgent):
     role = "evaluator"
     tools = ["metrics_parser"]
 
-    # Target accuracy threshold (90 %).
-    ACCURACY_GOAL: float = 0.90
+    # ------------------------------------------------------------------
+    # Config-driven metric helpers
+    # ------------------------------------------------------------------
+
+    def _get_metric_config(self) -> Dict[str, Any]:
+        """Load target metric, threshold, and direction from config.
+
+        Falls back to sensible defaults (PCC / 0.7 / maximize) when the
+        ``review`` section is absent.
+
+        Returns:
+            Dict with keys ``target_metric`` (str), ``pass_threshold`` (float),
+            ``direction`` (``"maximize"`` or ``"minimize"``).
+        """
+        review_cfg: Dict[str, Any] = self.config.get("review") or {}
+        target_metric: str = (
+            review_cfg.get("target_metric") or "PCC"
+        ).upper()
+        direction: str = (
+            review_cfg.get("direction") or "maximize"
+        ).lower()
+        pass_threshold: float = float(review_cfg.get("pass_threshold") or 0.7)
+        return {
+            "target_metric": target_metric,
+            "direction": direction,
+            "pass_threshold": pass_threshold,
+        }
+
+    def _goal_met(
+        self,
+        metrics: Dict[str, Optional[float]],
+        target_metric: str,
+        pass_threshold: float,
+        direction: str,
+    ) -> bool:
+        """Return True if the target metric satisfies the pass threshold.
+
+        Args:
+            metrics: Dict of parsed metric values (key → float or None).
+            target_metric: Name of the primary metric to check (e.g. ``"PCC"``).
+            pass_threshold: Numeric threshold for success.
+            direction: ``"maximize"`` (higher is better) or ``"minimize"``.
+
+        Returns:
+            ``True`` if the goal condition is satisfied.
+        """
+        val = metrics.get(target_metric)
+        if val is None:
+            return False
+        if direction == "minimize":
+            return val <= pass_threshold
+        return val >= pass_threshold
+
+    # ------------------------------------------------------------------
+    # Core process method
+    # ------------------------------------------------------------------
 
     @monitor_agent
     async def process(self, message: Dict[str, Any]) -> AgentResponse:
@@ -785,27 +1100,42 @@ class EvaluationAgent(BaseAgent):
         iteration: int = int(message.get("iteration") or 0)
         max_iterations: int = int(message.get("max_iterations") or 5)
 
+        # Load dynamic metric config from pipeline/review configuration.
+        metric_cfg = self._get_metric_config()
+        target_metric: str = metric_cfg["target_metric"]
+        direction: str = metric_cfg["direction"]
+        pass_threshold: float = metric_cfg["pass_threshold"]
+
         _log(
-            f"[EVAL] 📊 EvaluationAgent is comparing results against "
-            f"{self.ACCURACY_GOAL:.0%} accuracy goal "
-            f"(iteration {iteration}/{max_iterations})…",
+            f"[EVAL] 📊 EvaluationAgent evaluating '{target_metric}' "
+            f"(threshold={pass_threshold}, direction={direction}) "
+            f"— iteration {iteration}/{max_iterations}…",
             console=True,
         )
 
-        # Attempt to parse an accuracy/PCC metric from stdout.
-        accuracy = self._parse_accuracy(stdout)
+        # Parse the full DEG metric suite from stdout.
+        all_metrics: Dict[str, Optional[float]] = self._parse_all_metrics(stdout)
+        primary_value: Optional[float] = all_metrics.get(target_metric)
 
         _log(
-            f"[{self.agent_id}] Detected accuracy: "
-            f"{'N/A' if accuracy is None else f'{accuracy:.3f}'} "
-            f"(goal={self.ACCURACY_GOAL:.0%})",
+            f"[{self.agent_id}] Parsed metrics: "
+            + ", ".join(
+                f"{k}={v:.4f}" if v is not None else f"{k}=N/A"
+                for k, v in all_metrics.items()
+                if v is not None
+            ),
             console=True,
         )
+
+        # Convenience alias kept for orchestrator's best-accuracy tracking.
+        accuracy: Optional[float] = primary_value
 
         # Goal achieved → SUCCESS.
-        if accuracy is not None and accuracy >= self.ACCURACY_GOAL:
+        if self._goal_met(all_metrics, target_metric, pass_threshold, direction):
             _log(
-                f"[{self.agent_id}] ✅ Accuracy goal met ({accuracy:.3f} ≥ {self.ACCURACY_GOAL:.0%}).",
+                f"[{self.agent_id}] ✅ {target_metric} goal met "
+                f"({primary_value:.4f} {'≥' if direction == 'maximize' else '≤'} "
+                f"{pass_threshold}).",
                 console=True,
             )
             return AgentResponse(
@@ -813,6 +1143,8 @@ class EvaluationAgent(BaseAgent):
                 data={
                     "decision": "SUCCESS",
                     "accuracy": accuracy,
+                    "metrics": all_metrics,
+                    "target_metric": target_metric,
                     "stdout": stdout,
                     "insight_report": insight_report,
                     "iteration": iteration,
@@ -823,11 +1155,13 @@ class EvaluationAgent(BaseAgent):
         # Max iterations reached → REFINE with exhausted flag.
         if iteration >= max_iterations - 1:
             _log(
-                f"[{self.agent_id}] ⚠️ Max iterations reached without meeting goal.",
+                f"[{self.agent_id}] ⚠️ Max iterations reached without meeting "
+                f"'{target_metric}' goal.",
                 console=True,
             )
             feedback_package = await self._generate_feedback_package(
-                stdout, stderr, tb, code, accuracy
+                stdout, stderr, tb, code, all_metrics, target_metric,
+                pass_threshold, direction,
             )
             return AgentResponse(
                 status="needs_iteration",
@@ -835,6 +1169,8 @@ class EvaluationAgent(BaseAgent):
                     "decision": "REFINE",
                     "feedback_package": feedback_package,
                     "accuracy": accuracy,
+                    "metrics": all_metrics,
+                    "target_metric": target_metric,
                     "max_iterations_reached": True,
                     "stdout": stdout,
                     "insight_report": insight_report,
@@ -846,7 +1182,8 @@ class EvaluationAgent(BaseAgent):
 
         # Need another iteration — generate structured feedback via LLM.
         feedback_package = await self._generate_feedback_package(
-            stdout, stderr, tb, code, accuracy
+            stdout, stderr, tb, code, all_metrics, target_metric,
+            pass_threshold, direction,
         )
         suggested_target = feedback_package.get("suggested_target", "modeling")
         _log(
@@ -860,6 +1197,8 @@ class EvaluationAgent(BaseAgent):
                 "decision": "REFINE",
                 "feedback_package": feedback_package,
                 "accuracy": accuracy,
+                "metrics": all_metrics,
+                "target_metric": target_metric,
                 "stdout": stdout,
                 "stderr": stderr,
                 "traceback": tb,
@@ -881,11 +1220,14 @@ class EvaluationAgent(BaseAgent):
         stderr: str,
         tb: str,
         code: str,
-        accuracy: Optional[float],
+        all_metrics: Dict[str, Optional[float]],
+        target_metric: str,
+        pass_threshold: float,
+        direction: str,
     ) -> Dict[str, Any]:
         """Use the LLM to produce a structured feedback package.
 
-        Analyses the execution output and accuracy to generate:
+        Analyses execution output and the full DEG metric suite to generate:
 
         * ``technical_feedback`` — actionable guidance for :class:`ModelingAgent`
         * ``knowledge_gap`` — search topic for :class:`ResearchAgent`
@@ -898,31 +1240,45 @@ class EvaluationAgent(BaseAgent):
             stderr: Captured standard error from execution.
             tb: Full traceback (if any).
             code: The Python source that was executed.
-            accuracy: Parsed accuracy value (``None`` if not detected).
+            all_metrics: Dict of all parsed DEG metrics (key → float or None).
+            target_metric: Primary metric name (e.g. ``"PCC"``).
+            pass_threshold: Numeric success threshold.
+            direction: ``"maximize"`` or ``"minimize"``.
 
         Returns:
             Dict with ``technical_feedback``, ``knowledge_gap``, and
             ``suggested_target`` keys.
         """
-        accuracy_str = f"{accuracy:.3f}" if accuracy is not None else "N/A"
+        primary_value = all_metrics.get(target_metric)
+        primary_str = f"{primary_value:.4f}" if primary_value is not None else "N/A"
+        metrics_summary = "\n".join(
+            f"  {k}: {v:.4f}" if v is not None else f"  {k}: N/A"
+            for k, v in all_metrics.items()
+        )
         try:
             from .llm_client import chat_json, resolve_llm_config  # type: ignore
 
             llm_cfg = resolve_llm_config(self.config)
             system_prompt = (
-                "You are an AI evaluation assistant for a cell perturbation GNN pipeline. "
-                "Analyse the execution output and accuracy, then return a JSON object with exactly "
-                "these keys:\n"
-                "- technical_feedback (str): Specific, actionable guidance to improve the model code "
-                "(e.g., 'Add residual connections', 'Fix gradient explosion in layer 3').\n"
-                "- knowledge_gap (str): A targeted literature search query if more biological context "
-                "would help (e.g., 'MAPK pathway stability for GNN models'). Empty string if not needed.\n"
-                "- suggested_target (str): Either 'modeling' if code changes are the priority, or "
-                "'research' if more biological knowledge is needed first."
+                "You are a Principal AI Scientist evaluating a virtual cell perturbation model. "
+                "Analyse the execution output and the full biological metric suite, then return a "
+                "JSON object with exactly these keys:\n"
+                "- technical_feedback (str): Specific, actionable guidance grounded in the metric "
+                "analysis. Reference Hypergraph Node concepts (Architecture/Backbone, "
+                "Data Fusion/Attention, Loss Function & Optimization) and cell-granularity "
+                "(T0-T6 Jupyter cells). E.g., 'DEG_PCC_20 is low → the model struggles with "
+                "high-variance genes; add a rank-based loss term in Node C (Loss).'.\n"
+                "- knowledge_gap (str): A targeted literature search query if more biological "
+                "context is needed (e.g., 'MAPK pathway for DEG high-variance gene modeling'). "
+                "Empty string if not needed.\n"
+                "- suggested_target (str): Either 'modeling' (code changes priority) or "
+                "'research' (more biological knowledge needed first)."
             )
             user_content = (
-                f"## Execution Results\n"
-                f"Accuracy: {accuracy_str} (goal: {self.ACCURACY_GOAL:.0%})\n\n"
+                f"## Metric Suite Results\n"
+                f"Primary metric: {target_metric} = {primary_str} "
+                f"(goal: {direction} {pass_threshold})\n\n"
+                f"Full DEG metric suite:\n{metrics_summary}\n\n"
                 f"### stdout (last 500 chars)\n{stdout[-500:]}\n\n"
                 f"### stderr / traceback (last 500 chars)\n{(tb or stderr)[-500:]}\n\n"
                 f"### Code snippet (first 300 chars)\n{code[:300]}"
@@ -956,41 +1312,58 @@ class EvaluationAgent(BaseAgent):
                 }
             return {
                 "technical_feedback": (
-                    f"Current accuracy ({accuracy_str}) is below the "
-                    f"{self.ACCURACY_GOAL:.0%} target. "
-                    "Improve model architecture or training procedure."
+                    f"Current {target_metric} ({primary_str}) is below the "
+                    f"{direction} threshold of {pass_threshold}. "
+                    "Review the Hypergraph Node architecture (Node A: Backbone, "
+                    "Node B: Fusion, Node C: Loss) and ensure DEG metrics improve."
                 ),
                 "knowledge_gap": (
-                    "Retrieve more papers on GNN models for cell perturbation response prediction"
+                    "Retrieve SOTA papers on GNN models for cell perturbation "
+                    "response prediction, focusing on DEG high-variance gene modeling"
                 ),
                 "suggested_target": "research",
             }
 
     @staticmethod
-    def _parse_accuracy(stdout: str) -> Optional[float]:
-        """Extract a numeric accuracy / PCC metric from stdout.
+    def _parse_all_metrics(stdout: str) -> Dict[str, Optional[float]]:
+        """Parse the full DEG metric suite from stdout.
 
-        Looks for lines like ``"accuracy: 0.92"`` or ``"PCC: 0.85"``.
+        Recognises the following metrics (case-insensitive):
+        PCC, MSE, R2, DEG_RMSE_20, DEG_PCC_20, DEG_RMSE_50, DEG_PCC_50,
+        MSE_DM, PCC_DM, R2_DM.
+
+        Args:
+            stdout: Captured standard output from the execution script.
+
+        Returns:
+            Dict mapping metric name → float value (``None`` if not found).
+        """
+        metrics: Dict[str, Optional[float]] = {
+            name: None for name, _ in _DEG_METRIC_PATTERNS
+        }
+        for name, pattern in _DEG_METRIC_PATTERNS:
+            for line in stdout.splitlines():
+                m = re.search(pattern, line, re.IGNORECASE)
+                if m:
+                    try:
+                        metrics[name] = float(m.group(1))
+                        break
+                    except ValueError:
+                        pass
+        return metrics
+
+    @staticmethod
+    def _parse_accuracy(stdout: str) -> Optional[float]:
+        """Extract the primary PCC / accuracy metric from stdout.
+
+        Convenience wrapper around :meth:`_parse_all_metrics` that returns
+        only the PCC value (used by the orchestrator's best-accuracy tracker).
 
         Args:
             stdout: Captured standard output from the execution.
 
         Returns:
-            Float value in ``[0, 1]`` if found, else ``None``.
+            Float PCC value if found, else ``None``.
         """
-        import re
-
-        patterns = [
-            r"(?:accuracy|acc|pcc|pearson|r2|score)[:\s=]+([0-9]+\.?[0-9]*)",
-        ]
-        for pat in patterns:
-            for line in stdout.splitlines():
-                m = re.search(pat, line, re.IGNORECASE)
-                if m:
-                    try:
-                        val = float(m.group(1))
-                        if 0.0 <= val <= 1.0:
-                            return val
-                    except ValueError:
-                        pass
-        return None
+        metrics = EvaluationAgent._parse_all_metrics(stdout)
+        return metrics.get("PCC")
