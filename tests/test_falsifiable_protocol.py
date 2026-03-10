@@ -58,17 +58,19 @@ class TestFalsifiableProtocol:
     def _make_orchestrator(self):
         """Create an orchestrator with mocked agent instantiation."""
         cfg = _minimal_config()
-        with patch.object(ResearchAgent, "__init__", lambda self, *a, **k: BaseAgentInit(self, *a, **k)):
-            with patch.object(ModelingAgent, "__init__", lambda self, *a, **k: BaseAgentInit(self, *a, **k)):
-                with patch.object(ExecutionAgent, "__init__", lambda self, *a, **k: BaseAgentInit(self, *a, **k)):
-                    with patch.object(EvaluationAgent, "__init__", lambda self, *a, **k: BaseAgentInit(self, *a, **k)):
-                        with patch.object(TaskContext, "from_config", return_value=TaskContext(
-                            smiles_list=["CCO", "CC(=O)O"],
-                            h5_file_path="/tmp/test.h5",
-                            max_iterations=3,
-                            config=cfg,
-                        )):
-                            return PipelineOrchestrator(cfg)
+        with (
+            patch.object(ResearchAgent, "__init__", lambda self, *a, **k: base_agent_init(self, *a, **k)),
+            patch.object(ModelingAgent, "__init__", lambda self, *a, **k: base_agent_init(self, *a, **k)),
+            patch.object(ExecutionAgent, "__init__", lambda self, *a, **k: base_agent_init(self, *a, **k)),
+            patch.object(EvaluationAgent, "__init__", lambda self, *a, **k: base_agent_init(self, *a, **k)),
+            patch.object(TaskContext, "from_config", return_value=TaskContext(
+                smiles_list=["CCO", "CC(=O)O"],
+                h5_file_path="/tmp/test.h5",
+                max_iterations=3,
+                config=cfg,
+            )),
+        ):
+            return PipelineOrchestrator(cfg)
 
     def test_first_iteration_always_accepted(self):
         """First iteration should always be accepted."""
@@ -281,7 +283,7 @@ class TestAgentModeArgParsing:
 # Helper for mocking BaseAgent.__init__
 # =============================================================================
 
-def BaseAgentInit(self, bus=None, config=None):
+def base_agent_init(self, bus=None, config=None):
     """Minimal init for mocking agent constructors in tests."""
     import uuid
     self.agent_id = f"test_{uuid.uuid4().hex[:4]}"

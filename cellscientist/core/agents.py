@@ -825,7 +825,12 @@ class ModelingAgent(BaseAgent):
 
         # Build a prompt for the LLM using PromptManager (falls back to hardcoded defaults).
         smiles_list: List[str] = insight_report.get("smiles_list") or []
-        literature = (insight_report.get("literature_summary") or insight_report.get("literature_context") or {}).get("markdown_summary") or ""
+        lit_source = (
+            insight_report.get("literature_summary")
+            or insight_report.get("literature_context")
+            or {}
+        )
+        literature = lit_source.get("markdown_summary") or ""
 
         try:
             from .prompt_manager import get_default_prompt_manager  # type: ignore

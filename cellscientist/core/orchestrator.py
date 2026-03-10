@@ -586,7 +586,7 @@ class PipelineOrchestrator:
                             f"the metric ({verdict_info['previous_score']:.4f} → "
                             f"{verdict_info['current_score']:.4f}). "
                             f"Code has been REVERTED to the last accepted state. "
-                            f"You MUST try a fundamentally DIFFERENT approach."
+                            f"Please try a fundamentally different approach."
                         )
                         technical_feedback = f"{revert_note}\n\n{technical_feedback}"
 
