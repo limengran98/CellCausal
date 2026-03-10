@@ -424,7 +424,7 @@ class PipelineOrchestrator:
                         best_data["accuracy"] = self.best_metric_score
                         best_data["best_metric_score"] = self.best_metric_score
                     best_data["best_artifacts_path"] = self.best_artifacts_path
-                    final_result = {"status": msg.get("status", "needs_iteration"), "data": best_data}
+                    final_result = {"status": "terminated", "data": best_data}
                     break
 
                 # ---- Handle REFINE ----

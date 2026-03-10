@@ -82,11 +82,11 @@ def _extract_python_code(raw_text: str) -> str:
     # 1. Strip <think>...</think> blocks.
     text = _THINK_RE.sub("", raw_text).strip()
 
-    # 2. Extract the first (and typically only) fenced code block.
+    # 2. Extract the first fenced code block (LLM responses typically
+    #    contain exactly one primary code block as the first fence).
     matches = _CODE_FENCE_RE.findall(text)
     if matches:
-        # Pick the longest match in case there are multiple fences.
-        return max(matches, key=len).strip()
+        return matches[0].strip()
 
     # 3. No fences found — return stripped text directly.
     return text
@@ -615,11 +615,15 @@ class ModelingAgent(BaseAgent):
                     ro_data = yaml.safe_load(fh) or {}
                 sys_text: str = ro_data.get("system") or ""
                 if sys_text:
-                    # Extract the Hypergraph section from the system prompt.
+                    # Extract the Hypergraph section using precise word-boundary matching
+                    # to avoid false positives (e.g. "Note A" matching "Node A").
+                    _node_re = re.compile(
+                        r"\bHypergraph\b|\bNode\s+[ABC]\b", re.IGNORECASE
+                    )
                     hypergraph_section = ""
                     in_block = False
                     for line in sys_text.splitlines():
-                        if "Hypergraph" in line or "Node A" in line or "Node B" in line or "Node C" in line:
+                        if _node_re.search(line):
                             in_block = True
                         if in_block:
                             hypergraph_section += line + "\n"
@@ -634,13 +638,17 @@ class ModelingAgent(BaseAgent):
                     pp_data = yaml.safe_load(fh) or {}
                 pp_sys: str = pp_data.get("system") or ""
                 if pp_sys and "T0" in pp_sys and "T1" in pp_sys:
-                    # Use the raw section 1 text as the granularity hint.
+                    # Use the raw cell-tag and mandatory dataset lines as the
+                    # granularity hint.  Use anchored patterns to avoid false
+                    # positives (e.g. "AT0" matching T0).
+                    _cell_tag_re = re.compile(r"\bT[0-6]\b")
+                    _dataset_re = re.compile(
+                        r"\b(?:morphology_pre|morphology_post|split_id|dose|smiles)\b"
+                    )
                     lines = pp_sys.splitlines()
                     t_lines = [
                         ln for ln in lines
-                        if any(tag in ln for tag in ["T0", "T1", "T2", "T3", "T4", "T5", "T6",
-                                                      "morphology_pre", "morphology_post",
-                                                      "split_id", "dose", "smiles"])
+                        if _cell_tag_re.search(ln) or _dataset_re.search(ln)
                     ]
                     if t_lines:
                         cell_granularity_hint = "\n".join(t_lines[:20])
@@ -984,17 +992,19 @@ class ExecutionAgent(BaseAgent):
 
 #: Ordered list of (metric_name, regex_pattern) pairs for the full DEG suite.
 #: Patterns match lines emitted by the generated execution scripts.
+#: The value group supports negative numbers and scientific notation.
+_METRIC_VALUE_RE = r"([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)"
 _DEG_METRIC_PATTERNS: List[tuple] = [
-    ("PCC",        r"(?:global_?pcc|(?<!\w)pcc(?!\w)|pearson)[:\s=]+([0-9]+\.?[0-9]*)"),
-    ("MSE",        r"(?:global_?mse|(?<!\w)mse(?!\w))[:\s=]+([0-9]+\.?[0-9]*)"),
-    ("R2",         r"(?:global_?r2|(?<!\w)r2(?!\w)|r_?squared)[:\s=]+([0-9]+\.?[0-9]*)"),
-    ("DEG_RMSE_20", r"deg_?rmse_?20[:\s=]+([0-9]+\.?[0-9]*)"),
-    ("DEG_PCC_20",  r"deg_?pcc_?20[:\s=]+([0-9]+\.?[0-9]*)"),
-    ("DEG_RMSE_50", r"deg_?rmse_?50[:\s=]+([0-9]+\.?[0-9]*)"),
-    ("DEG_PCC_50",  r"deg_?pcc_?50[:\s=]+([0-9]+\.?[0-9]*)"),
-    ("MSE_DM",     r"mse_?dm[:\s=]+([0-9]+\.?[0-9]*)"),
-    ("PCC_DM",     r"pcc_?dm[:\s=]+([0-9]+\.?[0-9]*)"),
-    ("R2_DM",      r"r2_?dm[:\s=]+([0-9]+\.?[0-9]*)"),
+    ("PCC",        rf"(?:global_?pcc|(?<!\w)pcc(?!\w)|pearson)[:\s=]+{_METRIC_VALUE_RE}"),
+    ("MSE",        rf"(?:global_?mse|(?<!\w)mse(?!\w))[:\s=]+{_METRIC_VALUE_RE}"),
+    ("R2",         rf"(?:global_?r2|(?<!\w)r2(?!\w)|r_?squared)[:\s=]+{_METRIC_VALUE_RE}"),
+    ("DEG_RMSE_20", rf"deg_?rmse_?20[:\s=]+{_METRIC_VALUE_RE}"),
+    ("DEG_PCC_20",  rf"deg_?pcc_?20[:\s=]+{_METRIC_VALUE_RE}"),
+    ("DEG_RMSE_50", rf"deg_?rmse_?50[:\s=]+{_METRIC_VALUE_RE}"),
+    ("DEG_PCC_50",  rf"deg_?pcc_?50[:\s=]+{_METRIC_VALUE_RE}"),
+    ("MSE_DM",     rf"mse_?dm[:\s=]+{_METRIC_VALUE_RE}"),
+    ("PCC_DM",     rf"pcc_?dm[:\s=]+{_METRIC_VALUE_RE}"),
+    ("R2_DM",      rf"r2_?dm[:\s=]+{_METRIC_VALUE_RE}"),
 ]
 
 
@@ -1341,8 +1351,11 @@ class EvaluationAgent(BaseAgent):
         metrics: Dict[str, Optional[float]] = {
             name: None for name, _ in _DEG_METRIC_PATTERNS
         }
+        lines = stdout.splitlines()
         for name, pattern in _DEG_METRIC_PATTERNS:
-            for line in stdout.splitlines():
+            # Scan lines in reverse to capture the LAST (final) reported value
+            # rather than an intermediate value from an earlier epoch.
+            for line in reversed(lines):
                 m = re.search(pattern, line, re.IGNORECASE)
                 if m:
                     try:
