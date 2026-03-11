@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 # =============================================================================
 from cellscientist.core.config_loader import load_full_config
 # [UPDATED] Import TokenMeter here
-from cellscientist.core.llm_client import chat_json, resolve_llm_config, TokenMeter
+from cellscientist.core.llm_client import chat_json, chat_text, extract_json_from_text, resolve_llm_config, TokenMeter
 from cellscientist.core.external_knowledge_mirothink import retrieve_external_knowledge, knowledge_pack_to_markdown
 from cellscientist.core.task_logger import get_task_logger
 
@@ -705,6 +705,21 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
             cfg=cfg,
             temperature=(cfg.get("llm", {}) or {}).get("temperature", 0.7)
         )
+    except Exception as e:
+        _log(f"[REVIEW] chat_json failed, attempting text fallback parse: {e}", console=False)
+
+    try:
+        fallback_text = chat_text(
+            messages,
+            cfg=cfg,
+            temperature=(cfg.get("llm", {}) or {}).get("temperature", 0.7),
+        )
+        parsed = extract_json_from_text(fallback_text)
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list):
+            return {"edits": parsed}
+        return None
     except Exception as e:
         _log(f"[REVIEW] LLM Interaction Failed: {e}", console=False)
         return None
