@@ -245,10 +245,12 @@ class GraphExecutor(NotebookClient):
 
         return self.nb
 
-    def _execute_cell_with_heartbeat(self, cell, cell_idx: int, task_name: str, display_idx: int, total_cells: int):
+    def _execute_cell_with_heartbeat(self, cell, cell_idx: int, task_name: str, display_idx: Optional[int] = None, total_cells: Optional[int] = None):
         """Execute one notebook cell and emit periodic heartbeat logs while it runs."""
         started_at = time.time()
         stop_event = threading.Event()
+        display_idx = int(display_idx) if display_idx is not None else (int(cell_idx) + 1)
+        total_cells = int(total_cells) if total_cells is not None else max(display_idx, 1)
 
         def _heartbeat_loop():
             while not stop_event.wait(self.heartbeat_seconds):
