@@ -91,20 +91,23 @@ def monitor_agent(func: Callable) -> Callable:
     async def wrapper(self: Any, message: dict, *args: Any, **kwargs: Any) -> Any:
         agent_role: str = getattr(self, "role", self.__class__.__name__)
         ts = _now_iso()
-        _log(f"[AGENT] 🚀 {agent_role} starting task... ({ts})", console=True)
+        _log(f"[AGENT] {agent_role} START", console=True)
+        _log(f"├─ Time: {ts}", console=True)
 
         start = time.monotonic()
         try:
             result = await func(self, message, *args, **kwargs)
             duration = time.monotonic() - start
-            _log(f"[AGENT] ✅ {agent_role} completed in {duration:.1f}s", console=True)
+            _log(f"└─ Duration: {duration:.1f}s", console=True)
+            _log(f"[AGENT] {agent_role} END ✅", console=True)
             return result
         except Exception as exc:
             duration = time.monotonic() - start
             _log(
-                f"[AGENT] ❌ {agent_role} failed after {duration:.1f}s: {exc}",
+                f"└─ Duration: {duration:.1f}s",
                 console=True,
             )
+            _log(f"[AGENT] {agent_role} END ❌: {exc}", console=True)
             raise
 
     return wrapper

@@ -1,7 +1,7 @@
 # design_execution/prompt_executor.py
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional
-import os, json, re, hashlib, ast, shutil
+import os, json, re, hashlib, ast, shutil, threading, time
 import nbformat
 from nbclient import NotebookClient
 from nbclient.exceptions import CellExecutionError
@@ -145,6 +145,7 @@ class GraphExecutor(NotebookClient):
         checkpoint_each_cell: bool = True,
         snapshot_files: bool = True,
         snapshot_max_bytes: int = 200 * 1024 * 1024,
+        heartbeat_seconds: int = 120,
         **kwargs,
     ):
         super().__init__(nb, **kwargs)
@@ -158,6 +159,7 @@ class GraphExecutor(NotebookClient):
         self.checkpoint_each_cell = bool(checkpoint_each_cell)
         self.snapshot_files = bool(snapshot_files)
         self.snapshot_max_bytes = int(snapshot_max_bytes) if snapshot_max_bytes is not None else 0
+        self.heartbeat_seconds = max(15, int(heartbeat_seconds or 120))
 
         self.global_errors = []
         self._cell_fix_counts = {}  # (cell_idx, task_id) -> total patches attempted
@@ -205,8 +207,8 @@ class GraphExecutor(NotebookClient):
 
                 try:
                     # Execute single cell using nbclient's low-level method
-                    self.execute_cell(cell, cell_idx)
-                    
+                    self._execute_cell_with_heartbeat(cell, cell_idx, task_name)
+
                     # If we are here, execution was successful
                     self._after_cell_success(cell_idx, task_id)
                     executed_cells += 1
@@ -242,6 +244,36 @@ class GraphExecutor(NotebookClient):
             _log(f"└─ ⚙️  Execute: {executed_cells} cells → {success_status}{autofix_note}", console=True)
 
         return self.nb
+
+    def _execute_cell_with_heartbeat(self, cell, cell_idx: int, task_name: str):
+        """Execute one notebook cell and emit periodic heartbeat logs while it runs."""
+        started_at = time.time()
+        stop_event = threading.Event()
+
+        display_cell_idx = int(cell_idx) + 1
+
+        def _heartbeat_loop():
+            while not stop_event.wait(self.heartbeat_seconds):
+                elapsed = int(time.time() - started_at)
+                timeout_sec = int(getattr(self, "timeout", 0) or 0)
+                if timeout_sec > 0:
+                    _log(
+                        f"   ⏱️ Still running Cell {display_cell_idx} [{task_name}] — {elapsed}s elapsed (cell timeout={timeout_sec}s)",
+                        console=True,
+                    )
+                else:
+                    _log(
+                        f"   ⏱️ Still running Cell {display_cell_idx} [{task_name}] — {elapsed}s elapsed",
+                        console=True,
+                    )
+
+        beat = threading.Thread(target=_heartbeat_loop, daemon=True)
+        beat.start()
+        try:
+            return self.execute_cell(cell, cell_idx)
+        finally:
+            stop_event.set()
+            beat.join(timeout=0.1)
 
     def _inject_setup_cells(self):
         """Inject setup code (Env vars, Guard) at the top."""
@@ -539,6 +571,7 @@ def run_notebook_with_autofix(
         snapshot_max_bytes=int(exec_cfg.get("snapshot_max_bytes", 200 * 1024 * 1024)),
         # nbclient args
         timeout=int(exec_cfg.get("timeout_seconds", 3600)),
+        heartbeat_seconds=int(exec_cfg.get("heartbeat_seconds", 120)),
         kernel_name="python3",
         allow_errors=False, # We handle errors manually
         resources={"metadata": {"path": workdir}}
