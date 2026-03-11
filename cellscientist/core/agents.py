@@ -21,6 +21,7 @@ import abc
 import asyncio
 import contextlib
 import functools
+import hashlib
 import io
 import json
 import logging
@@ -138,6 +139,11 @@ class _TeeTextIO(io.TextIOBase):
 # =============================================================================
 # Path interpolation helper (Bug 4)
 # =============================================================================
+
+
+def _short_md5(text: str) -> str:
+    """Return a short deterministic digest for log-friendly content identity checks."""
+    return hashlib.md5((text or "").encode("utf-8", errors="replace")).hexdigest()[:10]
 
 
 def _interpolate_path(path_template: str, config: Dict[str, Any]) -> str:
@@ -1307,6 +1313,25 @@ class ModelingAgent(BaseAgent):
                     "max_iterations": int(message.get("max_iterations") or 5),
                     "_task_id": task_id,
                 })
+
+                metadata = artifact_payload.get("modeling_metadata") or {}
+                generated_nb = str(artifact_payload.get("notebook_json") or "")
+                prev_hash = _short_md5(existing_notebook_json) if existing_notebook_json else "new"
+                new_hash = _short_md5(generated_nb) if generated_nb else "empty"
+                changed = (prev_hash != new_hash) if existing_notebook_json else True
+                _log(
+                    f"[MODEL] Iteration {iteration} update | mode={metadata.get('generation_mode', 'unknown')} | strategy={metadata.get('selected_strategy', '')}",
+                    console=True,
+                )
+                _log(
+                    f"├─ Notebook hash: {prev_hash} -> {new_hash} ({'changed' if changed else 'unchanged'})",
+                    console=True,
+                )
+                if "applied_changes" in metadata:
+                    _log(f"├─ Applied edits: {int(metadata.get('applied_changes') or 0)}", console=True)
+                if existing_notebook_json and not changed:
+                    _log("├─ ⚠️ No notebook delta this iteration (likely fallback/no-op review output).", console=True)
+
                 return AgentResponse(
                     status="success",
                     data=artifact_payload,

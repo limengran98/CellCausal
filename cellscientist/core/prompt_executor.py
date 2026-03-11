@@ -207,7 +207,7 @@ class GraphExecutor(NotebookClient):
 
                 try:
                     # Execute single cell using nbclient's low-level method
-                    self._execute_cell_with_heartbeat(cell, cell_idx, task_name)
+                    self._execute_cell_with_heartbeat(cell, cell_idx, task_name, executed_cells + 1, total_cells)
 
                     # If we are here, execution was successful
                     self._after_cell_success(cell_idx, task_id)
@@ -245,12 +245,12 @@ class GraphExecutor(NotebookClient):
 
         return self.nb
 
-    def _execute_cell_with_heartbeat(self, cell, cell_idx: int, task_name: str):
+    def _execute_cell_with_heartbeat(self, cell, cell_idx: int, task_name: str, display_idx: Optional[int] = None, total_cells: Optional[int] = None):
         """Execute one notebook cell and emit periodic heartbeat logs while it runs."""
         started_at = time.time()
         stop_event = threading.Event()
-
-        display_cell_idx = int(cell_idx) + 1
+        display_idx = int(display_idx) if display_idx is not None else (int(cell_idx) + 1)
+        total_cells = int(total_cells) if total_cells is not None else max(display_idx, 1)
 
         def _heartbeat_loop():
             while not stop_event.wait(self.heartbeat_seconds):
@@ -258,12 +258,12 @@ class GraphExecutor(NotebookClient):
                 timeout_sec = int(getattr(self, "timeout", 0) or 0)
                 if timeout_sec > 0:
                     _log(
-                        f"├─ ⏱️ Running: Cell {display_cell_idx} [{task_name}] | elapsed={elapsed}s | timeout={timeout_sec}s",
+                        f"├─ ⏱️ Running: Cell {display_idx}/{total_cells} [{task_name}] | elapsed={elapsed}s | timeout={timeout_sec}s",
                         console=True,
                     )
                 else:
                     _log(
-                        f"├─ ⏱️ Running: Cell {display_cell_idx} [{task_name}] | elapsed={elapsed}s",
+                        f"├─ ⏱️ Running: Cell {display_idx}/{total_cells} [{task_name}] | elapsed={elapsed}s",
                         console=True,
                     )
 
