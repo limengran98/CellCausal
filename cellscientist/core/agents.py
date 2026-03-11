@@ -106,9 +106,10 @@ def _log(msg: str, *, console: bool = False) -> None:
         msg: Message text.
         console: If True uses ``[CELL_CONSOLE]`` prefix; otherwise ``[DETAIL]``.
     """
+    summary_only = str(os.environ.get("CELL_SUMMARY_ONLY", "0")).lower() in {"1", "true", "yes"}
     if console:
         print(f"[CELL_CONSOLE] {msg}", flush=True)
-    else:
+    elif not summary_only:
         print(f"[DETAIL] {msg}", flush=True)
 
 
@@ -1118,7 +1119,19 @@ class ModelingAgent(BaseAgent):
             ),
         )
         if not isinstance(suggestion, dict):
-            raise RuntimeError("Review optimization did not return a JSON object.")
+            _log(
+                "[REVIEW] ⚠️ Optimization output was not JSON; keeping prior notebook for this iteration.",
+                console=True,
+            )
+            suggestion = {
+                "edits": [],
+                "selected_strategy": "fallback_keep_previous",
+                "decision_type": "RETRY",
+                "focus_area": "All",
+                "critique": "Review optimization did not return JSON; no code edits applied.",
+                "semantic_gradient_analysis": "LLM output parse failed; preserved prior artifact.",
+                "used_evidence_ids": [],
+            }
 
         applied_changes = apply_llm_edits(nb, suggestion.get("edits") or [])
         updated_notebook_json = nbformat.writes(nb)
