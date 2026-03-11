@@ -21,12 +21,14 @@ import abc
 import asyncio
 import contextlib
 import functools
+import hashlib
 import io
 import json
 import logging
 import os
 import re
 import subprocess
+import sys
 import time
 import traceback
 import uuid
@@ -113,9 +115,35 @@ def _log(msg: str, *, console: bool = False) -> None:
         print(f"[DETAIL] {msg}", flush=True)
 
 
+class _TeeTextIO(io.TextIOBase):
+    """Mirror redirected text writes to both an in-memory buffer and console stream."""
+
+    def __init__(self, buffer: io.StringIO, stream: io.TextIOBase) -> None:
+        super().__init__()
+        self._buffer = buffer
+        self._stream = stream
+
+    def write(self, s: str) -> int:
+        if not s:
+            return 0
+        self._buffer.write(s)
+        self._stream.write(s)
+        self._stream.flush()
+        return len(s)
+
+    def flush(self) -> None:
+        self._buffer.flush()
+        self._stream.flush()
+
+
 # =============================================================================
 # Path interpolation helper (Bug 4)
 # =============================================================================
+
+
+def _short_md5(text: str) -> str:
+    """Return a short deterministic digest for log-friendly content identity checks."""
+    return hashlib.md5((text or "").encode("utf-8", errors="replace")).hexdigest()[:10]
 
 
 def _interpolate_path(path_template: str, config: Dict[str, Any]) -> str:
@@ -1285,6 +1313,25 @@ class ModelingAgent(BaseAgent):
                     "max_iterations": int(message.get("max_iterations") or 5),
                     "_task_id": task_id,
                 })
+
+                metadata = artifact_payload.get("modeling_metadata") or {}
+                generated_nb = str(artifact_payload.get("notebook_json") or "")
+                prev_hash = _short_md5(existing_notebook_json) if existing_notebook_json else "new"
+                new_hash = _short_md5(generated_nb) if generated_nb else "empty"
+                changed = (prev_hash != new_hash) if existing_notebook_json else True
+                _log(
+                    f"[MODEL] Iteration {iteration} update | mode={metadata.get('generation_mode', 'unknown')} | strategy={metadata.get('selected_strategy', '')}",
+                    console=True,
+                )
+                _log(
+                    f"├─ Notebook hash: {prev_hash} -> {new_hash} ({'changed' if changed else 'unchanged'})",
+                    console=True,
+                )
+                if "applied_changes" in metadata:
+                    _log(f"├─ Applied edits: {int(metadata.get('applied_changes') or 0)}", console=True)
+                if existing_notebook_json and not changed:
+                    _log("├─ ⚠️ No notebook delta this iteration (likely fallback/no-op review output).", console=True)
+
                 return AgentResponse(
                     status="success",
                     data=artifact_payload,
@@ -1502,7 +1549,9 @@ class ExecutionAgent(BaseAgent):
 
         stdout_buffer = io.StringIO()
         stderr_buffer = io.StringIO()
-        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+        tee_stdout = _TeeTextIO(stdout_buffer, sys.stdout)
+        tee_stderr = _TeeTextIO(stderr_buffer, sys.stderr)
+        with contextlib.redirect_stdout(tee_stdout), contextlib.redirect_stderr(tee_stderr):
             exec_res = phase_execute(self.config, trial_dir)
             try:
                 phase_analyze(self.config, trial_dir)
@@ -1983,9 +2032,7 @@ class EvaluationAgent(BaseAgent):
         pass_threshold: float = metric_cfg["pass_threshold"]
 
         _log(
-            f"[EVAL] 📊 EvaluationAgent evaluating '{target_metric}' "
-            f"(threshold={pass_threshold}, direction={direction}) "
-            f"— iteration {iteration}/{max_iterations}…",
+            f"├─ Validation target: {target_metric} | threshold={pass_threshold} | direction={direction} | iteration={iteration}/{max_iterations}",
             console=True,
         )
 
@@ -1997,15 +2044,12 @@ class EvaluationAgent(BaseAgent):
                 all_metrics[metric_name] = metric_value
         primary_value: Optional[float] = all_metrics.get(target_metric)
 
-        _log(
-            f"[{self.agent_id}] Parsed metrics: "
-            + ", ".join(
-                f"{k}={v:.4f}" if v is not None else f"{k}=N/A"
-                for k, v in all_metrics.items()
-                if v is not None
-            ),
-            console=True,
+        metric_line = ", ".join(
+            f"{k}={v:.4f}" if v is not None else f"{k}=N/A"
+            for k, v in all_metrics.items()
+            if v is not None
         )
+        _log(f"├─ Parsed metrics: {metric_line}", console=True)
 
         # ---- Innovation 3: Falsifiable metric comparison ----
         metric_delta: Optional[float] = None
@@ -2029,9 +2073,7 @@ class EvaluationAgent(BaseAgent):
         # Goal achieved → SUCCESS.
         if self._goal_met(all_metrics, target_metric, pass_threshold, direction):
             _log(
-                f"[{self.agent_id}] ✅ {target_metric} goal met "
-                f"({primary_value:.4f} {'≥' if direction == 'maximize' else '≤'} "
-                f"{pass_threshold}).",
+                f"├─ Verdict: SUCCESS ({target_metric}={primary_value:.4f} {'≥' if direction == 'maximize' else '≤'} {pass_threshold})",
                 console=True,
             )
             return AgentResponse(
@@ -2105,11 +2147,7 @@ class EvaluationAgent(BaseAgent):
         feedback_package["metric_delta"] = metric_delta
         feedback_package["metric_trend"] = metric_trend
         suggested_target = feedback_package.get("suggested_target", "modeling")
-        _log(
-            f"[{self.agent_id}] 🔄 REFINE decision (target={suggested_target}). "
-            f"Sending feedback_package to orchestration.",
-            console=True,
-        )
+        _log(f"├─ Verdict: REFINE (target={suggested_target})", console=True)
         return AgentResponse(
             status="needs_iteration",
             data={

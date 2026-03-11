@@ -401,7 +401,7 @@ def generate_notebook_content(
             
             if parts:
                 summary = " and ".join(parts) if len(parts) == 2 else parts[0]
-                _log(f"├─ 📚 Knowledge: Retrieved {summary}", console=True)
+                _log(f"├─ BioKB/Web knowledge: {summary}", console=True)
         
         # [DIAGNOSTIC] Explicitly warn if no items found
         if not pack.items:
@@ -429,7 +429,7 @@ def generate_notebook_content(
         if strategy_md:
             # Calculate and display strategy size
             strategy_size_kb = len(strategy_md.encode('utf-8')) / 1024
-            _log(f"├─ 🧠 Generate: Strategy synthesized ({strategy_size_kb:.1f}KB)", console=True)
+            _log(f"├─ Strategy synthesized: {strategy_size_kb:.1f}KB", console=True)
             
             full_user_content = f"""
 ================================================================================
@@ -445,11 +445,11 @@ def generate_notebook_content(
 {spec_dump}
 {external_knowledge_section}
 """
-            _log("[GEN] 💻 Generating Code (Strategy-Driven)...", console=True)
+            _log("├─ Codegen mode: strategy-driven", console=True)
         else:
             strategy_md = "**Strategy**: Fallback to Freestyle Design (Synthesis Failed)."
             full_user_content = f"# TECHNICAL SPECIFICATION\n{spec_dump}\n\n{external_knowledge_section}"
-            _log("[GEN] 💻 Generating Code (Fallback to Freestyle)...", console=True)
+            _log("├─ Codegen mode: fallback freestyle", console=True)
     else:
         strategy_md = (
             "## 🧠 Research Strategy (Freestyle)\n\n"
@@ -468,7 +468,7 @@ Follow these rules strictly:
 {spec_dump}
 {external_knowledge_section}
 """
-        _log("[GEN] 💻 Generating Code (Freestyle/No-Idea)...", console=True)
+        _log("├─ Codegen mode: freestyle/no-idea", console=True)
     messages = [{"role": "system", "content": sys_txt}, {"role": "user", "content": full_user_content}]
 
 
@@ -544,7 +544,7 @@ Follow these rules strictly:
     # Calculate total code size
     total_code_size = sum(len((c.get("code", "") or "").encode('utf-8')) for c in cells_data if isinstance(c, dict))
     code_size_kb = total_code_size / 1024
-    _log(f"└─ 🧠 Generate: Code generated ({code_size_kb:.1f}KB, {len(cells_data)} cells)", console=True)
+    _log(f"└─ Notebook generated: {code_size_kb:.1f}KB | {len(cells_data)} cells", console=True)
 
     if hypergraph_data:
         nb.metadata["execution"] = {"hypergraph": hypergraph_data}
