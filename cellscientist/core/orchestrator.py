@@ -98,10 +98,9 @@ def _log(msg: str, *, console: bool = False) -> None:
         msg: Message text.
         console: If ``True`` uses ``[CELL_CONSOLE]`` prefix; otherwise ``[DETAIL]``.
     """
-    summary_only = str(os.environ.get("CELL_SUMMARY_ONLY", "0")).lower() in {"1", "true", "yes"}
     if console:
         print(f"[CELL_CONSOLE] {msg}", flush=True)
-    elif not summary_only:
+    else:
         print(f"[DETAIL] {msg}", flush=True)
 
 
@@ -648,19 +647,8 @@ class PipelineOrchestrator:
                     next_iteration = self.context.iteration
 
                     # ---- Falsifiable Iteration Protocol ----
-                    # Some recoverable agent-side failures (e.g. review JSON
-                    # parse failure) should re-route without mutating the
-                    # accepted baseline or consuming an execution cycle.
-                    if data.get("skip_falsifiable_evaluation"):
-                        verdict_info = {
-                            "verdict": "ACCEPT",
-                            "metric_delta": None,
-                            "current_score": None,
-                            "previous_score": self.last_accepted_metrics.get("accuracy"),
-                            "forced_new_hypothesis": suggested_target == "research",
-                        }
-                    else:
-                        verdict_info = self._evaluate_iteration(data, next_iteration)
+                    # Evaluate this iteration vs. the last accepted state.
+                    verdict_info = self._evaluate_iteration(data, next_iteration)
                     verdict = verdict_info["verdict"]
 
                     # On REJECT: revert the working artifact to the last accepted
