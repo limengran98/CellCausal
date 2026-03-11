@@ -2031,6 +2031,7 @@ class EvaluationAgent(BaseAgent):
         direction: str = metric_cfg["direction"]
         pass_threshold: float = metric_cfg["pass_threshold"]
 
+        _log(f"[EVAL] evaluator START", console=True)
         _log(
             f"├─ Validation target: {target_metric} | threshold={pass_threshold} | direction={direction} | iteration={iteration}/{max_iterations}",
             console=True,
