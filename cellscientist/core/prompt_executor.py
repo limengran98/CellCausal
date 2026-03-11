@@ -203,7 +203,7 @@ class GraphExecutor(NotebookClient):
                 task_id = task_meta.get("id", f"Cell_{cell_idx}")
                 task_name = task_meta.get("name", "Unnamed")
                 
-                _log(f"├─ ⚙️  Execute: Cell {executed_cells + 1}/{total_cells} [{task_name}]", console=True)
+                _log(f"├─ ⚛ Execute: Cell {executed_cells + 1}/{total_cells} [{task_name}]", console=True)
 
                 try:
                     # Execute single cell using nbclient's low-level method
@@ -215,7 +215,7 @@ class GraphExecutor(NotebookClient):
                     cell_idx += 1 
                 
                 except CellExecutionError:
-                    _log(f"   ❌ Error in Cell {executed_cells + 1} ({task_name})", console=True)
+                    _log(f"├─ ❌ Error in Cell {executed_cells + 1} [{task_name}]", console=True)
                     self._after_cell_error(cell_idx, task_id)
                     
                     # Try to fix IN-PLACE
@@ -223,12 +223,12 @@ class GraphExecutor(NotebookClient):
                     autofix_used = True
                     
                     if fixed:
-                        _log(f"   🔧 Auto-fix applied → Retrying", console=True)
+                        _log(f"├─ 🔧 Auto-fix applied → retrying cell", console=True)
                         # We do NOT increment cell_idx, so the loop will re-execute the SAME cell index
                         # but with the new source code we just patched into self.nb
                         continue 
                     else:
-                        _log(f"   🛑 Auto-fix failed after {self.max_fix_rounds} rounds", console=True)
+                        _log(f"├─ 🛑 Auto-fix failed after {self.max_fix_rounds} rounds", console=True)
                         self.global_errors.append(f"Task {task_id} Failed.")
                         failed_cells += 1
                         # Stop execution here to preserve partial results or debug
@@ -241,7 +241,7 @@ class GraphExecutor(NotebookClient):
             # Print execution summary
             success_status = "✅ Success" if failed_cells == 0 else f"❌ Failed ({failed_cells} errors)"
             autofix_note = " (with autofix)" if autofix_used and failed_cells == 0 else " (no autofix)" if not autofix_used else ""
-            _log(f"└─ ⚙️  Execute: {executed_cells} cells → {success_status}{autofix_note}", console=True)
+            _log(f"└─ ⚛ Execute: {executed_cells} cells → {success_status}{autofix_note}", console=True)
 
         return self.nb
 
@@ -258,12 +258,12 @@ class GraphExecutor(NotebookClient):
                 timeout_sec = int(getattr(self, "timeout", 0) or 0)
                 if timeout_sec > 0:
                     _log(
-                        f"   ⏱️ Still running Cell {display_cell_idx} [{task_name}] — {elapsed}s elapsed (cell timeout={timeout_sec}s)",
+                        f"├─ ⏱️ Running: Cell {display_cell_idx} [{task_name}] | elapsed={elapsed}s | timeout={timeout_sec}s",
                         console=True,
                     )
                 else:
                     _log(
-                        f"   ⏱️ Still running Cell {display_cell_idx} [{task_name}] — {elapsed}s elapsed",
+                        f"├─ ⏱️ Running: Cell {display_cell_idx} [{task_name}] | elapsed={elapsed}s",
                         console=True,
                     )
 

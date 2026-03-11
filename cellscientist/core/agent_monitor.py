@@ -93,6 +93,13 @@ def monitor_agent(func: Callable) -> Callable:
         ts = _now_iso()
         _log(f"[AGENT] {agent_role} START", console=True)
         _log(f"├─ Time: {ts}", console=True)
+        if isinstance(message, dict):
+            fold = message.get("fold") or message.get("fold_id")
+            scope = message.get("scope") or message.get("split")
+            if fold is not None or scope is not None:
+                fold_text = fold if fold is not None else 'N/A'
+                scope_text = scope if scope is not None else 'N/A'
+                _log(f"├─ Fold: {fold_text} | Scope: {scope_text}", console=True)
 
         start = time.monotonic()
         try:
