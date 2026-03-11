@@ -733,6 +733,21 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
             return {"edits": parsed}
         return None
     except Exception as e:
+        _log(f"[REVIEW] chat_json failed, attempting text fallback parse: {e}", console=False)
+
+    try:
+        fallback_text = chat_text(
+            messages,
+            cfg=cfg,
+            temperature=(cfg.get("llm", {}) or {}).get("temperature", 0.7),
+        )
+        parsed = extract_json_from_text(fallback_text)
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list):
+            return {"edits": parsed}
+        return None
+    except Exception as e:
         _log(f"[REVIEW] LLM Interaction Failed: {e}", console=False)
         return None
 
