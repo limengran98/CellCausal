@@ -699,12 +699,39 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
 
     _log(f"[REVIEW] Requesting optimization (Iter {iteration})...", console=False)
 
+    llm_cfg = (cfg.get("llm", {}) or {}) if isinstance(cfg.get("llm", {}), dict) else {}
+    # Review prompts can be very long (mutable+immutable cells + metrics + history + RAG).
+    # Use a larger default than chat_json's 4096 to reduce truncation-induced JSON parse failures.
+    review_max_tokens = int(llm_cfg.get("review_max_tokens") or llm_cfg.get("max_tokens") or 12000)
+    review_max_tokens = max(4096, review_max_tokens)
+
     try:
         return chat_json(
             messages,
             cfg=cfg,
-            temperature=(cfg.get("llm", {}) or {}).get("temperature", 0.7)
+            temperature=llm_cfg.get("temperature", 0.7),
+            max_tokens=review_max_tokens,
+            max_retries=int(llm_cfg.get("json_max_retries") or 4),
         )
+    except Exception as e:
+        _log(
+            f"[REVIEW] chat_json failed (max_tokens={review_max_tokens}); attempting text fallback parse: {e}",
+            console=False,
+        )
+
+    try:
+        fallback_text = chat_text(
+            messages,
+            cfg=cfg,
+            temperature=llm_cfg.get("temperature", 0.7),
+            max_tokens=review_max_tokens,
+        )
+        parsed = extract_json_from_text(fallback_text)
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list):
+            return {"edits": parsed}
+        return None
     except Exception as e:
         _log(f"[REVIEW] chat_json failed, attempting text fallback parse: {e}", console=False)
 
