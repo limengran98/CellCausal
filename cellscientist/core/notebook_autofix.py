@@ -12,6 +12,8 @@ Constraints:
 
 from __future__ import annotations
 
+import os
+
 from typing import Any, Dict, List, Optional, Tuple, Union
 import ast
 import hashlib
@@ -38,9 +40,10 @@ def _log(msg: str, *, console: bool = False):
         msg: Message to log
         console: If True, message appears in console. If False, only in detail logs.
     """
+    summary_only = str(os.environ.get("CELL_SUMMARY_ONLY", "0")).lower() in {"1", "true", "yes"}
     if console:
         print(f"[CELL_CONSOLE] {msg}", flush=True)
-    else:
+    elif not summary_only:
         print(f"[DETAIL] {msg}", flush=True)
 
 # =============================================================================

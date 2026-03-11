@@ -179,6 +179,9 @@ def main() -> None:
         logger.console_info("")
         logger.console_info("🧬 AGENT MODE — Falsifiable Scientific Discovery Loop", level=0)
 
+        # Keep console focused on key events by default; full traces remain in log files.
+        os.environ.setdefault("CELL_SUMMARY_ONLY", "1")
+
         from cellscientist.core.config_loader import load_yaml_prompts
         from cellscientist.core.orchestrator import run_orchestrator_sync
         from cellscientist.pipeline.metrics import scoreboard_from_orchestrator

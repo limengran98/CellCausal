@@ -35,6 +35,10 @@ def canonicalize_smiles(smiles: str) -> Dict[str, str]:
     """
     try:
         from rdkit import Chem  # type: ignore
+        from rdkit import RDLogger  # type: ignore
+        # Suppress noisy RDKit parser errors on malformed inputs; callers can
+        # still detect failures via fallback canonical_smiles/inchikey values.
+        RDLogger.DisableLog("rdApp.error")
         mol = Chem.MolFromSmiles(smiles)
         if mol:
             canonical = Chem.MolToSmiles(mol, canonical=True)
@@ -47,6 +51,39 @@ def canonicalize_smiles(smiles: str) -> Dict[str, str]:
     
     # Fallback: return original SMILES
     return {"canonical_smiles": smiles, "inchikey": None}
+
+
+def _normalize_smiles_value(value: Any) -> str:
+    """Normalize one SMILES value into a clean text string.
+
+    Handles common H5/pandas forms such as bytes, numpy.bytes_, and strings
+    that look like Python byte literals (e.g. ``b'CCO'``).
+    """
+    if value is None:
+        return ""
+
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8", errors="ignore")
+        except Exception:
+            value = str(value)
+    else:
+        value = str(value)
+
+    text = value.strip()
+    if len(text) >= 3 and text[0] in {"b", "B"} and text[1] in {"'", '"'} and text[-1] == text[1]:
+        text = text[2:-1]
+
+    return text.strip()
+
+def _normalize_smiles_list(values: List[Any]) -> List[str]:
+    """Normalize a list of raw SMILES-like values and drop empties."""
+    out: List[str] = []
+    for value in values:
+        norm = _normalize_smiles_value(value)
+        if norm:
+            out.append(norm)
+    return out
 
 
 def extract_smiles_from_config(cfg: Dict[str, Any]) -> Tuple[List[str], str]:
@@ -71,7 +108,7 @@ def extract_smiles_from_config(cfg: Dict[str, Any]) -> Tuple[List[str], str]:
             if isinstance(bio_kb_cfg, dict):
                 smiles_list = bio_kb_cfg.get("smiles_list", [])
                 if isinstance(smiles_list, list) and smiles_list:
-                    return [str(s).strip() for s in smiles_list if s], "config"
+                    return _normalize_smiles_list(smiles_list), "config"
         
         # Priority 2: Check cfg["bio_kb"]["smiles_list"]
         # Fallback to root-level config if nested structure not found
@@ -79,7 +116,7 @@ def extract_smiles_from_config(cfg: Dict[str, Any]) -> Tuple[List[str], str]:
         if isinstance(bio_kb_cfg, dict):
             smiles_list = bio_kb_cfg.get("smiles_list", [])
             if isinstance(smiles_list, list) and smiles_list:
-                return [str(s).strip() for s in smiles_list if s], "config"
+                return _normalize_smiles_list(smiles_list), "config"
     except Exception:
         pass
     
@@ -113,7 +150,7 @@ def extract_smiles_from_h5(h5_path: str) -> Tuple[List[str], str]:
                         if col in df.columns:
                             smiles.extend(df[col].dropna().unique().tolist())
                             if smiles:
-                                return [str(s).strip() for s in smiles if s], f"h5_pandas:{key}"
+                                return _normalize_smiles_list(smiles), f"h5_pandas:{key}"
                 except Exception:
                     continue
     except Exception:
@@ -130,7 +167,7 @@ def extract_smiles_from_h5(h5_path: str) -> Tuple[List[str], str]:
                         try:
                             data = obj[:]
                             if data.dtype.kind in ['S', 'O', 'U']:  # string types
-                                smiles.extend([str(s).strip() for s in data if s])
+                                smiles.extend(_normalize_smiles_list(list(data)))
                         except Exception:
                             pass
             
@@ -208,7 +245,11 @@ def _sample_smiles_batch_aware(
     log(f"[BIOKB] 🧪 Detected {num_plates} batches/plates")
     
     # Analyze cross-batch SMILES
-    smiles_by_plate = df.groupby(plate_field)[smiles_field].apply(lambda x: set(x.dropna())).to_dict()
+    smiles_by_plate = df.groupby(plate_field)[smiles_field].apply(
+        lambda x: {
+            norm for norm in (_normalize_smiles_value(v) for v in x.dropna()) if norm
+        }
+    ).to_dict()
     
     smiles_counter = Counter()
     for plate, smiles_set in smiles_by_plate.items():
@@ -297,7 +338,8 @@ def _sample_smiles_simple(
 ) -> Tuple[List[str], Dict]:
     """Simple sampling without batch information"""
     max_total = config.max_total_smiles or len(unique_smiles)
-    sampled = list(unique_smiles)[:max_total]
+    sampled = [_normalize_smiles_value(s) for s in list(unique_smiles)]
+    sampled = [s for s in sampled if s][:max_total]
     
     metadata["sampling_info"] = {
         "method": "simple",
@@ -333,7 +375,7 @@ def _try_h5py_fallback(
                         try:
                             data = obj[:]
                             if data.dtype.kind in ['S', 'O', 'U']:  # string types
-                                smiles.extend([str(s).strip() for s in data if s])
+                                smiles.extend(_normalize_smiles_list(list(data)))
                         except Exception:
                             pass
             
@@ -450,7 +492,10 @@ def extract_smiles_from_h5_robust(
             
             smiles_field, _, _ = smiles_match
             smiles_series = df[smiles_field].dropna()
-            unique_smiles = smiles_series.unique()
+            normalized_smiles = [
+                _normalize_smiles_value(v) for v in smiles_series.tolist()
+            ]
+            unique_smiles = list(dict.fromkeys(s for s in normalized_smiles if s))
             
             metadata["unique_smiles"] = len(unique_smiles)
             metadata["smiles_field"] = smiles_field

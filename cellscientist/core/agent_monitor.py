@@ -23,6 +23,8 @@ Usage example::
 
 from __future__ import annotations
 
+import os
+
 import asyncio
 import functools
 import time
@@ -43,9 +45,10 @@ def _log(msg: str, *, console: bool = False) -> None:
         console: If ``True`` uses ``[CELL_CONSOLE]`` prefix so the message
             appears in the console output; otherwise uses ``[DETAIL]``.
     """
+    summary_only = str(os.environ.get("CELL_SUMMARY_ONLY", "0")).lower() in {"1", "true", "yes"}
     if console:
         print(f"[CELL_CONSOLE] {msg}", flush=True)
-    else:
+    elif not summary_only:
         print(f"[DETAIL] {msg}", flush=True)
 
 
