@@ -906,6 +906,88 @@ class PipelineOrchestrator:
             f"success_count={experiment_success_count}/{total_iterations}",
             console=True,
         )
+
+        robustness_metrics = summary.get("robustness_metrics") or {}
+        resource_cost_metrics = summary.get("resource_cost_metrics") or {}
+        scientific_interpretability_metrics = summary.get("scientific_interpretability_metrics") or {}
+
+        _log("[Metrics][7.2] System Execution Robustness", console=True)
+        _log(
+            f"├─ notebook_execution_success_rate={float(robustness_metrics.get('notebook_execution_success_rate', 0.0)):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ cell_fix_success_rate={float(robustness_metrics.get('cell_fix_success_rate', 0.0)):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ avg_fix_rounds={float(robustness_metrics.get('avg_fix_rounds', 0.0)):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ crash_recovery_ratio={float(robustness_metrics.get('crash_recovery_ratio', 0.0)):.4f}",
+            console=True,
+        )
+        _log(
+            f"└─ validity_rate={float(robustness_metrics.get('validity_rate', 0.0)):.4f}",
+            console=True,
+        )
+
+        _log("[Metrics][7.3] Resource & Cost", console=True)
+        _log(f"├─ prompt_tokens={int(resource_cost_metrics.get('prompt_tokens', 0) or 0)}", console=True)
+        _log(f"├─ completion_tokens={int(resource_cost_metrics.get('completion_tokens', 0) or 0)}", console=True)
+        _log(f"├─ total_tokens={int(resource_cost_metrics.get('total_tokens', 0) or 0)}", console=True)
+        _log(
+            f"├─ total_llm_latency_sec={float(resource_cost_metrics.get('total_llm_latency_sec', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ avg_prompt_tokens={float(resource_cost_metrics.get('avg_prompt_tokens', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ avg_completion_tokens={float(resource_cost_metrics.get('avg_completion_tokens', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ avg_llm_latency_sec={float(resource_cost_metrics.get('avg_llm_latency_sec', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ wall_clock_to_threshold_sec={resource_cost_metrics.get('wall_clock_to_threshold_sec')}",
+            console=True,
+        )
+        _log(
+            f"└─ cost_to_success_ratio={resource_cost_metrics.get('cost_to_success_ratio')}",
+            console=True,
+        )
+
+        _log("[Metrics][7.4] Scientific Interpretability", console=True)
+        _log(
+            f"├─ evidence_chain_completeness={float(scientific_interpretability_metrics.get('evidence_chain_completeness', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ external_knowledge_coverage={float(scientific_interpretability_metrics.get('external_knowledge_coverage', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ bioprocess_mapping_consistency={float(scientific_interpretability_metrics.get('bioprocess_mapping_consistency', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ expert_mechanism_score={scientific_interpretability_metrics.get('expert_mechanism_score')}",
+            console=True,
+        )
+        _log(
+            f"├─ task_graph_evolution_stability={float(scientific_interpretability_metrics.get('task_graph_evolution_stability', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"└─ unique_evidence_ids={len(scientific_interpretability_metrics.get('unique_evidence_ids') or [])}",
+            console=True,
+        )
+
         return summary
 
     # ------------------------------------------------------------------
