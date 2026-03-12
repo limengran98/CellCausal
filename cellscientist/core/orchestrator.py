@@ -851,6 +851,19 @@ class PipelineOrchestrator:
             prev_set = cur_set
         task_graph_evolution_stability = (sum(j_scores) / float(len(j_scores))) if j_scores else 0.0
 
+        downstream_task_performance_metrics = {
+            "MSE": self.last_accepted_metrics.get("MSE"),
+            "PCC": self.last_accepted_metrics.get("PCC", best_accuracy),
+            "R2": self.last_accepted_metrics.get("R2"),
+            "DEG_RMSE_20": self.last_accepted_metrics.get("DEG_RMSE_20"),
+            "DEG_RMSE_50": self.last_accepted_metrics.get("DEG_RMSE_50"),
+            "DEG_PCC_20": self.last_accepted_metrics.get("DEG_PCC_20"),
+            "DEG_PCC_50": self.last_accepted_metrics.get("DEG_PCC_50"),
+            "MSE_DM": self.last_accepted_metrics.get("MSE_DM"),
+            "PCC_DM": self.last_accepted_metrics.get("PCC_DM"),
+            "R2_DM": self.last_accepted_metrics.get("R2_DM"),
+        }
+
         summary = {
             "status": status_final,
             "task_id": self.context.task_id,
@@ -866,6 +879,7 @@ class PipelineOrchestrator:
             "best_artifacts_path": self.best_artifacts_path,
             "experiment_success_count": experiment_success_count,
             "max_iterations_reached": data_final.get("max_iterations_reached", False),
+            "downstream_task_performance_metrics": downstream_task_performance_metrics,
             "robustness_metrics": {
                 "notebook_execution_success_rate": (nb_success_n / float(nb_total_n)) if nb_total_n > 0 else 0.0,
                 "cell_fix_success_rate": (autofix_success / float(autofix_attempted)) if autofix_attempted > 0 else 0.0,
@@ -910,6 +924,19 @@ class PipelineOrchestrator:
         robustness_metrics = summary.get("robustness_metrics") or {}
         resource_cost_metrics = summary.get("resource_cost_metrics") or {}
         scientific_interpretability_metrics = summary.get("scientific_interpretability_metrics") or {}
+        downstream_task_performance_metrics = summary.get("downstream_task_performance_metrics") or {}
+
+        _log("[Metrics][7.1] Downstream Task Performance", console=True)
+        _log(f"├─ MSE={downstream_task_performance_metrics.get('MSE')}", console=True)
+        _log(f"├─ PCC={downstream_task_performance_metrics.get('PCC')}", console=True)
+        _log(f"├─ R2={downstream_task_performance_metrics.get('R2')}", console=True)
+        _log(f"├─ DEG_RMSE_20={downstream_task_performance_metrics.get('DEG_RMSE_20')}", console=True)
+        _log(f"├─ DEG_RMSE_50={downstream_task_performance_metrics.get('DEG_RMSE_50')}", console=True)
+        _log(f"├─ DEG_PCC_20={downstream_task_performance_metrics.get('DEG_PCC_20')}", console=True)
+        _log(f"├─ DEG_PCC_50={downstream_task_performance_metrics.get('DEG_PCC_50')}", console=True)
+        _log(f"├─ MSE_DM={downstream_task_performance_metrics.get('MSE_DM')}", console=True)
+        _log(f"├─ PCC_DM={downstream_task_performance_metrics.get('PCC_DM')}", console=True)
+        _log(f"└─ R2_DM={downstream_task_performance_metrics.get('R2_DM')}", console=True)
 
         _log("[Metrics][7.2] System Execution Robustness", console=True)
         _log(
