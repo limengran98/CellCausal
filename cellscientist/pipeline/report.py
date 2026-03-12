@@ -633,6 +633,9 @@ def generate_report_from_orchestrator(
         metric_name = result.get("metric", "PCC")
         success_rate = (success_count / total_iterations * 100) if total_iterations > 0 else 0.0
         transitions = result.get("fsm_transitions", [])
+        robustness = result.get("robustness_metrics") or {}
+        cost_metrics = result.get("resource_cost_metrics") or {}
+        interp_metrics = result.get("scientific_interpretability_metrics") or {}
         ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
 
         lines = [
@@ -666,6 +669,39 @@ def generate_report_from_orchestrator(
             )
 
         lines += [
+            "",
+            "## 7.2 系统执行鲁棒性指标",
+            "",
+            "| Metric | Value |",
+            "|---|---|",
+            f"| Notebook 执行成功率 | `{float(robustness.get('notebook_execution_success_rate', 0.0)):.4f}` |",
+            f"| Cell 级修复成功率 | `{float(robustness.get('cell_fix_success_rate', 0.0)):.4f}` |",
+            f"| 平均修复轮次 | `{float(robustness.get('avg_fix_rounds', 0.0)):.4f}` |",
+            f"| 崩溃后可恢复比例 | `{float(robustness.get('crash_recovery_ratio', 0.0)):.4f}` |",
+            f"| 有效 trial 占比 (validity rate) | `{float(robustness.get('validity_rate', 0.0)):.4f}` |",
+            "",
+            "## 7.3 资源与成本指标",
+            "",
+            "| Metric | Value |",
+            "|---|---|",
+            f"| prompt tokens | `{int(cost_metrics.get('prompt_tokens', 0) or 0)}` |",
+            f"| completion tokens | `{int(cost_metrics.get('completion_tokens', 0) or 0)}` |",
+            f"| total token cost | `{int(cost_metrics.get('total_tokens', 0) or 0)}` |",
+            f"| LLM latency (sec) | `{float(cost_metrics.get('total_llm_latency_sec', 0.0) or 0.0):.4f}` |",
+            f"| avg prompt tokens | `{float(cost_metrics.get('avg_prompt_tokens', 0.0) or 0.0):.4f}` |",
+            f"| avg completion tokens | `{float(cost_metrics.get('avg_completion_tokens', 0.0) or 0.0):.4f}` |",
+            f"| avg LLM latency (sec) | `{float(cost_metrics.get('avg_llm_latency_sec', 0.0) or 0.0):.4f}` |",
+            f"| cost-to-success ratio | `{cost_metrics.get('cost_to_success_ratio')}` |",
+            "",
+            "## 7.4 科学可解释性指标",
+            "",
+            "| Metric | Value |",
+            "|---|---|",
+            f"| 证据链完整度 | `{float(interp_metrics.get('evidence_chain_completeness', 0.0) or 0.0):.4f}` |",
+            f"| 外部知识引用覆盖率 | `{float(interp_metrics.get('external_knowledge_coverage', 0.0) or 0.0):.4f}` |",
+            f"| 生物过程映射一致性 | `{float(interp_metrics.get('bioprocess_mapping_consistency', 0.0) or 0.0):.4f}` |",
+            f"| 机制解释专家评分 | `{interp_metrics.get('expert_mechanism_score')}` |",
+            f"| 任务图演化稳定性 | `{float(interp_metrics.get('task_graph_evolution_stability', 0.0) or 0.0):.4f}` |",
             "",
             "## Configuration",
             "",
