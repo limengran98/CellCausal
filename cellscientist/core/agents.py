@@ -1041,6 +1041,7 @@ class ModelingAgent(BaseAgent):
         mechanism_context: str,
         falsifiable_context: str,
         technical_feedback: str,
+        current_metrics: Optional[Dict[str, Any]],
         sci_rules: Dict[str, Any],
         previous_logs: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, str]:
@@ -1092,6 +1093,15 @@ class ModelingAgent(BaseAgent):
                 f"stderr tail: {prev_stderr[-1000:]}"
             )
 
+        metric_profile = self._build_metric_failure_profile(current_metrics or {})
+        if metric_profile:
+            sections.append(
+                "## METRIC-DRIVEN CAUSAL DESIGN BRIEF\n"
+                "Convert observed metric failures to explicit architectural interventions and "
+                "explain why each intervention should improve the targeted metric.\n"
+                f"{metric_profile}"
+            )
+
         if technical_feedback:
             sections.append(
                 "## EVALUATION AGENT FEEDBACK\n"
@@ -1106,6 +1116,59 @@ class ModelingAgent(BaseAgent):
             "context_dump": "\n\n".join(section for section in sections if section),
         }
 
+    @staticmethod
+    def _safe_float(value: Any) -> Optional[float]:
+        """Convert metric values to float when possible."""
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _build_metric_failure_profile(self, metrics: Dict[str, Any]) -> str:
+        """Build a compact metric-to-intervention brief for causal model redesign.
+
+        This converts observed metric failures into concrete, testable modeling
+        interventions so model iterations are mechanism-driven rather than
+        generic prompt rewrites.
+        """
+        if not metrics:
+            return ""
+
+        pcc = self._safe_float(metrics.get("PCC"))
+        mse = self._safe_float(metrics.get("MSE"))
+        r2 = self._safe_float(metrics.get("R2"))
+        deg_pcc_20 = self._safe_float(metrics.get("DEG_PCC_20"))
+        deg_rmse_20 = self._safe_float(metrics.get("DEG_RMSE_20"))
+
+        bullets: List[str] = []
+
+        if pcc is not None and pcc < 0.35:
+            bullets.append(
+                "- Low PCC indicates ranking inconsistency across perturbations; "
+                "prioritize representation alignment and rank-aware objectives (e.g., PCC-aware auxiliary loss)."
+            )
+        if r2 is not None and r2 < 0.15:
+            bullets.append(
+                "- Low R2 suggests weak variance capture; add residual calibration head and stronger regularization on feature fusion blocks."
+            )
+        if deg_pcc_20 is not None and deg_pcc_20 < 0.40:
+            bullets.append(
+                "- Low DEG_PCC_20 means top differential genes are not preserved; apply DEG-focused reweighting and pathway-aware supervision."
+            )
+        if deg_rmse_20 is not None and deg_rmse_20 > 4.0:
+            bullets.append(
+                "- High DEG_RMSE_20 indicates unstable tail errors; use robust loss shaping and tail-aware minibatch sampling."
+            )
+        if mse is not None and pcc is not None and mse < 3.5 and pcc < 0.35:
+            bullets.append(
+                "- MSE is acceptable while PCC remains weak: likely scale-fit without ordering-fit; introduce correlation term and post-hoc monotonic calibration."
+            )
+
+        if not bullets:
+            return "- Metrics are near-consistent; keep the winning mechanism and only perform minimal, falsifiable edits."
+
+        return "\n".join(bullets)
+
     async def _generate_legacy_notebook_artifact(
         self,
         *,
@@ -1114,6 +1177,7 @@ class ModelingAgent(BaseAgent):
         mechanism_context: str,
         falsifiable_context: str,
         technical_feedback: str,
+        current_metrics: Dict[str, Any],
         sci_rules: Dict[str, Any],
         iteration: int,
         task_id: str,
@@ -1139,6 +1203,7 @@ class ModelingAgent(BaseAgent):
             mechanism_context=mechanism_context,
             falsifiable_context=falsifiable_context,
             technical_feedback=technical_feedback,
+            current_metrics=current_metrics or insight_report.get("current_metrics") or previous_logs.get("raw_metrics") or previous_logs.get("metrics") or {},
             sci_rules=sci_rules,
             previous_logs=previous_logs,
         )
@@ -1210,11 +1275,15 @@ class ModelingAgent(BaseAgent):
         mutable_indices = identify_mutable_cells(nb, self.config)
         _inject_llm_env(self.config)
 
+        metric_failure_profile = self._build_metric_failure_profile(current_metrics or {})
+
         task_graph_state = (
             "# AGENT MODE CONTEXT\n"
             f"best_metric_score: {best_metric_score}\n\n"
             "# MECHANISM CONTEXT\n"
             f"{mechanism_context or 'N/A'}\n\n"
+            "# METRIC-DRIVEN CAUSAL DESIGN BRIEF\n"
+            f"{metric_failure_profile or 'N/A'}\n\n"
             "# FALSIFIABLE CONTEXT\n"
             f"{falsifiable_context or 'N/A'}\n\n"
             "# EVALUATION FEEDBACK\n"
@@ -1399,6 +1468,7 @@ class ModelingAgent(BaseAgent):
                         mechanism_context=mechanism_context,
                         falsifiable_context=falsifiable_context,
                         technical_feedback=technical_feedback,
+                        current_metrics=current_metrics,
                         sci_rules=sci_rules,
                         iteration=iteration,
                         task_id=task_id,
