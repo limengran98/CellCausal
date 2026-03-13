@@ -864,6 +864,30 @@ class ResearchAgent(BaseAgent):
                 "modeling_implication": "Prioritize robust baseline with conservative fusion and stable loss before adding complexity.",
             })
 
+        # Always inject the zero-dose causal law — an inviolable pharmacological
+        # first principle that MUST be present in the generated code as executable
+        # PyTorch logic, not only as a prompt description.
+        _zero_dose_chain: Dict[str, Any] = {
+            "domain_signal": "Drug dose causality law: zero dose → zero biological response",
+            "causal_hypothesis": (
+                "If a cell receives no drug (dose=0), the model output must equal the "
+                "unperturbed baseline (perturbation delta = 0), as required by the "
+                "fundamental causality law of pharmacology."
+            ),
+            "modeling_implication": (
+                "MANDATORY — implement dose-scaling in the forward pass: "
+                "``output = base_prediction * dose`` (or equivalent dose-gating) so that "
+                "dose=0 always produces zero perturbation output.  "
+                "Mark the implementation with the comment "
+                "'# CONSTRAINT: zero_dose_causal_law'.  "
+                "Verify with: "
+                "``assert torch.allclose(model(x, dose=0), torch.zeros_like(out), atol=1e-6)``."
+            ),
+            "constraint_type": "causal_law",
+        }
+        if not any(c.get("constraint_type") == "causal_law" for c in chains):
+            chains.append(_zero_dose_chain)
+
         # Deduplicate by triple fields and cap size.
         uniq = []
         seen = set()
@@ -1075,6 +1099,27 @@ class ModelingAgent(BaseAgent):
                 "Use the SMILES-derived weak supervision below as a semantic anchor, not as a perfect oracle.\n"
                 f"{mechanism_context}"
             )
+
+        # Always inject biological first-principles constraints as executable requirements.
+        # These must appear in the generated code as real PyTorch logic, not just comments.
+        sections.append(
+            "## BIOLOGICAL FIRST-PRINCIPLES CONSTRAINTS (MANDATORY — NOT OPTIONAL)\n"
+            "The following constraints MUST be implemented as executable PyTorch code.\n"
+            "They are inviolable causal laws.  Describing them in a comment is insufficient;\n"
+            "they must exist as actual tensor operations that enforce the invariant.\n\n"
+            "### Constraint 1 — Zero-Dose Causal Law (CRITICAL)\n"
+            "When drug dose = 0, the model output MUST be exactly zero (no perturbation).\n"
+            "Implementation: scale the final output by dose:\n"
+            "  ``output = base_prediction * dose``\n"
+            "or use an equivalent dose-gating mechanism.\n"
+            "Mark this line with the comment ``# CONSTRAINT: zero_dose_causal_law``.\n"
+            "Add a runtime assertion to make the invariant falsifiable:\n"
+            "  ``assert torch.allclose(model(x, dose=0), torch.zeros_like(out), atol=1e-6)``\n\n"
+            "### Constraint 2 — Mechanism Justification (ADVISORY)\n"
+            "For every major architectural or loss decision, add a comment block:\n"
+            "  ``# MECHANISM JUSTIFICATION: <biological rationale>``\n"
+            "so that the causal chain from biology to code is auditable."
+        )
 
         if literature:
             sections.append(
@@ -1547,6 +1592,17 @@ class ModelingAgent(BaseAgent):
                 "Every architectural decision MUST have a biological justification.\n"
                 "Include a comment block '# MECHANISM JUSTIFICATION:' explaining the "
                 "biological rationale for each major modeling decision.\n"
+                "\n## BIOLOGICAL FIRST-PRINCIPLES CONSTRAINTS (MANDATORY — NOT OPTIONAL)\n"
+                "The following constraints MUST appear in the generated code as executable\n"
+                "PyTorch tensor operations.  Describing them only in a comment is NOT sufficient.\n\n"
+                "### Constraint 1 — Zero-Dose Causal Law (CRITICAL)\n"
+                "When drug dose = 0, model output MUST be exactly zero.\n"
+                "Implementation: ``output = base_prediction * dose``\n"
+                "Mark this line: ``# CONSTRAINT: zero_dose_causal_law``\n"
+                "Verify: ``assert torch.allclose(model(x, dose=0), torch.zeros_like(out), atol=1e-6)``\n\n"
+                "### Constraint 2 — Mechanism Justification (ADVISORY)\n"
+                "For every major architectural decision, add:\n"
+                "  ``# MECHANISM JUSTIFICATION: <biological rationale>``\n"
             )
             if mechanism_context:
                 _mechanism_constraint += (
@@ -2030,6 +2086,172 @@ _DEG_METRIC_PATTERNS: List[tuple] = [
 ]
 
 
+# =============================================================================
+# BiologicalConstraintVerifier
+# =============================================================================
+
+
+class BiologicalConstraintVerifier:
+    """Static analyzer that detects *Mechanistic Loss* in generated PyTorch code.
+
+    Current automated agent frameworks over-rely on "code executes" and
+    "metric improves" as the sole feedback signals.  This creates a fatal
+    blind spot: a model can execute successfully and even show a metric
+    improvement while silently *violating* biological first-principles
+    (Implementation Degradation / False Positive Alignment).
+
+    This verifier scans the generated Python/PyTorch source for patterns
+    that indicate whether key causal constraints are present as *executable*
+    logic rather than merely as passive comments or prompt text.
+
+    Two severity levels are distinguished:
+
+    * **critical** — inviolable causal laws that, if absent, indicate the
+      model is biologically unsound regardless of metric values.
+    * **advisory** — best-practice patterns that improve biological plausibility
+      but whose absence is not by itself a disqualifying failure.
+
+    Typical usage::
+
+        report = BiologicalConstraintVerifier.verify(generated_code)
+        if report["mechanistic_loss"]:
+            print(report["summary"])
+    """
+
+    #: Constraint definitions.  Each entry is a dict with keys:
+    #: ``name``, ``description``, ``patterns`` (list of regex strings),
+    #: and ``severity`` (``"critical"`` or ``"advisory"``).
+    CONSTRAINTS: List[Dict[str, Any]] = [
+        {
+            "name": "zero_dose_causal_law",
+            "description": (
+                "Zero drug dose must produce zero model output (pharmacological "
+                "causality law).  Implement as element-wise dose-scaling, e.g. "
+                "``output = prediction * dose``, or an equivalent dose-gating "
+                "mechanism, so that dose=0 always yields a zero perturbation delta."
+            ),
+            "patterns": [
+                r"\*\s*dose",                          # output * dose
+                r"dose\s*\*",                          # dose * output
+                r"\bx\b[^\n]{0,10}\*\s*dose",          # x * dose shorthand (single line)
+                r"dose_scal",                          # dose_scale / dose_scaling variable
+                r"dose_gate",                          # dose_gate variable
+                r"dose_mask",                          # dose_mask variable
+                r"dose_factor",                        # dose_factor variable
+                r"dose_weight",                        # dose_weight variable
+                r"\bif\b[^\n]{0,60}\bdose\b[^\n]{0,30}==\s*0",  # if dose == 0: ... (single line)
+                r"torch\.zeros_like[^;)\n]{0,80}dose", # torch.zeros_like(...dose...) (bounded)
+                r"#\s*CONSTRAINT\s*:\s*zero_?dose",    # explicit constraint comment
+                r"#\s*zero[_\s-]?dose",                # inline zero-dose comment
+                r"#\s*dose[_\s-]?zero",                # inline dose-zero comment
+            ],
+            "severity": "critical",
+        },
+        {
+            "name": "mechanism_justification_comment",
+            "description": (
+                "Generated code should contain a '# MECHANISM JUSTIFICATION:' or "
+                "'# CONSTRAINT:' comment block that explains the biological rationale "
+                "behind major modeling decisions, making the causal chain auditable."
+            ),
+            "patterns": [
+                r"#\s*MECHANISM\s+JUSTIFICATION",
+                r"#\s*CONSTRAINT\s*:",
+                r"#\s*BIOLOGICAL\s+CONSTRAINT",
+                r"#\s*CAUSAL\s+LAW",
+                r"#\s*BIO(?:LOGICAL)?\s+PRIOR",
+            ],
+            "severity": "advisory",
+        },
+    ]
+
+    @classmethod
+    def verify(cls, code: str) -> Dict[str, Any]:
+        """Check *code* for biological constraint implementations.
+
+        Args:
+            code: Python source code produced by :class:`ModelingAgent`.
+
+        Returns:
+            Dict with the following keys:
+
+            * ``mechanistic_loss`` (bool): ``True`` if any *critical*
+              constraint is absent — indicating Implementation Degradation.
+            * ``results`` (list[dict]): Per-constraint outcomes with keys
+              ``name``, ``severity``, ``found``, and ``description``.
+            * ``missing_critical`` (list[str]): Names of absent critical
+              constraints.
+            * ``missing_advisory`` (list[str]): Names of absent advisory
+              constraints.
+            * ``summary`` (str): Human-readable summary suitable for
+              injecting into the :class:`EvaluationAgent` feedback loop.
+        """
+        if not code or not code.strip():
+            return {
+                "mechanistic_loss": False,
+                "results": [],
+                "missing_critical": [],
+                "missing_advisory": [],
+                "summary": "No code provided; skipping biological constraint verification.",
+            }
+
+        results: List[Dict[str, Any]] = []
+        missing_critical: List[str] = []
+        missing_advisory: List[str] = []
+
+        for constraint in cls.CONSTRAINTS:
+            name: str = constraint["name"]
+            description: str = constraint["description"]
+            patterns: List[str] = constraint["patterns"]
+            severity: str = constraint["severity"]
+            found = any(
+                re.search(pat, code, re.IGNORECASE | re.MULTILINE)
+                for pat in patterns
+            )
+            results.append(
+                {
+                    "name": name,
+                    "severity": severity,
+                    "found": found,
+                    "description": description,
+                }
+            )
+            if not found:
+                if severity == "critical":
+                    missing_critical.append(name)
+                else:
+                    missing_advisory.append(name)
+
+        mechanistic_loss = len(missing_critical) > 0
+
+        summary_parts: List[str] = []
+        if missing_critical:
+            summary_parts.append(
+                "⚠️ MECHANISTIC LOSS DETECTED — critical biological constraints absent: "
+                + ", ".join(missing_critical)
+                + ". These are inviolable causal laws that MUST be implemented as "
+                "executable PyTorch code, not just described in comments."
+            )
+        if missing_advisory:
+            summary_parts.append(
+                "Advisory constraints not found: "
+                + ", ".join(missing_advisory)
+                + ". Consider adding them for biological plausibility."
+            )
+        if not missing_critical and not missing_advisory:
+            summary_parts.append("✅ All biological constraints verified in generated code.")
+        elif not missing_critical:
+            summary_parts.append("✅ All critical biological constraints verified.")
+
+        return {
+            "mechanistic_loss": mechanistic_loss,
+            "results": results,
+            "missing_critical": missing_critical,
+            "missing_advisory": missing_advisory,
+            "summary": " ".join(summary_parts),
+        }
+
+
 class EvaluationAgent(BaseAgent):
     """Evaluates execution results and decides whether to iterate.
 
@@ -2255,6 +2477,16 @@ class EvaluationAgent(BaseAgent):
         # Convenience alias kept for orchestrator's best-accuracy tracking.
         accuracy: Optional[float] = primary_value
 
+        # ---- Biological Constraint Verification (Mechanistic Loss Detection) ----
+        # Check if the generated code actually implements biological first-principles
+        # as executable logic, not just as prompt descriptions.  A metric improvement
+        # achieved by code that violates biological constraints is a False Positive.
+        constraint_report = BiologicalConstraintVerifier.verify(code)
+        _log(
+            f"├─ Biological constraints: {constraint_report['summary']}",
+            console=True,
+        )
+
         # Goal achieved → SUCCESS.
         if self._goal_met(all_metrics, target_metric, pass_threshold, direction):
             _log(
@@ -2295,9 +2527,11 @@ class EvaluationAgent(BaseAgent):
             feedback_package = await self._generate_feedback_package(
                 stdout, stderr, tb, code, all_metrics, target_metric,
                 pass_threshold, direction,
+                constraint_report=constraint_report,
             )
             feedback_package["metric_delta"] = metric_delta
             feedback_package["metric_trend"] = metric_trend
+            feedback_package["constraint_report"] = constraint_report
             return AgentResponse(
                 status="needs_iteration",
                 data={
@@ -2328,9 +2562,11 @@ class EvaluationAgent(BaseAgent):
         feedback_package = await self._generate_feedback_package(
             stdout, stderr, tb, code, all_metrics, target_metric,
             pass_threshold, direction,
+            constraint_report=constraint_report,
         )
         feedback_package["metric_delta"] = metric_delta
         feedback_package["metric_trend"] = metric_trend
+        feedback_package["constraint_report"] = constraint_report
         suggested_target = feedback_package.get("suggested_target", "modeling")
         _log(f"├─ Verdict: REFINE (target={suggested_target})", console=True)
         return AgentResponse(
@@ -2372,6 +2608,8 @@ class EvaluationAgent(BaseAgent):
         target_metric: str,
         pass_threshold: float,
         direction: str,
+        *,
+        constraint_report: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Use the LLM to produce a structured feedback package.
 
@@ -2380,6 +2618,11 @@ class EvaluationAgent(BaseAgent):
         * ``technical_feedback`` — actionable guidance for :class:`ModelingAgent`
         * ``knowledge_gap`` — search topic for :class:`ResearchAgent`
         * ``suggested_target`` — ``"modeling"`` or ``"research"``
+
+        When *constraint_report* indicates Mechanistic Loss, the biological
+        constraint violations are prepended to ``technical_feedback`` so that
+        the :class:`ModelingAgent` is explicitly directed to fix them in the
+        next iteration.
 
         Falls back to a heuristic package if the LLM call fails.
 
@@ -2392,6 +2635,10 @@ class EvaluationAgent(BaseAgent):
             target_metric: Primary metric name (e.g. ``"PCC"``).
             pass_threshold: Numeric success threshold.
             direction: ``"maximize"`` or ``"minimize"``.
+            constraint_report: Optional output from
+                :meth:`BiologicalConstraintVerifier.verify`.  When provided
+                and ``mechanistic_loss`` is ``True``, the violation summary is
+                prepended to the returned ``technical_feedback``.
 
         Returns:
             Dict with ``technical_feedback``, ``knowledge_gap``, and
@@ -2403,6 +2650,31 @@ class EvaluationAgent(BaseAgent):
             f"  {k}: {v:.4f}" if v is not None else f"  {k}: N/A"
             for k, v in all_metrics.items()
         )
+
+        # Build a constraint-violation preamble to inject into feedback when
+        # Mechanistic Loss is detected.  The guidance lines are generated
+        # dynamically from the CONSTRAINTS definitions so that new constraints
+        # are automatically covered without manual updates.
+        constraint_preamble = ""
+        if constraint_report and constraint_report.get("mechanistic_loss"):
+            missing_critical: List[str] = constraint_report.get("missing_critical") or []
+            if missing_critical:
+                missing_str = ", ".join(missing_critical)
+                # Build per-constraint guidance from the class-level definitions.
+                constraint_guidance_lines: List[str] = []
+                constraint_lookup = {c["name"]: c for c in BiologicalConstraintVerifier.CONSTRAINTS}
+                for name in missing_critical:
+                    desc = constraint_lookup.get(name, {}).get("description", name)
+                    constraint_guidance_lines.append(f"  • {name}: {desc}")
+                guidance_block = "\n".join(constraint_guidance_lines)
+                constraint_preamble = (
+                    f"\n\n⚠️ MECHANISTIC LOSS DETECTED — the following critical biological "
+                    f"constraints are ABSENT from the generated code: {missing_str}.\n"
+                    "These are inviolable causal laws that MUST be implemented as executable "
+                    "PyTorch tensor operations in the next iteration:\n"
+                    + guidance_block + "\n"
+                )
+
         try:
             from .llm_client import chat_json, resolve_llm_config  # type: ignore
 
@@ -2422,6 +2694,13 @@ class EvaluationAgent(BaseAgent):
                 "- suggested_target (str): Either 'modeling' (code changes priority) or "
                 "'research' (more biological knowledge needed first)."
             )
+            constraint_section = ""
+            if constraint_report and constraint_report.get("mechanistic_loss"):
+                constraint_section = (
+                    f"\n\n### Biological Constraint Violations\n"
+                    f"{constraint_report['summary']}\n"
+                    "Fix these FIRST before any metric optimisation."
+                )
             user_content = (
                 f"## Metric Suite Results\n"
                 f"Primary metric: {target_metric} = {primary_str} "
@@ -2430,6 +2709,7 @@ class EvaluationAgent(BaseAgent):
                 f"### stdout (last 500 chars)\n{stdout[-500:]}\n\n"
                 f"### stderr / traceback (last 500 chars)\n{(tb or stderr)[-500:]}\n\n"
                 f"### Code snippet (first 300 chars)\n{code[:300]}"
+                + constraint_section
             )
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -2439,8 +2719,11 @@ class EvaluationAgent(BaseAgent):
                 None,
                 lambda: chat_json(messages, llm_config=llm_cfg, temperature=0.3),
             )
+            technical_feedback = str(result.get("technical_feedback") or "")
+            if constraint_preamble:
+                technical_feedback = constraint_preamble.strip() + "\n\n" + technical_feedback
             return {
-                "technical_feedback": str(result.get("technical_feedback") or ""),
+                "technical_feedback": technical_feedback,
                 "knowledge_gap": str(result.get("knowledge_gap") or ""),
                 "suggested_target": str(result.get("suggested_target") or "modeling"),
             }
@@ -2451,20 +2734,24 @@ class EvaluationAgent(BaseAgent):
             )
             # Heuristic fallback: prefer code fix if there's an error, else research.
             if tb or stderr:
+                feedback = f"Fix the execution error: {(tb or stderr)[:300]}"
+                if constraint_preamble:
+                    feedback = constraint_preamble.strip() + "\n\n" + feedback
                 return {
-                    "technical_feedback": (
-                        f"Fix the execution error: {(tb or stderr)[:300]}"
-                    ),
+                    "technical_feedback": feedback,
                     "knowledge_gap": "",
                     "suggested_target": "modeling",
                 }
+            base_feedback = (
+                f"Current {target_metric} ({primary_str}) is below the "
+                f"{direction} threshold of {pass_threshold}. "
+                "Review the Hypergraph Node architecture (Node A: Backbone, "
+                "Node B: Fusion, Node C: Loss) and ensure DEG metrics improve."
+            )
+            if constraint_preamble:
+                base_feedback = constraint_preamble.strip() + "\n\n" + base_feedback
             return {
-                "technical_feedback": (
-                    f"Current {target_metric} ({primary_str}) is below the "
-                    f"{direction} threshold of {pass_threshold}. "
-                    "Review the Hypergraph Node architecture (Node A: Backbone, "
-                    "Node B: Fusion, Node C: Loss) and ensure DEG metrics improve."
-                ),
+                "technical_feedback": base_feedback,
                 "knowledge_gap": (
                     "Retrieve SOTA papers on GNN models for cell perturbation "
                     "response prediction, focusing on DEG high-variance gene modeling"

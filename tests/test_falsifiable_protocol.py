@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from cellscientist.core.orchestrator import PipelineOrchestrator, PipelineState
 from cellscientist.core.agents import (
     AgentResponse,
+    BiologicalConstraintVerifier,
     EvaluationAgent,
     ExecutionAgent,
     ModelingAgent,
@@ -215,6 +216,173 @@ class TestModelingAgentMechanismPrior:
         assert "ADH1" in result
         assert "Ethanol metabolism" in result
         assert "Substrate for ADH" in result
+
+
+# =============================================================================
+# BiologicalConstraintVerifier — Mechanistic Loss Detection
+# =============================================================================
+
+
+class TestBiologicalConstraintVerifier:
+    """Tests for BiologicalConstraintVerifier.verify."""
+
+    # --- zero_dose_causal_law constraint ---
+
+    def test_empty_code_no_mechanistic_loss(self):
+        """Empty code should not trigger mechanistic loss."""
+        report = BiologicalConstraintVerifier.verify("")
+        assert report["mechanistic_loss"] is False
+        assert report["missing_critical"] == []
+        assert report["missing_advisory"] == []
+
+    def test_code_with_dose_multiply_passes_zero_dose(self):
+        """Code that multiplies output by dose satisfies the zero-dose constraint."""
+        code = "output = base_prediction * dose  # CONSTRAINT: zero_dose_causal_law"
+        report = BiologicalConstraintVerifier.verify(code)
+        assert "zero_dose_causal_law" not in report["missing_critical"]
+
+    def test_code_with_dose_gate_variable_passes_zero_dose(self):
+        """Code that uses a dose_gate variable satisfies the zero-dose constraint."""
+        code = "dose_gate = torch.sigmoid(dose_embedding)\nout = prediction * dose_gate"
+        report = BiologicalConstraintVerifier.verify(code)
+        assert "zero_dose_causal_law" not in report["missing_critical"]
+
+    def test_code_with_dose_scale_variable_passes_zero_dose(self):
+        """Code that uses a dose_scale variable satisfies the zero-dose constraint."""
+        code = "dose_scale = dose.unsqueeze(-1)\noutput = hidden * dose_scale"
+        report = BiologicalConstraintVerifier.verify(code)
+        assert "zero_dose_causal_law" not in report["missing_critical"]
+
+    def test_code_without_dose_scaling_triggers_mechanistic_loss(self):
+        """Code with no dose scaling fails the zero-dose constraint."""
+        code = (
+            "import torch\n"
+            "class MyModel(torch.nn.Module):\n"
+            "    def forward(self, x):\n"
+            "        return self.fc(x)\n"
+        )
+        report = BiologicalConstraintVerifier.verify(code)
+        assert report["mechanistic_loss"] is True
+        assert "zero_dose_causal_law" in report["missing_critical"]
+
+    def test_code_with_zero_dose_comment_passes(self):
+        """Explicit zero-dose constraint comment is detected."""
+        code = (
+            "# CONSTRAINT: zero_dose_causal_law\n"
+            "output = prediction * dose\n"
+        )
+        report = BiologicalConstraintVerifier.verify(code)
+        assert "zero_dose_causal_law" not in report["missing_critical"]
+
+    def test_mechanistic_loss_flag_set_when_critical_missing(self):
+        """mechanistic_loss is True only when a critical constraint is missing."""
+        code_without_dose = "output = self.fc(x)"
+        report = BiologicalConstraintVerifier.verify(code_without_dose)
+        assert report["mechanistic_loss"] is True
+
+        code_with_dose = "output = self.fc(x) * dose"
+        report2 = BiologicalConstraintVerifier.verify(code_with_dose)
+        assert report2["mechanistic_loss"] is False
+
+    def test_summary_contains_mechanistic_loss_message_on_failure(self):
+        """Summary should mention MECHANISTIC LOSS when constraints are absent."""
+        report = BiologicalConstraintVerifier.verify("x = 1 + 1")
+        assert "MECHANISTIC LOSS" in report["summary"]
+        assert "zero_dose_causal_law" in report["summary"]
+
+    def test_summary_all_verified_when_all_found(self):
+        """Summary should report all-clear when all constraints are satisfied."""
+        code = (
+            "output = prediction * dose  # CONSTRAINT: zero_dose_causal_law\n"
+            "# MECHANISM JUSTIFICATION: dose=0 → zero perturbation delta\n"
+        )
+        report = BiologicalConstraintVerifier.verify(code)
+        assert report["mechanistic_loss"] is False
+        assert "✅" in report["summary"]
+
+    # --- mechanism_justification_comment constraint (advisory) ---
+
+    def test_advisory_constraint_not_in_missing_critical(self):
+        """Advisory constraints do not appear in missing_critical."""
+        code = "output = prediction * dose  # CONSTRAINT: zero_dose_causal_law"
+        report = BiologicalConstraintVerifier.verify(code)
+        assert "mechanism_justification_comment" not in report["missing_critical"]
+
+    def test_advisory_constraint_missing_not_mechanistic_loss(self):
+        """Missing advisory constraint alone does not trigger mechanistic_loss."""
+        code = "output = prediction * dose  # CONSTRAINT: zero_dose_causal_law"
+        report = BiologicalConstraintVerifier.verify(code)
+        # Advisory may be missing but critical is present → no mechanistic loss
+        assert report["mechanistic_loss"] is False
+
+    def test_mechanism_justification_comment_detected(self):
+        """MECHANISM JUSTIFICATION comment is detected."""
+        code = (
+            "output = prediction * dose\n"
+            "# MECHANISM JUSTIFICATION: dose=0 implies unperturbed state\n"
+        )
+        report = BiologicalConstraintVerifier.verify(code)
+        assert "mechanism_justification_comment" not in report["missing_advisory"]
+
+    # --- Results structure ---
+
+    def test_results_list_has_all_constraints(self):
+        """Results list should have one entry per defined constraint."""
+        report = BiologicalConstraintVerifier.verify("x = 1")
+        constraint_names = {r["name"] for r in report["results"]}
+        defined_names = {c["name"] for c in BiologicalConstraintVerifier.CONSTRAINTS}
+        assert constraint_names == defined_names
+
+    def test_result_entry_has_required_keys(self):
+        """Each result entry must have name, severity, found, and description."""
+        report = BiologicalConstraintVerifier.verify("output = x * dose")
+        for entry in report["results"]:
+            assert "name" in entry
+            assert "severity" in entry
+            assert "found" in entry
+            assert "description" in entry
+
+
+# =============================================================================
+# ResearchAgent — Zero-Dose Causal Chain always injected
+# =============================================================================
+
+
+class TestResearchAgentZeroDoseChain:
+    """Tests that _derive_domain_model_causal_chains always injects the zero-dose law."""
+
+    def test_zero_dose_chain_always_present(self):
+        """Zero-dose causal law chain must appear even with no keywords."""
+        chains = ResearchAgent._derive_domain_model_causal_chains(
+            smiles_priors=[],
+            literature_md="some unrelated text",
+            knowledge_gap="",
+        )
+        has_causal_law = any(c.get("constraint_type") == "causal_law" for c in chains)
+        assert has_causal_law, "zero_dose causal_law chain must always be injected"
+
+    def test_zero_dose_chain_contains_mandatory_implementation_hint(self):
+        """The injected chain's modeling_implication must include 'dose' multiplication."""
+        chains = ResearchAgent._derive_domain_model_causal_chains(
+            smiles_priors=[],
+            literature_md="",
+            knowledge_gap="",
+        )
+        causal_law_chains = [c for c in chains if c.get("constraint_type") == "causal_law"]
+        assert causal_law_chains
+        implication = causal_law_chains[0].get("modeling_implication", "")
+        assert "dose" in implication.lower()
+        assert "CONSTRAINT" in implication
+
+    def test_zero_dose_chain_not_duplicated(self):
+        """Only one causal_law chain should appear even when called repeatedly."""
+        chains = ResearchAgent._derive_domain_model_causal_chains(
+            smiles_priors=[],
+            literature_md="dose non-linear magnitude",
+            knowledge_gap="dose",
+        )
+        causal_law_chains = [c for c in chains if c.get("constraint_type") == "causal_law"]
+        assert len(causal_law_chains) == 1
 
 
 # =============================================================================
