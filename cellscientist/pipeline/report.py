@@ -636,6 +636,8 @@ def generate_report_from_orchestrator(
         robustness = result.get("robustness_metrics") or {}
         cost_metrics = result.get("resource_cost_metrics") or {}
         interp_metrics = result.get("scientific_interpretability_metrics") or {}
+        downstream_metrics = result.get("downstream_task_performance_metrics") or {}
+        iter_hist = result.get("iteration_history") or []
         ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
 
         lines = [
@@ -670,7 +672,47 @@ def generate_report_from_orchestrator(
 
         lines += [
             "",
-            "## 7.2 系统执行鲁棒性指标",
+            "## 下游任务性能指标",
+            "",
+            "| Metric | Value |",
+            "|---|---|",
+            f"| MSE | `{downstream_metrics.get('MSE')}` |",
+            f"| PCC | `{downstream_metrics.get('PCC', best_accuracy)}` |",
+            f"| R2 | `{downstream_metrics.get('R2')}` |",
+            f"| DEG_RMSE_20 | `{downstream_metrics.get('DEG_RMSE_20')}` |",
+            f"| DEG_RMSE_50 | `{downstream_metrics.get('DEG_RMSE_50')}` |",
+            f"| DEG_PCC_20 | `{downstream_metrics.get('DEG_PCC_20')}` |",
+            f"| DEG_PCC_50 | `{downstream_metrics.get('DEG_PCC_50')}` |",
+            f"| MSE_DM | `{downstream_metrics.get('MSE_DM')}` |",
+            f"| PCC_DM | `{downstream_metrics.get('PCC_DM')}` |",
+            f"| R2_DM | `{downstream_metrics.get('R2_DM')}` |",
+            "",
+            "## 模型迭代审查进化线",
+            "",
+            "| Iter | Score(PCC) | Δ vs Prev | Review Signal |",
+            "|---|---:|---:|---|",
+        ]
+
+        prev_score = None
+        for item in iter_hist:
+            score = item.get("score")
+            try:
+                score_f = float(score) if score is not None else None
+            except (TypeError, ValueError):
+                score_f = None
+            delta = None if (prev_score is None or score_f is None) else (score_f - prev_score)
+            signal = "N/A"
+            if delta is not None:
+                signal = "improved" if delta > 0 else ("degraded" if delta < 0 else "flat")
+            lines.append(
+                f"| {item.get('iteration', '-') } | {'' if score_f is None else f'{score_f:.4f}'} | {'' if delta is None else f'{delta:+.4f}'} | {signal} |"
+            )
+            if score_f is not None:
+                prev_score = score_f
+
+        lines += [
+            "",
+            "## 系统执行鲁棒性指标",
             "",
             "| Metric | Value |",
             "|---|---|",
@@ -680,7 +722,7 @@ def generate_report_from_orchestrator(
             f"| 崩溃后可恢复比例 | `{float(robustness.get('crash_recovery_ratio', 0.0)):.4f}` |",
             f"| 有效 trial 占比 (validity rate) | `{float(robustness.get('validity_rate', 0.0)):.4f}` |",
             "",
-            "## 7.3 资源与成本指标",
+            "## 资源与成本指标",
             "",
             "| Metric | Value |",
             "|---|---|",
@@ -693,7 +735,7 @@ def generate_report_from_orchestrator(
             f"| avg LLM latency (sec) | `{float(cost_metrics.get('avg_llm_latency_sec', 0.0) or 0.0):.4f}` |",
             f"| cost-to-success ratio | `{cost_metrics.get('cost_to_success_ratio')}` |",
             "",
-            "## 7.4 科学可解释性指标",
+            "## 科学可解释性指标",
             "",
             "| Metric | Value |",
             "|---|---|",

@@ -926,7 +926,7 @@ class PipelineOrchestrator:
         scientific_interpretability_metrics = summary.get("scientific_interpretability_metrics") or {}
         downstream_task_performance_metrics = summary.get("downstream_task_performance_metrics") or {}
 
-        _log("[Metrics][7.1] Downstream Task Performance", console=True)
+        _log("[Metrics] Downstream Task Performance", console=True)
         _log(f"├─ MSE={downstream_task_performance_metrics.get('MSE')}", console=True)
         _log(f"├─ PCC={downstream_task_performance_metrics.get('PCC')}", console=True)
         _log(f"├─ R2={downstream_task_performance_metrics.get('R2')}", console=True)
@@ -938,7 +938,7 @@ class PipelineOrchestrator:
         _log(f"├─ PCC_DM={downstream_task_performance_metrics.get('PCC_DM')}", console=True)
         _log(f"└─ R2_DM={downstream_task_performance_metrics.get('R2_DM')}", console=True)
 
-        _log("[Metrics][7.2] System Execution Robustness", console=True)
+        _log("[Metrics] System Execution Robustness", console=True)
         _log(
             f"├─ notebook_execution_success_rate={float(robustness_metrics.get('notebook_execution_success_rate', 0.0)):.4f}",
             console=True,
@@ -960,7 +960,7 @@ class PipelineOrchestrator:
             console=True,
         )
 
-        _log("[Metrics][7.3] Resource & Cost", console=True)
+        _log("[Metrics] Resource & Cost", console=True)
         _log(f"├─ prompt_tokens={int(resource_cost_metrics.get('prompt_tokens', 0) or 0)}", console=True)
         _log(f"├─ completion_tokens={int(resource_cost_metrics.get('completion_tokens', 0) or 0)}", console=True)
         _log(f"├─ total_tokens={int(resource_cost_metrics.get('total_tokens', 0) or 0)}", console=True)
@@ -989,7 +989,7 @@ class PipelineOrchestrator:
             console=True,
         )
 
-        _log("[Metrics][7.4] Scientific Interpretability", console=True)
+        _log("[Metrics] Scientific Interpretability", console=True)
         _log(
             f"├─ evidence_chain_completeness={float(scientific_interpretability_metrics.get('evidence_chain_completeness', 0.0) or 0.0):.4f}",
             console=True,
@@ -1012,6 +1012,15 @@ class PipelineOrchestrator:
         )
         _log(
             f"└─ unique_evidence_ids={len(scientific_interpretability_metrics.get('unique_evidence_ids') or [])}",
+            console=True,
+        )
+
+        _log(
+            "[Summary] "
+            f"best_pcc={downstream_task_performance_metrics.get('PCC')} | "
+            f"success={experiment_success_count}/{total_iterations} | "
+            f"validity_rate={float(robustness_metrics.get('validity_rate', 0.0)):.4f} | "
+            f"tokens={int(resource_cost_metrics.get('total_tokens', 0) or 0)}",
             console=True,
         )
 
