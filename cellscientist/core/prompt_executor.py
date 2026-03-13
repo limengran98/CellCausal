@@ -1,7 +1,7 @@
 # design_execution/prompt_executor.py
 from __future__ import annotations
 from typing import List, Dict, Any, Tuple, Optional
-import os, json, re, hashlib, ast, shutil
+import os, json, re, hashlib, ast, shutil, threading, time
 import nbformat
 from nbclient import NotebookClient
 from nbclient.exceptions import CellExecutionError
@@ -145,6 +145,7 @@ class GraphExecutor(NotebookClient):
         checkpoint_each_cell: bool = True,
         snapshot_files: bool = True,
         snapshot_max_bytes: int = 200 * 1024 * 1024,
+        heartbeat_seconds: int = 120,
         **kwargs,
     ):
         super().__init__(nb, **kwargs)
@@ -158,10 +159,14 @@ class GraphExecutor(NotebookClient):
         self.checkpoint_each_cell = bool(checkpoint_each_cell)
         self.snapshot_files = bool(snapshot_files)
         self.snapshot_max_bytes = int(snapshot_max_bytes) if snapshot_max_bytes is not None else 0
+        self.heartbeat_seconds = max(15, int(heartbeat_seconds or 120))
 
         self.global_errors = []
         self._cell_fix_counts = {}  # (cell_idx, task_id) -> total patches attempted
         self._cell_last_error_sig = {}
+        self.autofix_attempted_cells = 0
+        self.autofix_success_cells = 0
+        self.execution_stats = {}
 
         self._ensure_artifact_dirs()
         self._file_manifest = self._scan_files() if self.snapshot_files else {}
@@ -201,32 +206,35 @@ class GraphExecutor(NotebookClient):
                 task_id = task_meta.get("id", f"Cell_{cell_idx}")
                 task_name = task_meta.get("name", "Unnamed")
                 
-                _log(f"├─ ⚙️  Execute: Cell {executed_cells + 1}/{total_cells} [{task_name}]", console=True)
+                _log(f"├─ ⚛ Execute: Cell {executed_cells + 1}/{total_cells} [{task_name}]", console=True)
 
                 try:
                     # Execute single cell using nbclient's low-level method
-                    self.execute_cell(cell, cell_idx)
-                    
+                    self._execute_cell_with_heartbeat(cell, cell_idx, task_name, executed_cells + 1, total_cells)
+
                     # If we are here, execution was successful
                     self._after_cell_success(cell_idx, task_id)
                     executed_cells += 1
                     cell_idx += 1 
                 
                 except CellExecutionError:
-                    _log(f"   ❌ Error in Cell {executed_cells + 1} ({task_name})", console=True)
+                    _log(f"├─ ❌ Error in Cell {executed_cells + 1} [{task_name}]", console=True)
                     self._after_cell_error(cell_idx, task_id)
                     
                     # Try to fix IN-PLACE
+                    self.autofix_attempted_cells += 1
                     fixed = self._attempt_node_fix(cell_idx, task_id)
                     autofix_used = True
+                    if fixed:
+                        self.autofix_success_cells += 1
                     
                     if fixed:
-                        _log(f"   🔧 Auto-fix applied → Retrying", console=True)
+                        _log(f"├─ 🔧 Auto-fix applied → retrying cell", console=True)
                         # We do NOT increment cell_idx, so the loop will re-execute the SAME cell index
                         # but with the new source code we just patched into self.nb
                         continue 
                     else:
-                        _log(f"   🛑 Auto-fix failed after {self.max_fix_rounds} rounds", console=True)
+                        _log(f"├─ 🛑 Auto-fix failed after {self.max_fix_rounds} rounds", console=True)
                         self.global_errors.append(f"Task {task_id} Failed.")
                         failed_cells += 1
                         # Stop execution here to preserve partial results or debug
@@ -239,9 +247,53 @@ class GraphExecutor(NotebookClient):
             # Print execution summary
             success_status = "✅ Success" if failed_cells == 0 else f"❌ Failed ({failed_cells} errors)"
             autofix_note = " (with autofix)" if autofix_used and failed_cells == 0 else " (no autofix)" if not autofix_used else ""
-            _log(f"└─ ⚙️  Execute: {executed_cells} cells → {success_status}{autofix_note}", console=True)
+            _log(f"└─ ⚛ Execute: {executed_cells} cells → {success_status}{autofix_note}", console=True)
+
+            fix_rounds = [int(v) for v in self._cell_fix_counts.values() if int(v) > 0]
+            self.execution_stats = {
+                "total_cells": int(total_cells),
+                "executed_cells": int(executed_cells),
+                "failed_cells": int(failed_cells),
+                "notebook_success": bool(failed_cells == 0),
+                "autofix_attempted_cells": int(self.autofix_attempted_cells),
+                "autofix_success_cells": int(self.autofix_success_cells),
+                "autofix_success_rate": float(self.autofix_success_cells / self.autofix_attempted_cells) if self.autofix_attempted_cells > 0 else None,
+                "avg_fix_rounds": float(sum(fix_rounds) / len(fix_rounds)) if fix_rounds else 0.0,
+                "max_fix_rounds_used": int(max(fix_rounds)) if fix_rounds else 0,
+                "unresolved_error_count": int(len(self.global_errors)),
+            }
 
         return self.nb
+
+    def _execute_cell_with_heartbeat(self, cell, cell_idx: int, task_name: str, display_idx: Optional[int] = None, total_cells: Optional[int] = None):
+        """Execute one notebook cell and emit periodic heartbeat logs while it runs."""
+        started_at = time.time()
+        stop_event = threading.Event()
+        display_idx = int(display_idx) if display_idx is not None else (int(cell_idx) + 1)
+        total_cells = int(total_cells) if total_cells is not None else max(display_idx, 1)
+
+        def _heartbeat_loop():
+            while not stop_event.wait(self.heartbeat_seconds):
+                elapsed = int(time.time() - started_at)
+                timeout_sec = int(getattr(self, "timeout", 0) or 0)
+                if timeout_sec > 0:
+                    _log(
+                        f"├─ ⏱️ Running: Cell {display_idx}/{total_cells} [{task_name}] | elapsed={elapsed}s | timeout={timeout_sec}s",
+                        console=True,
+                    )
+                else:
+                    _log(
+                        f"├─ ⏱️ Running: Cell {display_idx}/{total_cells} [{task_name}] | elapsed={elapsed}s",
+                        console=True,
+                    )
+
+        beat = threading.Thread(target=_heartbeat_loop, daemon=True)
+        beat.start()
+        try:
+            return self.execute_cell(cell, cell_idx)
+        finally:
+            stop_event.set()
+            beat.join(timeout=0.1)
 
     def _inject_setup_cells(self):
         """Inject setup code (Env vars, Guard) at the top."""
@@ -539,6 +591,7 @@ def run_notebook_with_autofix(
         snapshot_max_bytes=int(exec_cfg.get("snapshot_max_bytes", 200 * 1024 * 1024)),
         # nbclient args
         timeout=int(exec_cfg.get("timeout_seconds", 3600)),
+        heartbeat_seconds=int(exec_cfg.get("heartbeat_seconds", 120)),
         kernel_name="python3",
         allow_errors=False, # We handle errors manually
         resources={"metadata": {"path": workdir}}
@@ -546,6 +599,7 @@ def run_notebook_with_autofix(
     
     # Run
     _log(f"[EXEC] Starting Adaptive Graph Execution: {nb_path}", console=True)
+    framework_recovered = False
     try:
         final_nb = executor.execute_graph()
     except Exception as e:
@@ -559,6 +613,7 @@ def run_notebook_with_autofix(
         except Exception:
             pass
         final_nb = executor.nb
+        framework_recovered = True
 
     # Save Result
     out_path = nb_path.replace(".ipynb", "_exec.ipynb")
@@ -575,6 +630,25 @@ def run_notebook_with_autofix(
     else:
         _log(f"[EXEC] ✅ Execution completed successfully.", console=True)
         
+    # Attach execution-level robustness stats to metrics.json (existing or stub).
+    m_path = os.path.join(workdir, "metrics.json")
+    execution_stats = dict(getattr(executor, "execution_stats", {}) or {})
+    execution_stats["framework_recovered"] = bool(framework_recovered)
+    execution_stats["crash_recovered_ratio"] = 1.0 if framework_recovered else 0.0
+    try:
+        if os.path.exists(m_path):
+            with open(m_path, "r", encoding="utf-8") as f:
+                m_obj = json.load(f) if f.readable() else {}
+            if not isinstance(m_obj, dict):
+                m_obj = {}
+        else:
+            m_obj = {}
+        m_obj["execution_stats"] = execution_stats
+        with open(m_path, "w", encoding="utf-8") as f:
+            json.dump(m_obj, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
     # If notebook did not create metrics.json, write a stub so downstream stages don't silently show -999.
     m_path = os.path.join(workdir, "metrics.json")
     if not os.path.exists(m_path):
