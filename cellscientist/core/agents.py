@@ -2902,14 +2902,26 @@ class EvaluationAgent(BaseAgent):
         accuracy: Optional[float] = primary_value
 
         # ---- Biological Constraint Verification (Mechanistic Loss Detection) ----
-        # Check if the generated code actually implements biological first-principles
-        # as executable logic, not just as prompt descriptions.  A metric improvement
-        # achieved by code that violates biological constraints is a False Positive.
-        constraint_report = BiologicalConstraintVerifier.verify(code)
-        _log(
-            f"├─ Biological constraints: {constraint_report['summary']}",
-            console=True,
+        # Feature gate: disabled by default due to observed regression in online
+        # optimization performance. Keep the implementation for optional ablations.
+        verifier_enabled = bool(
+            (self.config.get("review") or {}).get("enable_biological_constraint_verifier", False)
         )
+        if verifier_enabled:
+            constraint_report = BiologicalConstraintVerifier.verify(code)
+            _log(
+                f"├─ Biological constraints: {constraint_report['summary']}",
+                console=True,
+            )
+        else:
+            constraint_report = {
+                "mechanistic_loss": False,
+                "missing_critical": [],
+                "missing_advisory": [],
+                "present": [],
+                "summary": "disabled (enable_biological_constraint_verifier=false)",
+            }
+            _log("├─ Biological constraints: disabled", console=True)
 
         # Goal achieved → SUCCESS.
         if self._goal_met(all_metrics, target_metric, pass_threshold, direction):
