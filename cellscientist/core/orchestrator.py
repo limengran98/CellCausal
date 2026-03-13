@@ -45,6 +45,7 @@ from .agents import (
     TaskContext,
 )
 from .message_bus import SimpleMessageBus
+from .llm_client import TokenMeter
 
 logger = logging.getLogger(__name__)
 
@@ -500,9 +501,11 @@ class PipelineOrchestrator:
         await self.bus.publish("biology_insights", initial_message)
 
         # Telemetry counters.
+        TokenMeter.get_and_reset()
         best_accuracy: float = 0.0
         experiment_success_count: int = 0
         total_iterations: int = 0
+        execution_stats_log: List[Dict[str, Any]] = []
 
         pipeline_timeout: float = float(
             (self.config.get("exec") or {}).get("timeout_seconds") or 7200
@@ -543,6 +546,10 @@ class PipelineOrchestrator:
                 data = (msg or {}).get("data") or {}
                 accuracy = data.get("accuracy")
                 decision = data.get("decision")
+                raw_metrics_obj = data.get("raw_metrics") if isinstance(data.get("raw_metrics"), dict) else {}
+                exec_stats = raw_metrics_obj.get("execution_stats") if isinstance(raw_metrics_obj, dict) else None
+                if isinstance(exec_stats, dict):
+                    execution_stats_log.append(dict(exec_stats))
                 total_iterations += 1
 
                 # Bug 1 fix: always increment self.context.iteration so that
@@ -807,6 +814,56 @@ class PipelineOrchestrator:
             console=True,
         )
 
+        # Extended telemetry / robustness / explainability metrics.
+        token_usage = TokenMeter.get_and_reset()
+        prompt_toks = int(token_usage.get("prompt_tokens", 0) or 0)
+        completion_toks = int(token_usage.get("completion_tokens", 0) or 0)
+        total_toks = int(token_usage.get("total_tokens", prompt_toks + completion_toks) or 0)
+        total_latency = float(token_usage.get("total_latency_sec", 0.0) or 0.0)
+        api_calls = int(token_usage.get("api_calls", 0) or 0)
+
+        nb_success_n = sum(1 for e in execution_stats_log if e.get("notebook_success") is True)
+        nb_total_n = len(execution_stats_log)
+        autofix_attempted = sum(int(e.get("autofix_attempted_cells", 0) or 0) for e in execution_stats_log)
+        autofix_success = sum(int(e.get("autofix_success_cells", 0) or 0) for e in execution_stats_log)
+        avg_fix_rounds_vals = [float(e.get("avg_fix_rounds", 0.0) or 0.0) for e in execution_stats_log if e.get("avg_fix_rounds") is not None]
+        crash_recovered_flags = [1 if e.get("framework_recovered") else 0 for e in execution_stats_log]
+        validity_rate = (sum(1 for h in self.iteration_history if h.get("score") is not None) / float(len(self.iteration_history))) if self.iteration_history else 0.0
+
+        all_tasks = []
+        for r in self.context.results:
+            ts = r.get("tasks") or []
+            if isinstance(ts, list):
+                all_tasks.extend([str(t) for t in ts if str(t).strip()])
+        unique_tasks = sorted(set(all_tasks))
+        evidence_chain_completeness = (sum(1 for r in self.context.results if isinstance(r.get("tasks"), list) and len(r.get("tasks") or []) > 0) / float(len(self.context.results))) if self.context.results else 0.0
+        external_knowledge_coverage = (len(unique_tasks) / float(len(all_tasks))) if all_tasks else 0.0
+
+        # Task-graph evolution stability proxy: mean Jaccard between consecutive used-evidence sets.
+        j_scores = []
+        prev_set = None
+        for r in self.context.results:
+            cur_set = set([str(t) for t in (r.get("tasks") or []) if str(t).strip()])
+            if prev_set is not None:
+                union = prev_set | cur_set
+                inter = prev_set & cur_set
+                j_scores.append((len(inter) / float(len(union))) if union else 1.0)
+            prev_set = cur_set
+        task_graph_evolution_stability = (sum(j_scores) / float(len(j_scores))) if j_scores else 0.0
+
+        downstream_task_performance_metrics = {
+            "MSE": self.last_accepted_metrics.get("MSE"),
+            "PCC": self.last_accepted_metrics.get("PCC", best_accuracy),
+            "R2": self.last_accepted_metrics.get("R2"),
+            "DEG_RMSE_20": self.last_accepted_metrics.get("DEG_RMSE_20"),
+            "DEG_RMSE_50": self.last_accepted_metrics.get("DEG_RMSE_50"),
+            "DEG_PCC_20": self.last_accepted_metrics.get("DEG_PCC_20"),
+            "DEG_PCC_50": self.last_accepted_metrics.get("DEG_PCC_50"),
+            "MSE_DM": self.last_accepted_metrics.get("MSE_DM"),
+            "PCC_DM": self.last_accepted_metrics.get("PCC_DM"),
+            "R2_DM": self.last_accepted_metrics.get("R2_DM"),
+        }
+
         summary = {
             "status": status_final,
             "task_id": self.context.task_id,
@@ -822,6 +879,33 @@ class PipelineOrchestrator:
             "best_artifacts_path": self.best_artifacts_path,
             "experiment_success_count": experiment_success_count,
             "max_iterations_reached": data_final.get("max_iterations_reached", False),
+            "downstream_task_performance_metrics": downstream_task_performance_metrics,
+            "robustness_metrics": {
+                "notebook_execution_success_rate": (nb_success_n / float(nb_total_n)) if nb_total_n > 0 else 0.0,
+                "cell_fix_success_rate": (autofix_success / float(autofix_attempted)) if autofix_attempted > 0 else 0.0,
+                "avg_fix_rounds": (sum(avg_fix_rounds_vals) / float(len(avg_fix_rounds_vals))) if avg_fix_rounds_vals else 0.0,
+                "crash_recovery_ratio": (sum(crash_recovered_flags) / float(len(crash_recovered_flags))) if crash_recovered_flags else 0.0,
+                "validity_rate": validity_rate,
+            },
+            "resource_cost_metrics": {
+                "prompt_tokens": prompt_toks,
+                "completion_tokens": completion_toks,
+                "total_tokens": total_toks,
+                "total_llm_latency_sec": total_latency,
+                "avg_prompt_tokens": (prompt_toks / float(total_iterations)) if total_iterations > 0 else 0.0,
+                "avg_completion_tokens": (completion_toks / float(total_iterations)) if total_iterations > 0 else 0.0,
+                "avg_llm_latency_sec": (total_latency / float(api_calls)) if api_calls > 0 else 0.0,
+                "wall_clock_to_threshold_sec": None,
+                "cost_to_success_ratio": (total_toks / float(experiment_success_count)) if experiment_success_count > 0 else None,
+            },
+            "scientific_interpretability_metrics": {
+                "evidence_chain_completeness": evidence_chain_completeness,
+                "external_knowledge_coverage": external_knowledge_coverage,
+                "bioprocess_mapping_consistency": task_graph_evolution_stability,
+                "expert_mechanism_score": None,
+                "task_graph_evolution_stability": task_graph_evolution_stability,
+                "unique_evidence_ids": unique_tasks,
+            },
             "iteration_history": self.iteration_history,
             "consecutive_rejections": self.consecutive_rejections,
             "fsm_transitions": [
@@ -836,6 +920,145 @@ class PipelineOrchestrator:
             f"success_count={experiment_success_count}/{total_iterations}",
             console=True,
         )
+
+        robustness_metrics = summary.get("robustness_metrics") or {}
+        resource_cost_metrics = summary.get("resource_cost_metrics") or {}
+        scientific_interpretability_metrics = summary.get("scientific_interpretability_metrics") or {}
+        downstream_task_performance_metrics = summary.get("downstream_task_performance_metrics") or {}
+
+        _log("[Metrics] Downstream Task Performance", console=True)
+        _log(f"├─ MSE={downstream_task_performance_metrics.get('MSE')}", console=True)
+        _log(f"├─ PCC={downstream_task_performance_metrics.get('PCC')}", console=True)
+        _log(f"├─ R2={downstream_task_performance_metrics.get('R2')}", console=True)
+        _log(f"├─ DEG_RMSE_20={downstream_task_performance_metrics.get('DEG_RMSE_20')}", console=True)
+        _log(f"├─ DEG_RMSE_50={downstream_task_performance_metrics.get('DEG_RMSE_50')}", console=True)
+        _log(f"├─ DEG_PCC_20={downstream_task_performance_metrics.get('DEG_PCC_20')}", console=True)
+        _log(f"├─ DEG_PCC_50={downstream_task_performance_metrics.get('DEG_PCC_50')}", console=True)
+        _log(f"├─ MSE_DM={downstream_task_performance_metrics.get('MSE_DM')}", console=True)
+        _log(f"├─ PCC_DM={downstream_task_performance_metrics.get('PCC_DM')}", console=True)
+        _log(f"└─ R2_DM={downstream_task_performance_metrics.get('R2_DM')}", console=True)
+
+        _log("[Metrics] System Execution Robustness", console=True)
+        _log(
+            f"├─ notebook_execution_success_rate={float(robustness_metrics.get('notebook_execution_success_rate', 0.0)):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ cell_fix_success_rate={float(robustness_metrics.get('cell_fix_success_rate', 0.0)):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ avg_fix_rounds={float(robustness_metrics.get('avg_fix_rounds', 0.0)):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ crash_recovery_ratio={float(robustness_metrics.get('crash_recovery_ratio', 0.0)):.4f}",
+            console=True,
+        )
+        _log(
+            f"└─ validity_rate={float(robustness_metrics.get('validity_rate', 0.0)):.4f}",
+            console=True,
+        )
+
+        _log("[Metrics] Resource & Cost", console=True)
+        _log(f"├─ prompt_tokens={int(resource_cost_metrics.get('prompt_tokens', 0) or 0)}", console=True)
+        _log(f"├─ completion_tokens={int(resource_cost_metrics.get('completion_tokens', 0) or 0)}", console=True)
+        _log(f"├─ total_tokens={int(resource_cost_metrics.get('total_tokens', 0) or 0)}", console=True)
+        _log(
+            f"├─ total_llm_latency_sec={float(resource_cost_metrics.get('total_llm_latency_sec', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ avg_prompt_tokens={float(resource_cost_metrics.get('avg_prompt_tokens', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ avg_completion_tokens={float(resource_cost_metrics.get('avg_completion_tokens', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ avg_llm_latency_sec={float(resource_cost_metrics.get('avg_llm_latency_sec', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ wall_clock_to_threshold_sec={resource_cost_metrics.get('wall_clock_to_threshold_sec')}",
+            console=True,
+        )
+        _log(
+            f"└─ cost_to_success_ratio={resource_cost_metrics.get('cost_to_success_ratio')}",
+            console=True,
+        )
+
+        _log("[Metrics] Scientific Interpretability", console=True)
+        _log(
+            f"├─ evidence_chain_completeness={float(scientific_interpretability_metrics.get('evidence_chain_completeness', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ external_knowledge_coverage={float(scientific_interpretability_metrics.get('external_knowledge_coverage', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ bioprocess_mapping_consistency={float(scientific_interpretability_metrics.get('bioprocess_mapping_consistency', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"├─ expert_mechanism_score={scientific_interpretability_metrics.get('expert_mechanism_score')}",
+            console=True,
+        )
+        _log(
+            f"├─ task_graph_evolution_stability={float(scientific_interpretability_metrics.get('task_graph_evolution_stability', 0.0) or 0.0):.4f}",
+            console=True,
+        )
+        _log(
+            f"└─ unique_evidence_ids={len(scientific_interpretability_metrics.get('unique_evidence_ids') or [])}",
+            console=True,
+        )
+
+        _log("[Evolution] Model Iteration Review Trail", console=True)
+        prev_score = None
+        for item in (self.iteration_history or []):
+            iteration_id = item.get("iteration", "-")
+            score_raw = item.get("score")
+            metrics_row = item.get("metrics") or {}
+            try:
+                score = float(score_raw) if score_raw is not None else None
+            except (TypeError, ValueError):
+                score = None
+            delta = None if (prev_score is None or score is None) else (score - prev_score)
+            signal = "n/a"
+            if delta is not None:
+                signal = "improved" if delta > 0 else ("degraded" if delta < 0 else "flat")
+
+            causal_hint = "maintain current mechanism"
+            pcc = metrics_row.get("PCC")
+            mse = metrics_row.get("MSE")
+            deg_pcc = metrics_row.get("DEG_PCC_20")
+            if isinstance(pcc, (int, float)) and pcc < 0.35:
+                causal_hint = "representation-fusion mismatch likely; improve feature alignment"
+            if isinstance(deg_pcc, (int, float)) and deg_pcc < 0.4:
+                causal_hint = "top-DEG signal is weak; reweight high-variance gene objectives"
+            if isinstance(mse, (int, float)) and isinstance(pcc, (int, float)) and mse < 3.5 and pcc < 0.35:
+                causal_hint = "scale fit without ranking fit; add rank-aware loss/calibration"
+
+            score_txt = f"{score:.4f}" if score is not None else "-"
+            delta_txt = f"{delta:+.4f}" if delta is not None else "-"
+            _log(
+                f"├─ Iter {iteration_id}: PCC={score_txt} | delta={delta_txt} | signal={signal} | hint={causal_hint}",
+                console=True,
+            )
+            if score is not None:
+                prev_score = score
+
+        _log(
+            "[Summary] "
+            f"best_pcc={downstream_task_performance_metrics.get('PCC')} | "
+            f"success={experiment_success_count}/{total_iterations} | "
+            f"validity_rate={float(robustness_metrics.get('validity_rate', 0.0)):.4f} | "
+            f"tokens={int(resource_cost_metrics.get('total_tokens', 0) or 0)}",
+            console=True,
+        )
+
         return summary
 
     # ------------------------------------------------------------------

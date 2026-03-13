@@ -21,12 +21,14 @@ import abc
 import asyncio
 import contextlib
 import functools
+import hashlib
 import io
 import json
 import logging
 import os
 import re
 import subprocess
+import sys
 import time
 import traceback
 import uuid
@@ -113,9 +115,35 @@ def _log(msg: str, *, console: bool = False) -> None:
         print(f"[DETAIL] {msg}", flush=True)
 
 
+class _TeeTextIO(io.TextIOBase):
+    """Mirror redirected text writes to both an in-memory buffer and console stream."""
+
+    def __init__(self, buffer: io.StringIO, stream: io.TextIOBase) -> None:
+        super().__init__()
+        self._buffer = buffer
+        self._stream = stream
+
+    def write(self, s: str) -> int:
+        if not s:
+            return 0
+        self._buffer.write(s)
+        self._stream.write(s)
+        self._stream.flush()
+        return len(s)
+
+    def flush(self) -> None:
+        self._buffer.flush()
+        self._stream.flush()
+
+
 # =============================================================================
 # Path interpolation helper (Bug 4)
 # =============================================================================
+
+
+def _short_md5(text: str) -> str:
+    """Return a short deterministic digest for log-friendly content identity checks."""
+    return hashlib.md5((text or "").encode("utf-8", errors="replace")).hexdigest()[:10]
 
 
 def _interpolate_path(path_template: str, config: Dict[str, Any]) -> str:
@@ -607,12 +635,18 @@ class ResearchAgent(BaseAgent):
         smiles_mechanism_prior = self._build_smiles_mechanism_prior(
             smiles_list, bio_kb_data
         )
+        domain_model_causal_chains = self._derive_domain_model_causal_chains(
+            smiles_mechanism_prior,
+            (literature_data.get("markdown_summary") or "") if isinstance(literature_data, dict) else "",
+            knowledge_gap,
+        )
 
         # Assemble the structured Causal Context Payload.
         report = {
             "smiles_list": smiles_list,
             "h5_file_path": h5_file_path,
             "smiles_mechanism_prior": smiles_mechanism_prior,
+            "domain_model_causal_chains": domain_model_causal_chains,
             "biokb_evidence": bio_kb_data,
             "literature_context": literature_data,
             "context_text": context_text,
@@ -627,6 +661,7 @@ class ResearchAgent(BaseAgent):
         _log(
             f"[{self.agent_id}] Causal Context Payload assembled: "
             f"smiles_priors={len(smiles_mechanism_prior)}, "
+            f"domain_model_chains={len(domain_model_causal_chains)}, "
             f"biokb={'yes' if bio_kb_data else 'no'}, "
             f"literature={'yes' if literature_data else 'no'}, "
             f"prev_logs={'yes' if previous_iteration_logs else 'no'}",
@@ -759,6 +794,88 @@ class ResearchAgent(BaseAgent):
 
         return priors
 
+    @staticmethod
+    def _derive_domain_model_causal_chains(
+        smiles_priors: List[Dict[str, Any]],
+        literature_md: str,
+        knowledge_gap: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Derive domain->model causal chains for modeling guidance.
+
+        Each chain links:
+        domain signal/hypothesis -> mechanism rationale -> concrete modeling choice.
+        """
+        text = (literature_md or "").lower()
+        kg = (knowledge_gap or "").strip()
+        chain_templates = [
+            (
+                ("high-variance", "deg", "differentially expressed"),
+                "High-variance DEG signals are underfit",
+                "Model tends toward mean predictions and misses expression tails",
+                "Use variance-aware objective (e.g., weighted MSE/PCC hybrid) and tail-focused sampling.",
+            ),
+            (
+                ("correlation", "pcc", "pearson"),
+                "Primary objective depends on correlation structure",
+                "Scale bias can hurt PCC despite reasonable MSE",
+                "Add differentiable PCC term and post-hoc calibration head.",
+            ),
+            (
+                ("cross-attention", "multimodal", "fusion"),
+                "Cross-modal signal alignment is critical",
+                "Weak alignment between chemistry and morphology reduces transfer",
+                "Use gated/residual fusion with explicit modality balance regularization.",
+            ),
+            (
+                ("dose", "non-linear", "magnitude"),
+                "Dose-response magnitude is non-linear",
+                "Single linear head underfits magnitude scaling",
+                "Add dose-conditioned branch or monotonic calibration subnetwork.",
+            ),
+        ]
+
+        chains: List[Dict[str, Any]] = []
+        for kws, signal, hypothesis, modeling in chain_templates:
+            if any(kw in text for kw in kws) or any(kw in kg.lower() for kw in kws):
+                chains.append({
+                    "domain_signal": signal,
+                    "causal_hypothesis": hypothesis,
+                    "modeling_implication": modeling,
+                })
+
+        # Mechanism priors can also produce chain entries when targets/pathways exist.
+        for p in (smiles_priors or [])[:10]:
+            targets = p.get("targets") or []
+            pathways = p.get("pathways") or []
+            if targets or pathways:
+                t = ", ".join([str(x) for x in targets[:3]]) if targets else "unknown-target"
+                pw = ", ".join([str(x) for x in pathways[:3]]) if pathways else "unknown-pathway"
+                chains.append({
+                    "domain_signal": f"SMILES prior links to targets/pathways ({t} | {pw})",
+                    "causal_hypothesis": "Perturbation effects should preserve pathway-consistent directionality",
+                    "modeling_implication": "Add pathway-aware weighting or target-conditional gating to avoid biologically implausible fits.",
+                })
+
+        # Always return at least one chain so downstream prompt has explicit causal framing.
+        if not chains:
+            chains.append({
+                "domain_signal": "Limited external mechanism evidence in current iteration",
+                "causal_hypothesis": "Observed performance likely dominated by representation/fusion mismatch",
+                "modeling_implication": "Prioritize robust baseline with conservative fusion and stable loss before adding complexity.",
+            })
+
+        # Deduplicate by triple fields and cap size.
+        uniq = []
+        seen = set()
+        for c in chains:
+            key = (c.get("domain_signal"), c.get("causal_hypothesis"), c.get("modeling_implication"))
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(c)
+            if len(uniq) >= 8:
+                break
+        return uniq
 
 
 # =============================================================================
@@ -1196,6 +1313,13 @@ class ModelingAgent(BaseAgent):
             insight_report.get("smiles_mechanism_prior") or []
         )
         mechanism_context = self._format_mechanism_prior(smiles_mechanism_prior)
+        domain_model_causal_chains: List[Dict[str, Any]] = (
+            insight_report.get("domain_model_causal_chains") or []
+        )
+        domain_model_chain_context = self._format_domain_model_causal_chains(domain_model_causal_chains)
+        if domain_model_chain_context:
+            _log(f"[MODEL] ├─ Domain→Model causal chains: {len(domain_model_causal_chains)}", console=True)
+            mechanism_context = f"{mechanism_context}\n\n### Domain→Model Causal Chains\n{domain_model_chain_context}".strip()
 
         # ---- Falsifiable context ----
         falsifiable_context = ""
@@ -1285,6 +1409,25 @@ class ModelingAgent(BaseAgent):
                     "max_iterations": int(message.get("max_iterations") or 5),
                     "_task_id": task_id,
                 })
+
+                metadata = artifact_payload.get("modeling_metadata") or {}
+                generated_nb = str(artifact_payload.get("notebook_json") or "")
+                prev_hash = _short_md5(existing_notebook_json) if existing_notebook_json else "new"
+                new_hash = _short_md5(generated_nb) if generated_nb else "empty"
+                changed = (prev_hash != new_hash) if existing_notebook_json else True
+                _log(
+                    f"[MODEL] Iteration {iteration} update | mode={metadata.get('generation_mode', 'unknown')} | strategy={metadata.get('selected_strategy', '')}",
+                    console=True,
+                )
+                _log(
+                    f"├─ Notebook hash: {prev_hash} -> {new_hash} ({'changed' if changed else 'unchanged'})",
+                    console=True,
+                )
+                if "applied_changes" in metadata:
+                    _log(f"├─ Applied edits: {int(metadata.get('applied_changes') or 0)}", console=True)
+                if existing_notebook_json and not changed:
+                    _log("├─ ⚠️ No notebook delta this iteration (likely fallback/no-op review output).", console=True)
+
                 return AgentResponse(
                     status="success",
                     data=artifact_payload,
@@ -1418,6 +1561,24 @@ class ModelingAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _format_domain_model_causal_chains(chains: List[Dict[str, Any]]) -> str:
+        """Format domain background -> modeling causal chains for prompt injection."""
+        if not chains:
+            return ""
+        lines: List[str] = []
+        for idx, c in enumerate(chains[:8], start=1):
+            ds = str(c.get("domain_signal") or "unknown signal")
+            hyp = str(c.get("causal_hypothesis") or "")
+            imp = str(c.get("modeling_implication") or "")
+            lines.append(f"{idx}. Signal: {ds}")
+            if hyp:
+                lines.append(f"   Hypothesis: {hyp}")
+            if imp:
+                lines.append(f"   Modeling: {imp}")
+        return "\n".join(lines)
+
+
+    @staticmethod
     def _format_mechanism_prior(
         priors: List[Dict[str, Any]],
     ) -> str:
@@ -1502,7 +1663,9 @@ class ExecutionAgent(BaseAgent):
 
         stdout_buffer = io.StringIO()
         stderr_buffer = io.StringIO()
-        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+        tee_stdout = _TeeTextIO(stdout_buffer, sys.stdout)
+        tee_stderr = _TeeTextIO(stderr_buffer, sys.stderr)
+        with contextlib.redirect_stdout(tee_stdout), contextlib.redirect_stderr(tee_stderr):
             exec_res = phase_execute(self.config, trial_dir)
             try:
                 phase_analyze(self.config, trial_dir)
@@ -1983,9 +2146,7 @@ class EvaluationAgent(BaseAgent):
         pass_threshold: float = metric_cfg["pass_threshold"]
 
         _log(
-            f"[EVAL] 📊 EvaluationAgent evaluating '{target_metric}' "
-            f"(threshold={pass_threshold}, direction={direction}) "
-            f"— iteration {iteration}/{max_iterations}…",
+            f"├─ Validation target: {target_metric} | threshold={pass_threshold} | direction={direction} | iteration={iteration}/{max_iterations}",
             console=True,
         )
 
@@ -1997,15 +2158,12 @@ class EvaluationAgent(BaseAgent):
                 all_metrics[metric_name] = metric_value
         primary_value: Optional[float] = all_metrics.get(target_metric)
 
-        _log(
-            f"[{self.agent_id}] Parsed metrics: "
-            + ", ".join(
-                f"{k}={v:.4f}" if v is not None else f"{k}=N/A"
-                for k, v in all_metrics.items()
-                if v is not None
-            ),
-            console=True,
+        metric_line = ", ".join(
+            f"{k}={v:.4f}" if v is not None else f"{k}=N/A"
+            for k, v in all_metrics.items()
+            if v is not None
         )
+        _log(f"├─ Parsed metrics: {metric_line}", console=True)
 
         # ---- Innovation 3: Falsifiable metric comparison ----
         metric_delta: Optional[float] = None
@@ -2029,9 +2187,7 @@ class EvaluationAgent(BaseAgent):
         # Goal achieved → SUCCESS.
         if self._goal_met(all_metrics, target_metric, pass_threshold, direction):
             _log(
-                f"[{self.agent_id}] ✅ {target_metric} goal met "
-                f"({primary_value:.4f} {'≥' if direction == 'maximize' else '≤'} "
-                f"{pass_threshold}).",
+                f"├─ Verdict: SUCCESS ({target_metric}={primary_value:.4f} {'≥' if direction == 'maximize' else '≤'} {pass_threshold})",
                 console=True,
             )
             return AgentResponse(
@@ -2105,11 +2261,7 @@ class EvaluationAgent(BaseAgent):
         feedback_package["metric_delta"] = metric_delta
         feedback_package["metric_trend"] = metric_trend
         suggested_target = feedback_package.get("suggested_target", "modeling")
-        _log(
-            f"[{self.agent_id}] 🔄 REFINE decision (target={suggested_target}). "
-            f"Sending feedback_package to orchestration.",
-            console=True,
-        )
+        _log(f"├─ Verdict: REFINE (target={suggested_target})", console=True)
         return AgentResponse(
             status="needs_iteration",
             data={
