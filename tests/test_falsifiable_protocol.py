@@ -466,3 +466,287 @@ def base_agent_init(self, bus=None, config=None):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# =============================================================================
+# KnowledgeMemory — cross-iteration memory
+# =============================================================================
+
+
+from cellscientist.core.agents import KnowledgeMemory
+
+
+class TestKnowledgeMemory:
+    """Unit tests for :class:`KnowledgeMemory`."""
+
+    def _make_item(self, title: str, url: str = "", snippet: str = "") -> dict:
+        return {"title": title, "url": url, "snippet": snippet, "eid": f"E_{title[:4]}"}
+
+    # ------------------------------------------------------------------
+    # Basic accumulation
+    # ------------------------------------------------------------------
+
+    def test_empty_on_init(self):
+        mem = KnowledgeMemory()
+        assert mem._entries == []
+        assert mem._iteration_digests == []
+        assert mem.to_context() == ""
+
+    def test_update_adds_new_items(self):
+        mem = KnowledgeMemory()
+        items = [self._make_item("Article A", "http://a"), self._make_item("Article B", "http://b")]
+        added = mem.update(items, iteration=1)
+        assert added == 2
+        assert len(mem._entries) == 2
+
+    def test_update_creates_digest(self):
+        mem = KnowledgeMemory()
+        mem.update([self._make_item("Article A", "http://a")], iteration=1, knowledge_gap="cancer")
+        assert len(mem._iteration_digests) == 1
+        d = mem._iteration_digests[0]
+        assert d["iteration"] == 1
+        assert d["knowledge_gap"] == "cancer"
+        assert d["new_items_added"] == 1
+
+    # ------------------------------------------------------------------
+    # Deduplication
+    # ------------------------------------------------------------------
+
+    def test_deduplication_by_url(self):
+        mem = KnowledgeMemory()
+        item = self._make_item("Article A", "http://dup")
+        mem.update([item], iteration=1)
+        added2 = mem.update([item], iteration=2)
+        assert added2 == 0
+        assert len(mem._entries) == 1
+
+    def test_deduplication_by_title(self):
+        mem = KnowledgeMemory()
+        item = self._make_item("Unique Title")   # no URL
+        mem.update([item], iteration=1)
+        added2 = mem.update([self._make_item("Unique Title")], iteration=2)
+        assert added2 == 0
+        assert len(mem._entries) == 1
+
+    def test_empty_title_and_url_skipped(self):
+        mem = KnowledgeMemory()
+        added = mem.update([{"title": "", "url": "", "snippet": "noise", "eid": "X0"}], iteration=1)
+        assert added == 0
+
+    # ------------------------------------------------------------------
+    # MAX_ENTRIES cap
+    # ------------------------------------------------------------------
+
+    def test_max_entries_cap(self):
+        mem = KnowledgeMemory()
+        mem.MAX_ENTRIES = 5
+        for i in range(10):
+            mem.update([self._make_item(f"Article {i}", f"http://{i}")], iteration=i)
+        assert len(mem._entries) <= 5
+
+    # ------------------------------------------------------------------
+    # mark_iteration_outcome
+    # ------------------------------------------------------------------
+
+    def test_mark_accept_tags_entries(self):
+        mem = KnowledgeMemory()
+        mem.update([self._make_item("Article A", "http://a")], iteration=1)
+        mem.mark_iteration_outcome(1, "ACCEPT", 0.05)
+        assert mem._entries[0]["_verdict"] == "ACCEPT"
+        assert abs(mem._entries[0]["_metric_delta"] - 0.05) < 1e-9
+
+    def test_mark_reject_tags_entries(self):
+        mem = KnowledgeMemory()
+        mem.update([self._make_item("Article B", "http://b")], iteration=2)
+        mem.mark_iteration_outcome(2, "REJECT", -0.03)
+        assert mem._entries[0]["_verdict"] == "REJECT"
+
+    def test_mark_tags_digest(self):
+        mem = KnowledgeMemory()
+        mem.update([self._make_item("Article C", "http://c")], iteration=3)
+        mem.mark_iteration_outcome(3, "ACCEPT", 0.1)
+        d = mem._iteration_digests[0]
+        assert d["verdict"] == "ACCEPT"
+        assert abs(d["metric_delta"] - 0.1) < 1e-9
+
+    # ------------------------------------------------------------------
+    # to_context rendering
+    # ------------------------------------------------------------------
+
+    def test_to_context_includes_history(self):
+        mem = KnowledgeMemory()
+        mem.update([self._make_item("Article D", "http://d")], iteration=1, knowledge_gap="KRAS")
+        ctx = mem.to_context()
+        assert "Iter 1" in ctx
+        assert "KRAS" in ctx
+
+    def test_to_context_highlights_useful_items(self):
+        mem = KnowledgeMemory()
+        mem.update([self._make_item("Useful Paper", "http://up")], iteration=1)
+        mem.mark_iteration_outcome(1, "ACCEPT", 0.1)
+        ctx = mem.to_context()
+        assert "Useful Paper" in ctx
+
+    def test_to_context_warns_rejected_gaps(self):
+        mem = KnowledgeMemory()
+        mem.update([self._make_item("Bad Paper", "http://bp")], iteration=1, knowledge_gap="dead-end")
+        mem.mark_iteration_outcome(1, "REJECT", -0.02)
+        ctx = mem.to_context()
+        assert "dead-end" in ctx
+
+    def test_to_context_respects_max_chars(self):
+        mem = KnowledgeMemory()
+        for i in range(10):
+            mem.update([self._make_item(f"Article {i}", f"http://{i}")], iteration=i, knowledge_gap="x" * 200)
+        ctx = mem.to_context(max_chars=200)
+        assert len(ctx) <= 203   # small buffer for ellipsis
+
+    # ------------------------------------------------------------------
+    # Serialisation round-trip
+    # ------------------------------------------------------------------
+
+    def test_to_dict_from_dict_round_trip(self):
+        mem = KnowledgeMemory()
+        mem.update([self._make_item("Article E", "http://e")], iteration=1, knowledge_gap="pathway")
+        mem.mark_iteration_outcome(1, "ACCEPT", 0.07)
+        d = mem.to_dict()
+        mem2 = KnowledgeMemory.from_dict(d)
+        assert len(mem2._entries) == len(mem._entries)
+        assert mem2._entries[0]["title"] == "Article E"
+        assert mem2._iteration_digests[0]["verdict"] == "ACCEPT"
+
+    def test_from_dict_tolerates_missing_keys(self):
+        mem = KnowledgeMemory.from_dict({})
+        assert mem._entries == []
+        assert mem._iteration_digests == []
+
+    # ------------------------------------------------------------------
+    # get_seen_urls / get_seen_titles
+    # ------------------------------------------------------------------
+
+    def test_get_seen_urls(self):
+        mem = KnowledgeMemory()
+        mem.update([self._make_item("Article F", "http://f")], iteration=1)
+        assert "http://f" in mem.get_seen_urls()
+
+    def test_get_seen_titles(self):
+        mem = KnowledgeMemory()
+        mem.update([self._make_item("Article G")], iteration=1)
+        assert "Article G" in mem.get_seen_titles()
+
+    # ------------------------------------------------------------------
+    # Orchestrator integration
+    # ------------------------------------------------------------------
+
+    def test_orchestrator_has_knowledge_memory(self):
+        cfg = _minimal_config()
+        orch = PipelineOrchestrator(cfg)
+        assert isinstance(orch.knowledge_memory, KnowledgeMemory)
+
+    def test_orchestrator_mark_updates_memory(self):
+        cfg = _minimal_config()
+        orch = PipelineOrchestrator(cfg)
+        orch.knowledge_memory.update(
+            [{"title": "Paper X", "url": "http://x", "snippet": "s", "eid": "X1"}],
+            iteration=1,
+        )
+        orch.knowledge_memory.mark_iteration_outcome(1, "ACCEPT", 0.05)
+        assert orch.knowledge_memory._entries[0]["_verdict"] == "ACCEPT"
+
+
+# =============================================================================
+# Relevance scoring — external_knowledge_mirothink
+# =============================================================================
+
+
+from cellscientist.core.external_knowledge_mirothink import (
+    _filter_and_rank_items,
+    _score_relevance,
+    EvidenceItem,
+)
+
+
+def _create_evidence_item(title: str, snippet: str = "", url: str = "http://example.com") -> EvidenceItem:
+    return EvidenceItem(title=title, snippet=snippet, url=url)
+
+
+class TestScoreRelevance:
+    """Unit tests for :func:`_score_relevance`."""
+
+    def test_empty_query_returns_one(self):
+        item = _create_evidence_item("Any article", "any snippet")
+        assert _score_relevance(item, "") == 1.0
+
+    def test_no_overlap_returns_zero(self):
+        item = _create_evidence_item("quantum physics", "subatomic particles")
+        score = _score_relevance(item, "oncology cancer KRAS")
+        assert score == 0.0
+
+    def test_perfect_overlap(self):
+        item = _create_evidence_item("cancer KRAS", "oncology study")
+        score = _score_relevance(item, "cancer KRAS oncology")
+        assert score > 0.8
+
+    def test_partial_overlap_between_zero_and_one(self):
+        item = _create_evidence_item("KRAS mutation study", "cell signaling pathway")
+        score = _score_relevance(item, "KRAS cancer pathway biology")
+        assert 0.0 < score < 1.0
+
+    def test_empty_item_returns_zero(self):
+        item = _create_evidence_item("", "")
+        score = _score_relevance(item, "cancer")
+        assert score == 0.0
+
+    def test_snippet_contributes_to_score(self):
+        item_with_snippet = _create_evidence_item("Generic title", "oncology KRAS mutation")
+        item_no_snippet = _create_evidence_item("Generic title", "")
+        score_with = _score_relevance(item_with_snippet, "KRAS oncology")
+        score_without = _score_relevance(item_no_snippet, "KRAS oncology")
+        assert score_with > score_without
+
+
+class TestFilterAndRankItems:
+    """Unit tests for :func:`_filter_and_rank_items`."""
+
+    def _noop_log(self, msg: str) -> None:
+        pass
+
+    def test_empty_query_returns_unchanged(self):
+        items = [
+            _create_evidence_item("Article A"),
+            _create_evidence_item("Article B"),
+        ]
+        result = _filter_and_rank_items(items, "", 0.5, self._noop_log)
+        assert result == items
+
+    def test_zero_min_score_returns_unchanged(self):
+        items = [_create_evidence_item("Article A")]
+        result = _filter_and_rank_items(items, "cancer", 0.0, self._noop_log)
+        assert result == items
+
+    def test_filters_out_low_relevance_items(self):
+        items = [
+            _create_evidence_item("quantum physics", "unrelated topic"),
+            _create_evidence_item("cancer KRAS study", "oncology pathway"),
+        ]
+        result = _filter_and_rank_items(items, "cancer KRAS oncology", 0.1, self._noop_log)
+        titles = [it.title for it in result]
+        assert "cancer KRAS study" in titles
+        assert "quantum physics" not in titles
+
+    def test_stubs_always_kept(self):
+        stub = _create_evidence_item("Stub item", url="note://not-http")
+        real = _create_evidence_item("quantum physics", url="http://example.com")
+        items = [stub, real]
+        result = _filter_and_rank_items(items, "cancer KRAS", 0.5, self._noop_log)
+        assert stub in result
+
+    def test_sorted_by_relevance_descending(self):
+        items = [
+            _create_evidence_item("KRAS mention", "brief mention cancer"),
+            _create_evidence_item("Deep cancer KRAS study", "cancer KRAS oncology KRAS pathway cancer"),
+        ]
+        result = _filter_and_rank_items(items, "cancer KRAS oncology", 0.0, self._noop_log)
+        # min_score=0 → no filter, but ordering matters when min_score > 0
+        result_ranked = _filter_and_rank_items(items, "cancer KRAS oncology pathway", 0.01, self._noop_log)
+        assert result_ranked[0].title == "Deep cancer KRAS study"

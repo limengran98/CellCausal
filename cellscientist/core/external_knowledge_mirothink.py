@@ -52,9 +52,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+from collections import Counter
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
@@ -248,9 +250,79 @@ def _fallback_queries(original_q: str, cfg: Dict[str, Any], stage: str) -> List[
 
 def _strip_markdown_links(md: str) -> str:
     # Very small helper: remove [text](url) to keep content compact.
-    import re
-
     return re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", md)
+
+
+# -----------------------------
+# Relevance scoring
+# -----------------------------
+
+
+def _score_relevance(item: EvidenceItem, query_text: str) -> float:
+    """Compute a lightweight keyword-overlap relevance score in [0, 1].
+
+    Uses normalised cosine similarity on term-frequency vectors derived from
+    the item's title, snippet, and scraped_excerpt against *query_text*.
+    No external libraries are required.
+
+    Returns 1.0 when *query_text* is empty (treat all items as relevant).
+    """
+
+    def _tokenize(text: str) -> "Counter[str]":
+        return Counter(re.findall(r"\b[a-zA-Z0-9_-]{2,}\b", text.lower()))
+
+    query_tokens = _tokenize(query_text)
+    if not query_tokens:
+        return 1.0
+
+    item_text = " ".join(filter(None, [item.title, item.snippet, item.scraped_excerpt]))
+    item_tokens = _tokenize(item_text)
+    if not item_tokens:
+        return 0.0
+
+    dot = sum(query_tokens[t] * item_tokens.get(t, 0) for t in query_tokens)
+    norm_q = sum(v * v for v in query_tokens.values()) ** 0.5
+    norm_i = sum(v * v for v in item_tokens.values()) ** 0.5
+    if norm_q == 0.0 or norm_i == 0.0:
+        return 0.0
+    return dot / (norm_q * norm_i)
+
+
+def _filter_and_rank_items(
+    items: List[EvidenceItem],
+    query_text: str,
+    min_score: float,
+    log: Callable[[str], None],
+) -> List[EvidenceItem]:
+    """Score, filter below *min_score*, and sort *items* by descending relevance.
+
+    Stub/placeholder items (those without a real HTTP URL) are always kept
+    regardless of score so that error signals propagate to downstream agents.
+    When *min_score* is 0 or *query_text* is blank the function is a no-op and
+    returns *items* unchanged (backward-compatible default behaviour).
+    """
+    if not query_text.strip() or min_score <= 0.0:
+        return items
+
+    stubs: List[EvidenceItem] = []
+    scored: List[Tuple[float, EvidenceItem]] = []
+    for item in items:
+        if not (item.url or "").startswith(("http://", "https://")):
+            stubs.append(item)
+            continue
+        scored.append((_score_relevance(item, query_text), item))
+
+    before = len(scored)
+    scored = [(s, it) for s, it in scored if s >= min_score]
+    after = len(scored)
+    if before != after:
+        log(
+            f"[LIT] 🔍 Relevance filter: kept {after}/{before} real items "
+            f"(min_score={min_score:.2f})"
+        )
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return stubs + [it for _, it in scored]
 
 
 def _jina_scrape_url(
@@ -386,8 +458,6 @@ def _build_query(context_text: str, stage: str, cfg: Dict[str, Any], query_hint:
     if query_hint and query_hint.strip():
         hint = query_hint.strip()
     else:
-        import re
-
         toks = re.findall(r"[A-Za-z][A-Za-z0-9_\-]{2,}", context_text or "")
         uniq: List[str] = []
         seen = set()
@@ -662,7 +732,9 @@ def retrieve_external_knowledge(
     jina_base = (lit.get("jina_base_url") or os.environ.get("JINA_BASE_URL") or "https://r.jina.ai").strip()
 
     web_items: List[EvidenceItem] = []
-    
+    q = ""  # Query string (defined in the serper branch; kept as fallback for PHASE 3)
+    md_max_chars = int(lit.get("artifact_md_max_chars", 12000) or 12000)
+
     if not serper_key:
         log("[LIT] ⚠️ SERPER_API_KEY missing. Web search disabled (BioKB only).")
         web_items.append(EvidenceItem(
@@ -865,25 +937,31 @@ def retrieve_external_knowledge(
                         log(f"[LIT][WARN] Failed to write cache: {e}")
 
     # ============================================================
-    # PHASE 3: Merge BioKB + Web Items
+    # PHASE 3: Merge BioKB + Web Items, score relevance, inject best
     # ============================================================
-    
+
     # Assign L* IDs to web items (if not already assigned)
     for idx, item in enumerate(web_items, 1):
         if not item.eid:
             item.eid = f"L{idx}"
-    
-    # TIER 4: Only inject up to inject_max items total
-    # Priority: BioKB first, then Web (sorted by relevance if needed)
-    # TODO: Implement relevance-based sorting for better prioritization
-    all_items = biokb_items + web_items
+
+    # TIER 4: Relevance-filter + rank, then inject up to inject_max items total.
+    # BioKB items are prepended first (higher domain authority) and ranked
+    # separately so they are not displaced by high-scoring but off-topic web hits.
     inject_max = int(lit.get("inject_max_items", 5) or 5)
-    
-    # For now, simple truncation; see TODO above for future enhancement
+    min_relevance_score = float(lit.get("min_relevance_score", 0.0) or 0.0)
+
+    # Use the original query as the relevance anchor; fall back to context_text.
+    relevance_anchor = (query_hint or context_text or "").strip() if serper_key else context_text
+
+    biokb_ranked = _filter_and_rank_items(biokb_items, relevance_anchor, min_relevance_score, log)
+    web_ranked = _filter_and_rank_items(web_items, relevance_anchor, min_relevance_score, log)
+    all_items = biokb_ranked + web_ranked
+
     if len(all_items) > inject_max:
         log(f"[LIT] ✂️ Injecting {inject_max}/{len(all_items)} items (inject limit)")
         all_items = all_items[:inject_max]
-    
+
     # Build final pack
     provider = "biokb+mirothink_web" if biokb_items else "mirothink_web"
     pack = KnowledgePack(
@@ -893,14 +971,14 @@ def retrieve_external_knowledge(
         items=all_items,
         provider=provider
     )
-    
+
     # Persist final pack
     if literature_dir:
         _persist_pack_artifacts(pack, cfg, stage, literature_dir, tag=tag, md_max_chars=md_max_chars, log=log)
     if workspace_out:
         _persist_pack_artifacts(pack, cfg, stage, workspace_out, tag=tag, md_max_chars=md_max_chars, log=log)
     _append_domain_knowledge(cfg, pack, log)
-    
+
     return pack
 
 
