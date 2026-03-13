@@ -517,6 +517,251 @@ class BaseAgent(abc.ABC):
 
 
 # =============================================================================
+# KnowledgeMemory — persistent cross-iteration evidence store
+# =============================================================================
+
+#: Maximum characters of knowledge memory context to inject into agent prompts.
+_MAX_MEMORY_CONTEXT_CHARS: int = 4000
+
+
+class KnowledgeMemory:
+    """Accumulates retrieved evidence items across pipeline iterations.
+
+    Responsibilities
+    ----------------
+    * **Deduplication** — items already retrieved in a previous iteration are
+      not re-injected, keeping the context fresh.
+    * **Usefulness tracking** — after each iteration the orchestrator calls
+      :meth:`mark_iteration_outcome` so the memory knows which knowledge
+      contributed to a metric improvement (ACCEPT) vs. regression (REJECT).
+    * **Context compression** — :meth:`to_context` renders a concise summary
+      suitable for injection into agent prompts, capped at *max_chars*.
+    * **Serialisation** — :meth:`to_dict` / :meth:`from_dict` enable lossless
+      round-trips through the JSON message bus.
+
+    Usage in the pipeline
+    ---------------------
+    The :class:`PipelineOrchestrator` owns a single ``KnowledgeMemory``
+    instance and passes its serialised form (``knowledge_memory`` key) to the
+    :class:`ResearchAgent` on each ``KNOWLEDGE_RETRIEVAL`` activation.  The
+    ResearchAgent updates the memory with newly retrieved items and forwards
+    the updated serialised memory through to the :class:`ModelingAgent` via
+    the Causal Context Payload.
+    """
+
+    #: Maximum number of evidence entries to retain (oldest are dropped).
+    MAX_ENTRIES: int = 50
+    #: Maximum characters to keep per scraped excerpt when stored in memory.
+    MAX_EXCERPT_CHARS: int = 500
+
+    def __init__(self) -> None:
+        # Full list of deduplicated evidence entries accumulated so far.
+        self._entries: List[Dict[str, Any]] = []
+        # Per-iteration metadata digests (one record per call to :meth:`update`).
+        self._iteration_digests: List[Dict[str, Any]] = []
+
+    # ------------------------------------------------------------------
+    # Mutation helpers
+    # ------------------------------------------------------------------
+
+    def update(
+        self,
+        items: List[Dict[str, Any]],
+        iteration: int,
+        knowledge_gap: str = "",
+    ) -> int:
+        """Add new evidence *items* to memory, skipping already-seen ones.
+
+        Args:
+            items: List of evidence item dicts (matching the
+                :class:`~cellscientist.core.external_knowledge_mirothink.EvidenceItem`
+                field layout: ``title``, ``url``, ``snippet``, ``eid``, …).
+            iteration: Current pipeline iteration number.
+            knowledge_gap: The knowledge-gap query that triggered this
+                retrieval round (stored for context).
+
+        Returns:
+            Number of *new* (non-duplicate) items actually added.
+        """
+        seen_urls: set = {e["url"] for e in self._entries if e.get("url")}
+        seen_titles: set = {e["title"] for e in self._entries if e.get("title")}
+
+        added = 0
+        for item in items:
+            url: str = item.get("url") or ""
+            title: str = item.get("title") or ""
+            # Skip stubs / error placeholders (no real URL and empty title).
+            if not url and not title:
+                continue
+            # Deduplicate by URL (preferred) or title.
+            if url and url in seen_urls:
+                continue
+            if title and title in seen_titles:
+                continue
+
+            seen_urls.add(url)
+            seen_titles.add(title)
+
+            # Trim long excerpts before storing to control memory size.
+            entry = dict(item)
+            excerpt = entry.get("scraped_excerpt") or ""
+            if len(excerpt) > self.MAX_EXCERPT_CHARS:
+                entry["scraped_excerpt"] = excerpt[: self.MAX_EXCERPT_CHARS] + "…"
+            entry["_added_at_iteration"] = iteration
+            entry["_knowledge_gap"] = knowledge_gap
+            self._entries.append(entry)
+            added += 1
+
+        # Trim oldest entries to stay within MAX_ENTRIES.
+        if len(self._entries) > self.MAX_ENTRIES:
+            self._entries = self._entries[-self.MAX_ENTRIES :]
+
+        self._iteration_digests.append(
+            {
+                "iteration": iteration,
+                "knowledge_gap": knowledge_gap,
+                "new_items_added": added,
+                "total_items": len(self._entries),
+                "verdict": "",        # filled in by mark_iteration_outcome()
+                "metric_delta": None,
+            }
+        )
+        return added
+
+    def mark_iteration_outcome(
+        self, iteration: int, verdict: str, metric_delta: Optional[float]
+    ) -> None:
+        """Record the ACCEPT/REJECT verdict for a given iteration.
+
+        This is called by the orchestrator after the Falsifiable Iteration
+        Protocol has issued its decision, so entries added during *iteration*
+        are retrospectively tagged with their usefulness.
+
+        Args:
+            iteration: The iteration number to update.
+            verdict: ``"ACCEPT"`` or ``"REJECT"``.
+            metric_delta: Metric change (positive = improvement).
+        """
+        # Tag every entry added in this iteration.
+        for entry in self._entries:
+            if entry.get("_added_at_iteration") == iteration:
+                entry["_verdict"] = verdict
+                entry["_metric_delta"] = metric_delta
+
+        # Update the digest record for this iteration.
+        for digest in self._iteration_digests:
+            if digest["iteration"] == iteration:
+                digest["verdict"] = verdict
+                digest["metric_delta"] = metric_delta
+                break
+
+    # ------------------------------------------------------------------
+    # Query helpers
+    # ------------------------------------------------------------------
+
+    def get_seen_urls(self) -> set:
+        """Return the set of URLs for all previously stored entries."""
+        return {e["url"] for e in self._entries if e.get("url")}
+
+    def get_seen_titles(self) -> set:
+        """Return the set of titles for all previously stored entries."""
+        return {e["title"] for e in self._entries if e.get("title")}
+
+    # ------------------------------------------------------------------
+    # Context rendering
+    # ------------------------------------------------------------------
+
+    def to_context(self, max_chars: int = 3000) -> str:
+        """Render accumulated memory as a concise context string.
+
+        The output is designed to be injected into agent prompts to provide
+        cross-iteration continuity.  It includes:
+
+        * A per-iteration retrieval digest (last 5 iterations).
+        * A short list of the most useful knowledge items (from ACCEPT
+          iterations that produced a positive metric delta).
+
+        Args:
+            max_chars: Hard cap on the returned string length.
+
+        Returns:
+            Formatted multi-line string, or an empty string when the memory
+            is empty.
+        """
+        if not self._iteration_digests:
+            return ""
+
+        lines: List[str] = ["## Cross-Iteration Knowledge Memory"]
+
+        # Per-iteration digest (most recent 5).
+        lines.append("### Retrieval History")
+        for rec in self._iteration_digests[-5:]:
+            verdict_str = rec.get("verdict") or "pending"
+            delta = rec.get("metric_delta")
+            delta_str = f" Δ={delta:+.4f}" if delta is not None else ""
+            gap = (rec.get("knowledge_gap") or "")[:80]
+            lines.append(
+                f"- Iter {rec['iteration']}: {rec['new_items_added']} new items"
+                f" | gap='{gap}' | {verdict_str}{delta_str}"
+            )
+
+        # Highlight previously useful knowledge items.
+        useful = [
+            e
+            for e in self._entries
+            if e.get("_verdict") == "ACCEPT"
+            and (e.get("_metric_delta") or 0) > 0
+        ]
+        if useful:
+            lines.append("### Previously Useful Knowledge (ACCEPT iterations)")
+            for entry in useful[-5:]:
+                eid = entry.get("eid") or entry.get("_added_at_iteration", "")
+                title = (entry.get("title") or "")[:80]
+                snippet = (entry.get("snippet") or "")[:200]
+                lines.append(f"- [{eid}] {title}: {snippet}")
+
+        # Warn about consistently rejected knowledge to help the agent avoid
+        # re-retrieving information that has not helped.
+        rejected_gaps: List[str] = [
+            rec["knowledge_gap"]
+            for rec in self._iteration_digests
+            if rec.get("verdict") == "REJECT" and rec.get("knowledge_gap")
+        ]
+        if rejected_gaps:
+            unique_rejected = list(dict.fromkeys(rejected_gaps))[-3:]
+            lines.append("### Knowledge Gaps That Did Not Help (consider alternatives)")
+            for gap in unique_rejected:
+                lines.append(f"- {gap[:120]}")
+
+        result = "\n".join(lines)
+        if len(result) > max_chars:
+            result = result[: max(0, max_chars - 3)] + "…"
+        return result
+
+    # ------------------------------------------------------------------
+    # Serialisation
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialise the memory to a plain dict for JSON message-bus transit."""
+        return {
+            "entries": list(self._entries),
+            "iteration_digests": list(self._iteration_digests),
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "KnowledgeMemory":
+        """Deserialise a previously :meth:`to_dict`-encoded memory.
+
+        Silently ignores unknown keys to handle schema evolution gracefully.
+        """
+        mem = cls()
+        mem._entries = list(d.get("entries") or [])
+        mem._iteration_digests = list(d.get("iteration_digests") or [])
+        return mem
+
+
+# =============================================================================
 # ResearchAgent
 # =============================================================================
 
@@ -562,6 +807,15 @@ class ResearchAgent(BaseAgent):
         knowledge_gap: str = message.get("knowledge_gap") or ""
         previous_iteration_logs: Dict[str, Any] = message.get("previous_iteration_logs") or {}
         falsifiable_verdict: Dict[str, Any] = message.get("falsifiable_verdict") or {}
+        iteration: int = int(message.get("iteration") or 0)
+
+        # Restore cross-iteration knowledge memory (deserialise from bus payload).
+        knowledge_memory_dict: Dict[str, Any] = message.get("knowledge_memory") or {}
+        knowledge_memory = (
+            KnowledgeMemory.from_dict(knowledge_memory_dict)
+            if knowledge_memory_dict
+            else KnowledgeMemory()
+        )
 
         # Use "refinement" stage for second-pass RAG, "design" for initial pass.
         stage: str = "refinement" if knowledge_gap else (message.get("stage") or "design")
@@ -587,6 +841,7 @@ class ResearchAgent(BaseAgent):
         # Attempt BioKB + literature retrieval; degrade gracefully on errors.
         bio_kb_data: Dict[str, Any] = {}
         literature_data: Dict[str, Any] = {}
+        pack_items_for_memory: List[Dict[str, Any]] = []
 
         # BioKB enrichment
         try:
@@ -613,6 +868,7 @@ class ResearchAgent(BaseAgent):
                 retrieve_external_knowledge,
                 knowledge_pack_to_markdown,
             )
+            from dataclasses import asdict as _asdict  # type: ignore
 
             query_text = knowledge_gap if knowledge_gap else (context_text or " ".join(smiles_list[:5]))
             pack = await asyncio.get_event_loop().run_in_executor(
@@ -625,8 +881,27 @@ class ResearchAgent(BaseAgent):
                 ),
             )
             literature_data = {"markdown_summary": knowledge_pack_to_markdown(pack)}
+
+            # Collect items for KnowledgeMemory deduplication tracking.
+            pack_items_for_memory = [_asdict(it) for it in (pack.items or [])]
         except Exception as exc:
             _log(f"[{self.agent_id}] Literature retrieval skipped: {exc}")
+
+        # ---- Update cross-iteration knowledge memory ----
+        # Only items not yet seen in previous iterations are recorded.  The
+        # count of new vs. duplicate items is logged for observability.
+        if pack_items_for_memory:
+            new_count = knowledge_memory.update(
+                pack_items_for_memory, iteration, knowledge_gap
+            )
+            _log(
+                f"[{self.agent_id}] KnowledgeMemory: +{new_count} new items "
+                f"(total={len(knowledge_memory._entries)})",
+                console=True,
+            )
+
+        # Render cross-iteration context for downstream agents.
+        memory_context: str = knowledge_memory.to_context()
 
         # ---- Innovation 2: SMILES-Driven Mechanism Prior ----
         # Build weak-supervision mechanism priors from SMILES chemical
@@ -653,6 +928,8 @@ class ResearchAgent(BaseAgent):
             "knowledge_gap": knowledge_gap,
             "previous_iteration_logs": previous_iteration_logs,
             "falsifiable_verdict": falsifiable_verdict,
+            # Cross-iteration memory context for the ModelingAgent.
+            "knowledge_memory_context": memory_context,
             # Legacy keys preserved for backward compatibility.
             "bio_kb_summary": bio_kb_data,
             "literature_summary": literature_data,
@@ -664,7 +941,8 @@ class ResearchAgent(BaseAgent):
             f"domain_model_chains={len(domain_model_causal_chains)}, "
             f"biokb={'yes' if bio_kb_data else 'no'}, "
             f"literature={'yes' if literature_data else 'no'}, "
-            f"prev_logs={'yes' if previous_iteration_logs else 'no'}",
+            f"prev_logs={'yes' if previous_iteration_logs else 'no'}, "
+            f"memory_context={'yes' if memory_context else 'no'}",
             console=True,
         )
 
@@ -672,11 +950,14 @@ class ResearchAgent(BaseAgent):
             status="success",
             data={
                 "biological_insight_report": report,
-                "iteration": int(message.get("iteration") or 0),
+                "iteration": iteration,
                 "max_iterations": int(message.get("max_iterations") or 5),
                 "history_summary": message.get("history_summary") or [],
                 "best_metric_score": message.get("best_metric_score"),
                 "_task_id": message.get("_task_id") or "",
+                # Forward serialised memory so the orchestrator can pass it
+                # back on the next KNOWLEDGE_RETRIEVAL activation.
+                "knowledge_memory": knowledge_memory.to_dict(),
             },
             next_recipient="modeling",
         )
@@ -1068,6 +1349,7 @@ class ModelingAgent(BaseAgent):
         current_metrics: Optional[Dict[str, Any]],
         sci_rules: Dict[str, Any],
         previous_logs: Optional[Dict[str, Any]] = None,
+        memory_context: str = "",
     ) -> Dict[str, str]:
         """Build additive context while preserving the legacy prompt contract."""
         protected_str = ", ".join(sci_rules.get("protected_sections") or [])
@@ -1155,6 +1437,17 @@ class ModelingAgent(BaseAgent):
 
         if falsifiable_context:
             sections.append(falsifiable_context.strip())
+
+        # Cross-iteration knowledge memory context (injected when available).
+        if memory_context:
+            sections.append(
+                "## CROSS-ITERATION KNOWLEDGE MEMORY\n"
+                "The following summarises knowledge retrieved in previous iterations, "
+                "which ones led to metric improvements (ACCEPT), and which did not (REJECT).\n"
+                "Consult this to avoid re-using knowledge that did not help and to "
+                "build on evidence that has already proven useful.\n"
+                f"{memory_context[:_MAX_MEMORY_CONTEXT_CHARS]}"
+            )
 
         return {
             "system_appendix": system_appendix,
@@ -1251,6 +1544,7 @@ class ModelingAgent(BaseAgent):
             current_metrics=current_metrics or insight_report.get("current_metrics") or previous_logs.get("raw_metrics") or previous_logs.get("metrics") or {},
             sci_rules=sci_rules,
             previous_logs=previous_logs,
+            memory_context=insight_report.get("knowledge_memory_context") or "",
         )
 
         original_system = str(spec.get("system") or "You are an expert.")
@@ -1523,6 +1817,8 @@ class ModelingAgent(BaseAgent):
                     "iteration": iteration,
                     "max_iterations": int(message.get("max_iterations") or 5),
                     "_task_id": task_id,
+                    # Transparent pass-through for cross-iteration knowledge memory.
+                    "knowledge_memory": message.get("knowledge_memory") or {},
                 })
 
                 metadata = artifact_payload.get("modeling_metadata") or {}
@@ -1678,6 +1974,8 @@ class ModelingAgent(BaseAgent):
                     "decision_type": "REFINE" if error_logs else "EXPLORE",
                 },
                 "_task_id": message.get("_task_id") or "",
+                # Transparent pass-through for cross-iteration knowledge memory.
+                "knowledge_memory": message.get("knowledge_memory") or {},
             },
             next_recipient="code_execution",
         )
@@ -1894,6 +2192,8 @@ class ExecutionAgent(BaseAgent):
                     "iteration": iteration,
                     "max_iterations": max_iterations,
                     "_task_id": task_id,
+                    # Transparent pass-through for cross-iteration knowledge memory.
+                    "knowledge_memory": message.get("knowledge_memory") or {},
                 },
                 next_recipient="evaluation",
             )
@@ -1912,6 +2212,8 @@ class ExecutionAgent(BaseAgent):
                     "iteration": iteration,
                     "max_iterations": max_iterations,
                     "_task_id": task_id,
+                    # Transparent pass-through for cross-iteration knowledge memory.
+                    "knowledge_memory": message.get("knowledge_memory") or {},
                 },
                 next_recipient="evaluation",
             )
@@ -2005,6 +2307,8 @@ class ExecutionAgent(BaseAgent):
                 "iteration": iteration,
                 "max_iterations": max_iterations,
                 "_task_id": task_id,
+                # Transparent pass-through for cross-iteration knowledge memory.
+                "knowledge_memory": message.get("knowledge_memory") or {},
             },
             next_recipient="evaluation",
         )
@@ -2430,6 +2734,8 @@ class EvaluationAgent(BaseAgent):
         insight_report: Dict[str, Any] = message.get("insight_report") or {}
         iteration: int = int(message.get("iteration") or 0)
         max_iterations: int = int(message.get("max_iterations") or 5)
+        # Transparent pass-through for cross-iteration knowledge memory.
+        knowledge_memory: Dict[str, Any] = message.get("knowledge_memory") or {}
 
         # Load dynamic metric config from pipeline/review configuration.
         metric_cfg = self._get_metric_config()
@@ -2513,6 +2819,7 @@ class EvaluationAgent(BaseAgent):
                     "insight_report": insight_report,
                     "iteration": iteration,
                     "max_iterations": max_iterations,
+                    "knowledge_memory": knowledge_memory,
                 },
                 next_recipient="orchestration",
             )
@@ -2554,6 +2861,7 @@ class EvaluationAgent(BaseAgent):
                     "insight_report": insight_report,
                     "iteration": iteration,
                     "max_iterations": max_iterations,
+                    "knowledge_memory": knowledge_memory,
                 },
                 next_recipient="orchestration",
             )
@@ -2590,6 +2898,7 @@ class EvaluationAgent(BaseAgent):
                 "insight_report": insight_report,
                 "iteration": iteration,
                 "max_iterations": max_iterations,
+                "knowledge_memory": knowledge_memory,
             },
             next_recipient="orchestration",
         )

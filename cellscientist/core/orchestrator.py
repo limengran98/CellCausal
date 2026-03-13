@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .agents import (
     EvaluationAgent,
     ExecutionAgent,
+    KnowledgeMemory,
     ModelingAgent,
     ResearchAgent,
     TaskContext,
@@ -213,6 +214,11 @@ class PipelineOrchestrator:
         self.last_accepted_metrics: Dict[str, Any] = {}
         # Counter for consecutive rejections; triggers forced new hypothesis.
         self.consecutive_rejections: int = 0
+
+        # ---- Cross-iteration knowledge memory ----
+        # Persists evidence items across KNOWLEDGE_RETRIEVAL activations so the
+        # ResearchAgent can deduplicate, track usefulness, and surface history.
+        self.knowledge_memory: KnowledgeMemory = KnowledgeMemory()
 
         # Bootstrap: enter the INITIALIZING state.
         self._enter_state(PipelineState.INITIALIZING)
@@ -496,6 +502,8 @@ class PipelineOrchestrator:
             # Embed FSM state so agents can include it in their logs.
             "_fsm_state": self.current_state.value if self.current_state else "",
             "_task_id": self.context.task_id,
+            # Seed cross-iteration knowledge memory (empty on first run).
+            "knowledge_memory": self.knowledge_memory.to_dict(),
         }
         # The ResearchAgent subscribes to biology_insights; trigger it.
         await self.bus.publish("biology_insights", initial_message)
@@ -551,6 +559,11 @@ class PipelineOrchestrator:
                 if isinstance(exec_stats, dict):
                     execution_stats_log.append(dict(exec_stats))
                 total_iterations += 1
+
+                # Receive updated knowledge memory threaded through the evaluation chain.
+                incoming_memory_dict = data.get("knowledge_memory") or {}
+                if incoming_memory_dict:
+                    self.knowledge_memory = KnowledgeMemory.from_dict(incoming_memory_dict)
 
                 # Bug 1 fix: always increment self.context.iteration so that
                 # EvaluationAgent's `iteration >= max_iterations - 1` guard
@@ -658,6 +671,15 @@ class PipelineOrchestrator:
                     verdict_info = self._evaluate_iteration(data, next_iteration)
                     verdict = verdict_info["verdict"]
 
+                    # Tag the knowledge memory entries for this iteration with
+                    # the ACCEPT/REJECT verdict so the ResearchAgent can surface
+                    # useful vs. unhelpful knowledge in future retrievals.
+                    self.knowledge_memory.mark_iteration_outcome(
+                        next_iteration,
+                        verdict,
+                        verdict_info.get("metric_delta"),
+                    )
+
                     # On REJECT: revert the working artifact to the last accepted
                     # notebook/code state and augment feedback to force a new idea.
                     code_for_next = data.get("code") or ""
@@ -755,6 +777,9 @@ class PipelineOrchestrator:
                                 "falsifiable_verdict": verdict_info,
                                 "_fsm_state": self.current_state.value if self.current_state else "",
                                 "_task_id": self.context.task_id,
+                                # Pass accumulated knowledge memory so ResearchAgent
+                                # can deduplicate and surface cross-iteration context.
+                                "knowledge_memory": self.knowledge_memory.to_dict(),
                             },
                         )
                     else:
@@ -781,6 +806,8 @@ class PipelineOrchestrator:
                                 "falsifiable_verdict": verdict_info,
                                 "_fsm_state": self.current_state.value if self.current_state else "",
                                 "_task_id": self.context.task_id,
+                                # Pass accumulated knowledge memory for prompt augmentation.
+                                "knowledge_memory": self.knowledge_memory.to_dict(),
                             },
                         )
                     continue
