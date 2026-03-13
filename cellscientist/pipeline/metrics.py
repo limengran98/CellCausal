@@ -522,77 +522,51 @@ def rates(attempted: int, clean_success: int, succeeded: int, bug: int) -> Tuple
 
 
 def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
-    """Print final success rate scoreboard with enhanced formatting."""
+    """Print a concise final pipeline snapshot.
+
+    The previous rich scoreboard table is intentionally removed to avoid noisy
+    end-of-run output and to keep the final summary easier to read in logs.
+    """
     stages = summary.get("stages", {})
+    dataset = summary.get("dataset", "unknown")
+    experiment = stages.get("Experiment", {})
+    review = stages.get("Review", {})
+    total = stages.get("Total", {})
+
+    attempted = int(experiment.get("attempted") or 0)
+    succeeded = int(experiment.get("succeeded") or 0)
+    success_rate = experiment.get("success_rate")
+    best_metric = experiment.get("best_metric") or "PCC"
+    best_value = experiment.get("best_at_budget")
+    total_time = total.get("time_sec")
+
+    sr_txt = f"{float(success_rate) * 100:.1f}%" if isinstance(success_rate, (int, float)) else "-"
+    best_txt = f"{best_metric}={float(best_value):.4f}" if isinstance(best_value, (int, float)) else "-"
+    time_txt = f"{float(total_time):.1f}s" if isinstance(total_time, (int, float)) else "-"
+
+    lines = [
+        f"[PipelineSummary] dataset={dataset}",
+        f"[PipelineSummary] success={succeeded}/{attempted} ({sr_txt})",
+        f"[PipelineSummary] best={best_txt}",
+        f"[PipelineSummary] total_time={time_txt}",
+    ]
+
+    if review:
+        rev_attempted = int(review.get("attempted") or 0)
+        rev_succeeded = int(review.get("succeeded") or 0)
+        rev_sr = review.get("success_rate")
+        rev_sr_txt = f"{float(rev_sr) * 100:.1f}%" if isinstance(rev_sr, (int, float)) else "-"
+        lines.append(f"[PipelineSummary] review_success={rev_succeeded}/{rev_attempted} ({rev_sr_txt})")
+
     console = console if console is not None else _maybe_console()
     if console:
-        from rich.table import Table
-
-        table = Table(title=f"📊 Success Rate Scoreboard ([bold]{summary.get('dataset')}[/])", 
-                     border_style="bright_green")
-        table.add_column("Stage", style="bold")
-        table.add_column("Success ↑", justify="right", style="green")
-        table.add_column("Best@Budget", justify="right", style="bright_cyan bold")
-        table.add_column("Time (s)", justify="right", style="yellow")
-        table.add_column("Token Cost", justify="right", style="magenta")
-
-        for stage_name in ["Experiment", "Review", "Total"]:
-            row = stages.get(stage_name, {})
-            
-            # Success rate with attempted count
-            sr = row.get("success_rate")
-            attempted = row.get("attempted") or 0
-            succeeded = row.get("succeeded") or 0
-            if stage_name == "Total":
-                sr_s = "━━━━━━"
-            else:
-                sr_pct = f"{sr*100:.0f}%" if isinstance(sr, (int, float)) else "-"
-                sr_s = f"{sr_pct} ({succeeded}/{attempted})"
-            
-            # Best score
-            best = row.get("best_at_budget")
-            metric = str(row.get("best_metric", ""))
-            if stage_name == "Total":
-                # For total row, show overall best from both stages
-                exp_best = stages.get("Experiment", {}).get("best_at_budget")
-                rev_best = stages.get("Review", {}).get("best_at_budget")
-                candidates = [x for x in [exp_best, rev_best] if isinstance(x, (int, float))]
-                if candidates:
-                    best = max(candidates)
-                    best_s = f"[bold]{best:.4f}[/bold]" if isinstance(best, (int, float)) else "-"
-                else:
-                    best_s = "-"
-            else:
-                best_s = f"{metric}={best:.4f}" if isinstance(best, (int, float)) and metric else "-"
-            
-            # Time
-            tsec = row.get("time_sec")
-            if stage_name == "Total":
-                tsec_s = f"[bold]{tsec:.1f}[/bold]" if isinstance(tsec, (int, float)) else "-"
-            else:
-                tsec_s = f"{tsec:.1f}" if isinstance(tsec, (int, float)) else "-"
-            
-            # Token cost placeholder - will be integrated with TokenMeter in future
-            # when LLM client metrics are passed to pipeline summary
-            token_cost = "-"
-            
-            # Style Total row differently
-            if stage_name == "Total":
-                table.add_row(f"[bold]{stage_name}[/bold]", sr_s, best_s, tsec_s, f"[bold]{token_cost}[/bold]")
-            else:
-                table.add_row(stage_name, sr_s, best_s, tsec_s, token_cost)
-
         console.print("")
-        console.print(table)
+        for line in lines:
+            console.print(line)
     else:
-        print("\n=== Scoreboard ===")
-        for stage_name in ["Experiment", "Review", "Total"]:
-            row = stages.get(stage_name, {})
-            print(
-                f"{stage_name}: Success={row.get('success_rate')}, ZeroShot={row.get('clean_rate')}, "
-                f"BugRate={row.get('bug_rate')}, Avg={row.get('avg_at_budget')}, Best={row.get('best_at_budget')}, "
-                f"Metric={row.get('best_metric')}, Time={row.get('time_sec')}"
-            )
+        print("")
+        for line in lines:
+            print(line)
 
 
 def scoreboard_from_orchestrator(
