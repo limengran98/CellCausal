@@ -122,15 +122,58 @@ class TestFalsifiableProtocol:
         assert result["verdict"] == "REJECT"
         assert result["forced_new_hypothesis"] is False
 
-    def test_equal_score_accepted(self):
-        """Equal score (delta=0) should be accepted."""
+    def test_flat_iterations_tracked(self):
+        """Flat metric (delta < threshold) increments consecutive_flat_iterations."""
         orch = self._make_orchestrator()
         orch._evaluate_iteration({"accuracy": 0.5, "code": "x=1"}, 0)
-        result = orch._evaluate_iteration({"accuracy": 0.5, "code": "x=2"}, 1)
+        result = orch._evaluate_iteration({"accuracy": 0.5001, "code": "x=2"}, 1)
+        # delta = 0.0001 < _FLAT_DELTA_THRESHOLD (0.0005)
         assert result["verdict"] == "ACCEPT"
-        assert result["metric_delta"] == 0.0
+        assert orch.consecutive_flat_iterations == 1
 
-    def test_iteration_history_populated(self):
+    def test_real_improvement_resets_flat_counter(self):
+        """A delta above the threshold resets the flat counter."""
+        orch = self._make_orchestrator()
+        orch._evaluate_iteration({"accuracy": 0.5, "code": "x=1"}, 0)
+        # Flat iteration
+        orch._evaluate_iteration({"accuracy": 0.5001, "code": "x=2"}, 1)
+        assert orch.consecutive_flat_iterations == 1
+        # Real improvement
+        orch._evaluate_iteration({"accuracy": 0.6, "code": "x=3"}, 2)
+        assert orch.consecutive_flat_iterations == 0
+
+    def test_plateau_forces_new_hypothesis(self):
+        """Reaching FLAT_FORCE_NEW_THRESHOLD consecutive flat iterations forces new hypothesis."""
+        orch = self._make_orchestrator()
+        threshold = PipelineOrchestrator._FLAT_FORCE_NEW_THRESHOLD
+        orch._evaluate_iteration({"accuracy": 0.5, "code": "x=1"}, 0)
+        for i in range(threshold):
+            result = orch._evaluate_iteration(
+                {"accuracy": 0.5 + (i + 1) * 0.0001, "code": f"x={i}"},
+                i + 1,
+            )
+        assert result["forced_new_hypothesis"] is True
+        assert result["flat_iterations"] == threshold
+
+    def test_rejection_resets_flat_counter(self):
+        """A rejection (metric decrease) resets the flat counter."""
+        orch = self._make_orchestrator()
+        orch._evaluate_iteration({"accuracy": 0.5, "code": "x=1"}, 0)
+        # Flat iteration
+        orch._evaluate_iteration({"accuracy": 0.5001, "code": "x=2"}, 1)
+        assert orch.consecutive_flat_iterations == 1
+        # Degradation
+        orch._evaluate_iteration({"accuracy": 0.3, "code": "x=3"}, 2)
+        assert orch.consecutive_flat_iterations == 0
+
+    def test_flat_score_verdict_includes_flat_iterations_key(self):
+        """Verdict dict must always include 'flat_iterations' key."""
+        orch = self._make_orchestrator()
+        result = orch._evaluate_iteration({"accuracy": 0.5, "code": "x=1"}, 0)
+        assert "flat_iterations" in result
+
+
+
         """Iteration history should be populated."""
         orch = self._make_orchestrator()
         orch._evaluate_iteration({"accuracy": 0.5}, 0)
@@ -383,6 +426,34 @@ class TestResearchAgentZeroDoseChain:
         )
         causal_law_chains = [c for c in chains if c.get("constraint_type") == "causal_law"]
         assert len(causal_law_chains) == 1
+
+    def test_iteration_rotation_produces_diverse_chains(self):
+        """Different iterations should surface at least some different top chains."""
+        chains_0 = ResearchAgent._derive_domain_model_causal_chains(
+            smiles_priors=[], literature_md="", knowledge_gap="", iteration=0
+        )
+        chains_4 = ResearchAgent._derive_domain_model_causal_chains(
+            smiles_priors=[], literature_md="", knowledge_gap="", iteration=4
+        )
+        signals_0 = {c["domain_signal"] for c in chains_0 if c.get("constraint_type") != "causal_law"}
+        signals_4 = {c["domain_signal"] for c in chains_4 if c.get("constraint_type") != "causal_law"}
+        # Rotation of 4 positions in a pool of 14+ templates must expose some unique chains.
+        assert len(signals_0.symmetric_difference(signals_4)) > 0, (
+            "Different iterations should surface different chains from the template pool"
+        )
+
+    def test_expanded_templates_cover_gnn_pathway_pretraining(self):
+        """At least some iterations should surface GNN / pathway / pre-training chains."""
+        all_signals = set()
+        for iteration in range(20):
+            chains = ResearchAgent._derive_domain_model_causal_chains(
+                smiles_priors=[], literature_md="", knowledge_gap="", iteration=iteration
+            )
+            all_signals.update(c["domain_signal"] for c in chains)
+        signals_str = " ".join(all_signals).lower()
+        assert "gnn" in signals_str or "molecular graph" in signals_str or "scaffold" in signals_str
+        assert "pre-train" in signals_str or "contrastive" in signals_str or "transfer" in signals_str
+        assert "pathway" in signals_str or "gene ontology" in signals_str or "multi-task" in signals_str
 
 
 # =============================================================================
