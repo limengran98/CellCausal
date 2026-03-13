@@ -914,6 +914,7 @@ class ResearchAgent(BaseAgent):
             smiles_mechanism_prior,
             (literature_data.get("markdown_summary") or "") if isinstance(literature_data, dict) else "",
             knowledge_gap,
+            iteration=iteration,
         )
 
         # Assemble the structured Causal Context Payload.
@@ -1080,15 +1081,27 @@ class ResearchAgent(BaseAgent):
         smiles_priors: List[Dict[str, Any]],
         literature_md: str,
         knowledge_gap: str = "",
+        iteration: int = 0,
     ) -> List[Dict[str, Any]]:
         """Derive domain->model causal chains for modeling guidance.
 
         Each chain links:
         domain signal/hypothesis -> mechanism rationale -> concrete modeling choice.
+
+        The template pool is larger than what's returned each call.  An
+        iteration-aware offset ensures that different subsets of templates are
+        foregrounded across successive pipeline iterations, preventing the
+        model from being constrained to the same architectural suggestions
+        every round.
         """
         text = (literature_md or "").lower()
         kg = (knowledge_gap or "").strip()
-        chain_templates = [
+
+        # Full pool of diverse domain-to-model causal chain templates.
+        # Grouped into categories so the rotation below can surface different
+        # biological modeling paradigms across iterations.
+        _ALL_TEMPLATES = [
+            # --- Category 1: Signal-quality / DEG targets ---
             (
                 ("high-variance", "deg", "differentially expressed"),
                 "High-variance DEG signals are underfit",
@@ -1101,6 +1114,7 @@ class ResearchAgent(BaseAgent):
                 "Scale bias can hurt PCC despite reasonable MSE",
                 "Add differentiable PCC term and post-hoc calibration head.",
             ),
+            # --- Category 2: Multi-modal fusion ---
             (
                 ("cross-attention", "multimodal", "fusion"),
                 "Cross-modal signal alignment is critical",
@@ -1113,16 +1127,104 @@ class ResearchAgent(BaseAgent):
                 "Single linear head underfits magnitude scaling",
                 "Add dose-conditioned branch or monotonic calibration subnetwork.",
             ),
+            # --- Category 3: Graph-based molecular representation ---
+            (
+                ("graph", "gnn", "molecular graph", "atom"),
+                "Molecular topology encodes pharmacological mechanism",
+                "ECFP fingerprints lose subgraph connectivity information",
+                "Replace ECFP fingerprints with a GNN encoder over the molecular graph for richer structural features.",
+            ),
+            (
+                ("scaffold", "substructure", "functional group"),
+                "Shared molecular scaffolds predict shared pathway activity",
+                "Fingerprint similarity does not capture scaffold-level pharmacophore overlap",
+                "Apply scaffold-aware contrastive loss to bring molecules sharing functional groups closer in latent space.",
+            ),
+            # --- Category 4: Representation learning / pre-training ---
+            (
+                ("contrastive", "self-supervised", "pre-train"),
+                "Pre-training on unpaired cell data improves transfer",
+                "Supervised-only training on small labelled sets causes overfitting",
+                "Add a self-supervised contrastive pre-training stage on the morphology features before fine-tuning.",
+            ),
+            (
+                ("transfer", "domain adaptation", "pretrained"),
+                "Cell morphology features are transferable across compound families",
+                "Training from scratch on each dataset wastes cross-domain signal",
+                "Use a pre-trained morphology encoder frozen during early epochs, then fine-tuned end-to-end.",
+            ),
+            # --- Category 5: Multi-task and auxiliary objectives ---
+            (
+                ("multi-task", "auxiliary", "joint"),
+                "Jointly predicting multiple biological outcomes improves generalisation",
+                "Single-task models overfit to one metric at the expense of others",
+                "Add auxiliary heads for DEG_PCC_20 and R2_DM alongside the primary MSE objective.",
+            ),
+            (
+                ("pathway", "gene ontology", "go term", "biological process"),
+                "Pathway-level grouping provides inductive bias for gene co-regulation",
+                "Per-gene predictions ignore the known co-regulation structure of signalling cascades",
+                "Incorporate a pathway-consistency regularisation loss using known GO gene sets.",
+            ),
+            # --- Category 6: Uncertainty and distribution modelling ---
+            (
+                ("uncertainty", "bayesian", "dropout", "ensemble"),
+                "Prediction uncertainty correlates with tail-gene difficulty",
+                "Deterministic models cannot distinguish confident from uncertain predictions",
+                "Introduce Monte-Carlo dropout or deep ensembles to model predictive uncertainty and weight uncertain samples differently in the loss.",
+            ),
+            (
+                ("distribution", "normalizing flow", "vae", "latent"),
+                "Cell state perturbation is inherently a conditional distribution shift",
+                "Regression outputs do not capture multimodal cell-response distributions",
+                "Replace regression head with a conditional normalizing flow or VAE decoder to model the full response distribution.",
+            ),
+            # --- Category 7: Regularisation and robustness ---
+            (
+                ("regularization", "dropout", "weight decay", "overfitting"),
+                "Deep fusion models are prone to overfitting on small cohorts",
+                "High-capacity models memorise training folds and generalise poorly to held-out SMILES",
+                "Add structured dropout, mixup augmentation in latent space, and cross-fold consistency regularisation.",
+            ),
+            (
+                ("data augmentation", "noise", "perturbation"),
+                "Morphology measurements contain systematic measurement noise",
+                "Models trained on clean data fail under realistic acquisition noise",
+                "Apply Gaussian noise injection and feature-level dropout as augmentation during training.",
+            ),
         ]
 
+        # Keyword-triggered chains: always include ones whose keywords match the
+        # literature text or knowledge gap.
         chains: List[Dict[str, Any]] = []
-        for kws, signal, hypothesis, modeling in chain_templates:
+        for kws, signal, hypothesis, modeling in _ALL_TEMPLATES:
             if any(kw in text for kw in kws) or any(kw in kg.lower() for kw in kws):
                 chains.append({
                     "domain_signal": signal,
                     "causal_hypothesis": hypothesis,
                     "modeling_implication": modeling,
                 })
+
+        # Iteration-aware rotation: surface a different subset of templates on
+        # each iteration so the model is exposed to varied suggestions rather
+        # than always seeing the same keyword-triggered chains.
+        # We cycle through the full template pool using a fixed stride so that
+        # across N iterations the coverage is maximally diverse.
+        _ROTATION_WINDOW = 4
+        rotation_offset = (iteration * _ROTATION_WINDOW) % len(_ALL_TEMPLATES)
+        for i in range(_ROTATION_WINDOW):
+            idx = (rotation_offset + i) % len(_ALL_TEMPLATES)
+            _, signal, hypothesis, modeling = _ALL_TEMPLATES[idx]
+            candidate = {
+                "domain_signal": signal,
+                "causal_hypothesis": hypothesis,
+                "modeling_implication": modeling,
+            }
+            # Deduplicate against already-added chains.
+            if not any(
+                c["domain_signal"] == signal for c in chains
+            ):
+                chains.append(candidate)
 
         # Mechanism priors can also produce chain entries when targets/pathways exist.
         for p in (smiles_priors or [])[:10]:
@@ -1819,6 +1921,9 @@ class ModelingAgent(BaseAgent):
                     "_task_id": task_id,
                     # Transparent pass-through for cross-iteration knowledge memory.
                     "knowledge_memory": message.get("knowledge_memory") or {},
+                    # Transparent pass-through for history so EvaluationAgent can
+                    # detect stagnation across iterations.
+                    "history_summary": history_summary,
                 })
 
                 metadata = artifact_payload.get("modeling_metadata") or {}
@@ -1976,6 +2081,9 @@ class ModelingAgent(BaseAgent):
                 "_task_id": message.get("_task_id") or "",
                 # Transparent pass-through for cross-iteration knowledge memory.
                 "knowledge_memory": message.get("knowledge_memory") or {},
+                # Transparent pass-through for history so EvaluationAgent can
+                # detect stagnation across iterations.
+                "history_summary": message.get("history_summary") or [],
             },
             next_recipient="code_execution",
         )
@@ -2194,6 +2302,9 @@ class ExecutionAgent(BaseAgent):
                     "_task_id": task_id,
                     # Transparent pass-through for cross-iteration knowledge memory.
                     "knowledge_memory": message.get("knowledge_memory") or {},
+                    # Transparent pass-through for history so EvaluationAgent can
+                    # detect stagnation across iterations.
+                    "history_summary": message.get("history_summary") or [],
                 },
                 next_recipient="evaluation",
             )
@@ -2214,6 +2325,9 @@ class ExecutionAgent(BaseAgent):
                     "_task_id": task_id,
                     # Transparent pass-through for cross-iteration knowledge memory.
                     "knowledge_memory": message.get("knowledge_memory") or {},
+                    # Transparent pass-through for history so EvaluationAgent can
+                    # detect stagnation across iterations.
+                    "history_summary": message.get("history_summary") or [],
                 },
                 next_recipient="evaluation",
             )
@@ -2309,6 +2423,9 @@ class ExecutionAgent(BaseAgent):
                 "_task_id": task_id,
                 # Transparent pass-through for cross-iteration knowledge memory.
                 "knowledge_memory": message.get("knowledge_memory") or {},
+                # Transparent pass-through for history so EvaluationAgent can
+                # detect stagnation across iterations.
+                "history_summary": message.get("history_summary") or [],
             },
             next_recipient="evaluation",
         )
@@ -2734,6 +2851,7 @@ class EvaluationAgent(BaseAgent):
         insight_report: Dict[str, Any] = message.get("insight_report") or {}
         iteration: int = int(message.get("iteration") or 0)
         max_iterations: int = int(message.get("max_iterations") or 5)
+        history_summary: List[Dict[str, Any]] = message.get("history_summary") or []
         # Transparent pass-through for cross-iteration knowledge memory.
         knowledge_memory: Dict[str, Any] = message.get("knowledge_memory") or {}
 
@@ -2835,6 +2953,8 @@ class EvaluationAgent(BaseAgent):
                 stdout, stderr, tb, code, all_metrics, target_metric,
                 pass_threshold, direction,
                 constraint_report=constraint_report,
+                iteration=iteration,
+                history_summary=history_summary,
             )
             feedback_package["metric_delta"] = metric_delta
             feedback_package["metric_trend"] = metric_trend
@@ -2871,6 +2991,8 @@ class EvaluationAgent(BaseAgent):
             stdout, stderr, tb, code, all_metrics, target_metric,
             pass_threshold, direction,
             constraint_report=constraint_report,
+            iteration=iteration,
+            history_summary=history_summary,
         )
         feedback_package["metric_delta"] = metric_delta
         feedback_package["metric_trend"] = metric_trend
@@ -2919,6 +3041,8 @@ class EvaluationAgent(BaseAgent):
         direction: str,
         *,
         constraint_report: Optional[Dict[str, Any]] = None,
+        iteration: int = 0,
+        history_summary: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Use the LLM to produce a structured feedback package.
 
@@ -2932,6 +3056,11 @@ class EvaluationAgent(BaseAgent):
         constraint violations are prepended to ``technical_feedback`` so that
         the :class:`ModelingAgent` is explicitly directed to fix them in the
         next iteration.
+
+        When *iteration* > 1 and *history_summary* shows no improvement,
+        the feedback is augmented with anti-stagnation guidance that explicitly
+        asks for a fundamentally different approach rather than incremental
+        Architecture/Fusion/Loss tweaks.
 
         Falls back to a heuristic package if the LLM call fails.
 
@@ -2948,11 +3077,16 @@ class EvaluationAgent(BaseAgent):
                 :meth:`BiologicalConstraintVerifier.verify`.  When provided
                 and ``mechanistic_loss`` is ``True``, the violation summary is
                 prepended to the returned ``technical_feedback``.
+            iteration: Current pipeline iteration number (0-indexed).
+            history_summary: Ordered list of per-iteration history records from
+                the orchestrator.  Used to detect stagnation and extract the
+                list of previously tried strategies.
 
         Returns:
             Dict with ``technical_feedback``, ``knowledge_gap``, and
             ``suggested_target`` keys.
         """
+        history_summary = history_summary or []
         primary_value = all_metrics.get(target_metric)
         primary_str = f"{primary_value:.4f}" if primary_value is not None else "N/A"
         metrics_summary = "\n".join(
@@ -2984,25 +3118,103 @@ class EvaluationAgent(BaseAgent):
                     + guidance_block + "\n"
                 )
 
+        # Detect stagnation: extract tried strategies and check for flat scores.
+        # Use the same delta threshold as the orchestrator's _FLAT_DELTA_THRESHOLD so
+        # both components agree on what constitutes a "flat" iteration.
+        _FLAT_DELTA_THRESHOLD = 0.0005
+        tried_strategies: List[str] = [
+            str(h.get("strategy") or h.get("decision") or "")
+            for h in history_summary
+            if h.get("strategy") or h.get("decision")
+        ]
+        flat_count = 0
+        if len(history_summary) >= 2:
+            scores = [
+                h.get("score")
+                for h in history_summary[-3:]
+                if h.get("score") is not None
+            ]
+            if len(scores) >= 2:
+                deltas = [abs(scores[i] - scores[i - 1]) for i in range(1, len(scores))]
+                flat_count = sum(1 for d in deltas if d < _FLAT_DELTA_THRESHOLD)
+
+        is_stagnating = iteration >= 2 and flat_count >= 1
+
+        # Build the stagnation-aware context string for the prompt.
+        stagnation_context = ""
+        if is_stagnating and tried_strategies:
+            unique_tried = list(dict.fromkeys(s for s in tried_strategies if s))[:8]
+            stagnation_context = (
+                f"\n\n## ⚠️ ANTI-STAGNATION ALERT (iteration {iteration})\n"
+                f"The primary metric has not improved meaningfully over the last "
+                f"{flat_count + 1} iterations. "
+                "Do NOT propose any further incremental changes to:\n"
+                "  - Node A (Architecture/Backbone)\n"
+                "  - Node B (Fusion/Attention)\n"
+                "  - Node C (Loss Function)\n"
+                "if those dimensions have already been tweaked.\n\n"
+                "Strategies already attempted (DO NOT REPEAT):\n"
+                + "\n".join(f"  • {s}" for s in unique_tried)
+                + "\n\nInstead, propose a FUNDAMENTALLY DIFFERENT biological modeling "
+                "paradigm, for example:\n"
+                "  - Self-supervised pre-training on unlabelled morphology data\n"
+                "  - GNN-based molecular graph encoder instead of fingerprints\n"
+                "  - Multi-task objectives (jointly predict multiple cellular responses)\n"
+                "  - Pathway-consistency regularisation using gene ontology sets\n"
+                "  - Normalizing-flow / VAE decoder for distribution modelling\n"
+                "  - Contrastive representation learning across treatment groups\n"
+            )
+        elif is_stagnating:
+            stagnation_context = (
+                f"\n\n## ⚠️ ANTI-STAGNATION ALERT (iteration {iteration})\n"
+                "The primary metric has not improved meaningfully in recent iterations. "
+                "Propose a FUNDAMENTALLY DIFFERENT biological modeling paradigm rather "
+                "than incremental Architecture/Fusion/Loss tweaks."
+            )
+
         try:
             from .llm_client import chat_json, resolve_llm_config  # type: ignore
 
             llm_cfg = resolve_llm_config(self.config)
-            system_prompt = (
-                "You are a Principal AI Scientist evaluating a virtual cell perturbation model. "
-                "Analyse the execution output and the full biological metric suite, then return a "
-                "JSON object with exactly these keys:\n"
-                "- technical_feedback (str): Specific, actionable guidance grounded in the metric "
-                "analysis. Reference Hypergraph Node concepts (Architecture/Backbone, "
-                "Data Fusion/Attention, Loss Function & Optimization) and cell-granularity "
-                "(T0-T6 Jupyter cells). E.g., 'DEG_PCC_20 is low → the model struggles with "
-                "high-variance genes; add a rank-based loss term in Node C (Loss).'.\n"
-                "- knowledge_gap (str): A targeted literature search query if more biological "
-                "context is needed (e.g., 'MAPK pathway for DEG high-variance gene modeling'). "
-                "Empty string if not needed.\n"
-                "- suggested_target (str): Either 'modeling' (code changes priority) or "
-                "'research' (more biological knowledge needed first)."
-            )
+
+            # When stagnating, use a less prescriptive system prompt that
+            # encourages exploration beyond the fixed 3-node hierarchy.
+            if is_stagnating:
+                system_prompt = (
+                    "You are a Principal AI Scientist evaluating a virtual cell perturbation "
+                    "model that has STAGNATED — the primary metric has not improved for "
+                    "multiple iterations. "
+                    "Your task is to identify the ROOT CAUSE of stagnation and propose a "
+                    "FUNDAMENTALLY DIFFERENT biological modeling direction. "
+                    "Do NOT suggest incremental tweaks to the current architecture. "
+                    "Return a JSON object with exactly these keys:\n"
+                    "- technical_feedback (str): Root-cause analysis and a concrete proposal "
+                    "for a NEW modeling paradigm (e.g., self-supervised pre-training, GNN "
+                    "molecular encoder, normalizing flow, multi-task objectives, pathway "
+                    "regularisation). Be specific about what code changes to make.\n"
+                    "- knowledge_gap (str): A targeted literature search query for the "
+                    "proposed new paradigm (e.g., 'contrastive learning cell morphology "
+                    "perturbation prediction'). Required when a new paradigm is proposed.\n"
+                    "- suggested_target (str): Either 'modeling' or 'research'. Prefer "
+                    "'research' when a genuinely new biological hypothesis is needed."
+                )
+            else:
+                system_prompt = (
+                    "You are a Principal AI Scientist evaluating a virtual cell perturbation model. "
+                    "Analyse the execution output and the full biological metric suite, then return a "
+                    "JSON object with exactly these keys:\n"
+                    "- technical_feedback (str): Specific, actionable guidance grounded in the metric "
+                    "analysis. When the metric is improving, focus on the bottleneck sub-metric. "
+                    "When the metric is flat, propose a different modeling angle beyond the standard "
+                    "Architecture/Fusion/Loss three-node hierarchy "
+                    "(e.g., biological priors, pre-training, graph representations, uncertainty). "
+                    "E.g., 'DEG_PCC_20 is low → consider pathway-aware weighting using GO gene sets.'.\n"
+                    "- knowledge_gap (str): A targeted literature search query if more biological "
+                    "context is needed (e.g., 'MAPK pathway for DEG high-variance gene modeling'). "
+                    "Empty string if not needed.\n"
+                    "- suggested_target (str): Either 'modeling' (code changes priority) or "
+                    "'research' (more biological knowledge needed first)."
+                )
             constraint_section = ""
             if constraint_report and constraint_report.get("mechanistic_loss"):
                 constraint_section = (
@@ -3011,7 +3223,7 @@ class EvaluationAgent(BaseAgent):
                     "Fix these FIRST before any metric optimisation."
                 )
             user_content = (
-                f"## Metric Suite Results\n"
+                f"## Metric Suite Results (iteration {iteration})\n"
                 f"Primary metric: {target_metric} = {primary_str} "
                 f"(goal: {direction} {pass_threshold})\n\n"
                 f"Full DEG metric suite:\n{metrics_summary}\n\n"
@@ -3019,14 +3231,18 @@ class EvaluationAgent(BaseAgent):
                 f"### stderr / traceback (last 500 chars)\n{(tb or stderr)[-500:]}\n\n"
                 f"### Code snippet (first 300 chars)\n{code[:300]}"
                 + constraint_section
+                + stagnation_context
             )
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ]
+            # Use a higher temperature when stagnating to encourage diverse
+            # suggestions rather than the same incremental tweaks.
+            temperature = 0.7 if is_stagnating else 0.3
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: chat_json(messages, llm_config=llm_cfg, temperature=0.3),
+                lambda: chat_json(messages, llm_config=llm_cfg, temperature=temperature),
             )
             technical_feedback = str(result.get("technical_feedback") or "")
             if constraint_preamble:
@@ -3050,6 +3266,24 @@ class EvaluationAgent(BaseAgent):
                     "technical_feedback": feedback,
                     "knowledge_gap": "",
                     "suggested_target": "modeling",
+                }
+            if is_stagnating:
+                base_feedback = (
+                    f"[ANTI-STAGNATION] Iteration {iteration}: {target_metric} ({primary_str}) "
+                    f"has not improved for {flat_count + 1} iterations. "
+                    "Stop tweaking Architecture/Fusion/Loss. Propose a fundamentally different "
+                    "biological modeling paradigm: self-supervised pre-training, GNN molecular "
+                    "encoder, multi-task objectives, or pathway-consistency regularisation."
+                )
+                if constraint_preamble:
+                    base_feedback = constraint_preamble.strip() + "\n\n" + base_feedback
+                return {
+                    "technical_feedback": base_feedback,
+                    "knowledge_gap": (
+                        "self-supervised pre-training contrastive learning cell perturbation "
+                        "response prediction GNN molecular encoder"
+                    ),
+                    "suggested_target": "research",
                 }
             base_feedback = (
                 f"Current {target_metric} ({primary_str}) is below the "
