@@ -1015,6 +1015,41 @@ class PipelineOrchestrator:
             console=True,
         )
 
+        _log("[Evolution] Model Iteration Review Trail", console=True)
+        prev_score = None
+        for item in (self.iteration_history or []):
+            iteration_id = item.get("iteration", "-")
+            score_raw = item.get("score")
+            metrics_row = item.get("metrics") or {}
+            try:
+                score = float(score_raw) if score_raw is not None else None
+            except (TypeError, ValueError):
+                score = None
+            delta = None if (prev_score is None or score is None) else (score - prev_score)
+            signal = "n/a"
+            if delta is not None:
+                signal = "improved" if delta > 0 else ("degraded" if delta < 0 else "flat")
+
+            causal_hint = "maintain current mechanism"
+            pcc = metrics_row.get("PCC")
+            mse = metrics_row.get("MSE")
+            deg_pcc = metrics_row.get("DEG_PCC_20")
+            if isinstance(pcc, (int, float)) and pcc < 0.35:
+                causal_hint = "representation-fusion mismatch likely; improve feature alignment"
+            if isinstance(deg_pcc, (int, float)) and deg_pcc < 0.4:
+                causal_hint = "top-DEG signal is weak; reweight high-variance gene objectives"
+            if isinstance(mse, (int, float)) and isinstance(pcc, (int, float)) and mse < 3.5 and pcc < 0.35:
+                causal_hint = "scale fit without ranking fit; add rank-aware loss/calibration"
+
+            score_txt = f"{score:.4f}" if score is not None else "-"
+            delta_txt = f"{delta:+.4f}" if delta is not None else "-"
+            _log(
+                f"├─ Iter {iteration_id}: PCC={score_txt} | delta={delta_txt} | signal={signal} | hint={causal_hint}",
+                console=True,
+            )
+            if score is not None:
+                prev_score = score
+
         _log(
             "[Summary] "
             f"best_pcc={downstream_task_performance_metrics.get('PCC')} | "
