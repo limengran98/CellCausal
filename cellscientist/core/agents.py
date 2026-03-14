@@ -2439,13 +2439,10 @@ class EvaluationAgent(BaseAgent):
                 None,
                 lambda: chat_json(messages, llm_config=llm_cfg, temperature=0.3),
             )
-            suggested_target = str(result.get("suggested_target") or "modeling").strip().lower()
-            if suggested_target not in {"modeling", "research"}:
-                suggested_target = "modeling"
             return {
                 "technical_feedback": str(result.get("technical_feedback") or ""),
                 "knowledge_gap": str(result.get("knowledge_gap") or ""),
-                "suggested_target": suggested_target,
+                "suggested_target": str(result.get("suggested_target") or "modeling"),
             }
         except Exception as exc:
             _log(
@@ -2465,15 +2462,14 @@ class EvaluationAgent(BaseAgent):
                 "technical_feedback": (
                     f"Current {target_metric} ({primary_str}) is below the "
                     f"{direction} threshold of {pass_threshold}. "
-                    "Prioritize code-level fixes in Hypergraph Node A/B/C first "
-                    "(backbone, fusion, and loss), then request additional literature "
-                    "only if gains plateau."
+                    "Review the Hypergraph Node architecture (Node A: Backbone, "
+                    "Node B: Fusion, Node C: Loss) and ensure DEG metrics improve."
                 ),
                 "knowledge_gap": (
                     "Retrieve SOTA papers on GNN models for cell perturbation "
                     "response prediction, focusing on DEG high-variance gene modeling"
                 ),
-                "suggested_target": "modeling",
+                "suggested_target": "research",
             }
 
     @staticmethod
