@@ -214,6 +214,17 @@ class PipelineOrchestrator:
         # Counter for consecutive rejections; triggers forced new hypothesis.
         self.consecutive_rejections: int = 0
 
+        # Conservative routing policy: protect metric trajectory by preferring
+        # modeling updates early and limiting repeated research detours.
+        review_cfg = self.config.get("review") or {}
+        routing_cfg = review_cfg.get("routing_policy") or {}
+        self.prefer_modeling_until_iteration: int = int(routing_cfg.get("prefer_modeling_until_iteration", 2) or 2)
+        self.max_research_hops: int = int(routing_cfg.get("max_research_hops", 1) or 1)
+        self.new_hypothesis_rejection_threshold: int = int(
+            review_cfg.get("new_hypothesis_rejection_threshold", 2) or 2
+        )
+        self.consecutive_research_routes: int = 0
+
         # Bootstrap: enter the INITIALIZING state.
         self._enter_state(PipelineState.INITIALIZING)
 
@@ -350,7 +361,7 @@ class PipelineOrchestrator:
             else:
                 # Degradation — REJECT / REVERT.
                 self.consecutive_rejections += 1
-                force_new = self.consecutive_rejections >= 2
+                force_new = self.consecutive_rejections >= max(1, self.new_hypothesis_rejection_threshold)
                 _log(
                     f"[Falsifiable] ❌ REJECT — score degraded: "
                     f"{previous_score:.4f} → {current_score:.4f} "
@@ -361,7 +372,7 @@ class PipelineOrchestrator:
                 if force_new:
                     _log(
                         "[Falsifiable] 🔬 Forcing NEW HYPOTHESIS "
-                        "(consecutive rejections ≥ 2)",
+                        "(consecutive rejections threshold reached)",
                         console=True,
                     )
                 return {
@@ -700,6 +711,22 @@ class PipelineOrchestrator:
                             "response prediction beyond current approach"
                         )
 
+                    # Metric-safety routing guard: avoid over-using research hops,
+                    # especially in early iterations where code-level fixes usually
+                    # yield faster gains.
+                    if suggested_target == "research" and next_iteration < self.prefer_modeling_until_iteration:
+                        _log(
+                            "[Orchestrator] 🛡️ Routing guard: early iteration, keep focus on modeling.",
+                            console=True,
+                        )
+                        suggested_target = "modeling"
+                    if suggested_target == "research" and self.consecutive_research_routes >= self.max_research_hops:
+                        _log(
+                            "[Orchestrator] 🛡️ Routing guard: max research hops reached, fallback to modeling.",
+                            console=True,
+                        )
+                        suggested_target = "modeling"
+
                     history_entry = self._build_history_entry(
                         iteration=next_iteration,
                         data=data,
@@ -734,6 +761,7 @@ class PipelineOrchestrator:
                     )
 
                     if suggested_target == "research":
+                        self.consecutive_research_routes += 1
                         self._enter_state(PipelineState.KNOWLEDGE_RETRIEVAL)
                         _log(
                             f"[Orchestrator] 🔄 Routing to ResearchAgent (knowledge_gap='{knowledge_gap}')",
@@ -758,6 +786,7 @@ class PipelineOrchestrator:
                             },
                         )
                     else:
+                        self.consecutive_research_routes = 0
                         self._enter_state(PipelineState.MODEL_GENERATION)
                         _log(
                             f"[Orchestrator] 🔄 Routing to ModelingAgent (feedback='{technical_feedback[:80]}…')",
