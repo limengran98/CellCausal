@@ -6,7 +6,7 @@
     "explicit_source_path": null
   },
   "llm": {
-    "model": "gemini-3-pro-all",
+    "model": null,
     "temperature": 0.7
   },
   "review": {
