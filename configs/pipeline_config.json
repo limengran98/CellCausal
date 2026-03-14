@@ -21,12 +21,12 @@
     "api_key": "sk-dVaNuQ4JEDEjA6DtDb964284D72c4e559512D9D481A4563a",
     "max_tokens": 40000,
     "timeout": 600,
-    "model": "gemini-3-flash-preview",
+    "model": "gemini-3-pro-all",
     "temperature": 0.7
   },
   
   "llm_report": {
-    "model": "gemini-3-flash-preview",
+    "model": "gemini-3-pro-preview-thinking",
     "base_url": "https://vip.yi-zhan.top/v1",
     "api_key": "sk-dVaNuQ4JEDEjA6DtDb964284D72c4e559512D9D481A4563a",
     "max_tokens": 40000,
