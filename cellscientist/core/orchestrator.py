@@ -40,7 +40,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from .agents import (
     EvaluationAgent,
     ExecutionAgent,
-    KnowledgeMemory,
     ModelingAgent,
     ResearchAgent,
     TaskContext,
@@ -214,14 +213,17 @@ class PipelineOrchestrator:
         self.last_accepted_metrics: Dict[str, Any] = {}
         # Counter for consecutive rejections; triggers forced new hypothesis.
         self.consecutive_rejections: int = 0
-        # Counter for consecutive flat iterations (delta ≈ 0); triggers forced
-        # new hypothesis when the metric plateaus without regression.
-        self.consecutive_flat_iterations: int = 0
 
-        # ---- Cross-iteration knowledge memory ----
-        # Persists evidence items across KNOWLEDGE_RETRIEVAL activations so the
-        # ResearchAgent can deduplicate, track usefulness, and surface history.
-        self.knowledge_memory: KnowledgeMemory = KnowledgeMemory()
+        # Conservative routing policy: protect metric trajectory by preferring
+        # modeling updates early and limiting repeated research detours.
+        review_cfg = self.config.get("review") or {}
+        routing_cfg = review_cfg.get("routing_policy") or {}
+        self.prefer_modeling_until_iteration: int = int(routing_cfg.get("prefer_modeling_until_iteration", 2) or 2)
+        self.max_research_hops: int = int(routing_cfg.get("max_research_hops", 1) or 1)
+        self.new_hypothesis_rejection_threshold: int = int(
+            review_cfg.get("new_hypothesis_rejection_threshold", 2) or 2
+        )
+        self.consecutive_research_routes: int = 0
 
         # Bootstrap: enter the INITIALIZING state.
         self._enter_state(PipelineState.INITIALIZING)
@@ -266,12 +268,6 @@ class PipelineOrchestrator:
     # Falsifiable Iteration Protocol
     # ------------------------------------------------------------------
 
-    # Minimum absolute delta considered a "real" improvement.  Deltas smaller
-    # than this threshold are treated as a flat (stagnating) iteration.
-    _FLAT_DELTA_THRESHOLD: float = 0.0005
-    # Number of consecutive flat iterations before forcing a new hypothesis.
-    _FLAT_FORCE_NEW_THRESHOLD: int = 2
-
     def _evaluate_iteration(
         self, data: Dict[str, Any], iteration: int
     ) -> Dict[str, Any]:
@@ -282,13 +278,6 @@ class PipelineOrchestrator:
         **accept** (lock improvement) or **reject** (revert to best state and
         force a new hypothesis).
 
-        Stagnation detection (anti-local-optimum):
-        When the metric delta is below :attr:`_FLAT_DELTA_THRESHOLD` for
-        :attr:`_FLAT_FORCE_NEW_THRESHOLD` consecutive iterations, the protocol
-        treats the result as a plateau and sets ``forced_new_hypothesis=True``
-        so the pipeline breaks out of the local optimum by routing to
-        :class:`ResearchAgent` for a genuinely novel biological hypothesis.
-
         Args:
             data: Evaluation payload containing ``accuracy``, ``metrics``, and
                 ``code``.
@@ -296,8 +285,8 @@ class PipelineOrchestrator:
 
         Returns:
             Dict with keys ``verdict`` (``"ACCEPT"`` or ``"REJECT"``),
-            ``metric_delta``, ``current_score``, ``previous_score``,
-            ``forced_new_hypothesis`` (bool), and ``flat_iterations`` (int).
+            ``metric_delta``, ``current_score``, ``previous_score``, and
+            ``forced_new_hypothesis`` (bool).
         """
         current_score: Optional[float] = None
         try:
@@ -330,7 +319,6 @@ class PipelineOrchestrator:
                 self.last_accepted_artifact_type = artifact_type or self.last_accepted_artifact_type
                 self.last_accepted_modeling_metadata = dict(modeling_metadata or {})
                 self.consecutive_rejections = 0
-                self.consecutive_flat_iterations = 0
             _log(
                 f"[Falsifiable] ✅ ACCEPT (first iteration, "
                 f"score={current_score})",
@@ -342,7 +330,6 @@ class PipelineOrchestrator:
                 "current_score": current_score,
                 "previous_score": None,
                 "forced_new_hypothesis": False,
-                "flat_iterations": 0,
             }
 
         self.iteration_history.append(record)
@@ -358,48 +345,23 @@ class PipelineOrchestrator:
                 self.last_accepted_artifact_type = artifact_type or self.last_accepted_artifact_type
                 self.last_accepted_modeling_metadata = dict(modeling_metadata or {})
                 self.consecutive_rejections = 0
-
-                # Track flat (stagnating) iterations: delta too small to be
-                # considered a real improvement triggers the plateau detector.
-                if abs(delta) < self._FLAT_DELTA_THRESHOLD:
-                    self.consecutive_flat_iterations += 1
-                else:
-                    self.consecutive_flat_iterations = 0
-
-                force_new = (
-                    self.consecutive_flat_iterations >= self._FLAT_FORCE_NEW_THRESHOLD
-                )
-                _accept_reason = (
-                    "score flat (accepted)"
-                    if abs(delta) < self._FLAT_DELTA_THRESHOLD
-                    else "score improved"
-                )
                 _log(
-                    f"[Falsifiable] ✅ ACCEPT ({_accept_reason}) — "
+                    f"[Falsifiable] ✅ ACCEPT — score improved: "
                     f"{previous_score:.4f} → {current_score:.4f} "
-                    f"(Δ={delta:+.4f}, flat_streak={self.consecutive_flat_iterations})",
+                    f"(Δ={delta:+.4f})",
                     console=True,
                 )
-                if force_new:
-                    _log(
-                        f"[Falsifiable] 🔬 Forcing NEW HYPOTHESIS "
-                        f"(metric plateaued for {self.consecutive_flat_iterations} "
-                        f"consecutive iterations)",
-                        console=True,
-                    )
                 return {
                     "verdict": "ACCEPT",
                     "metric_delta": delta,
                     "current_score": current_score,
                     "previous_score": previous_score,
-                    "forced_new_hypothesis": force_new,
-                    "flat_iterations": self.consecutive_flat_iterations,
+                    "forced_new_hypothesis": False,
                 }
             else:
                 # Degradation — REJECT / REVERT.
                 self.consecutive_rejections += 1
-                self.consecutive_flat_iterations = 0
-                force_new = self.consecutive_rejections >= 2
+                force_new = self.consecutive_rejections >= max(1, self.new_hypothesis_rejection_threshold)
                 _log(
                     f"[Falsifiable] ❌ REJECT — score degraded: "
                     f"{previous_score:.4f} → {current_score:.4f} "
@@ -410,7 +372,7 @@ class PipelineOrchestrator:
                 if force_new:
                     _log(
                         "[Falsifiable] 🔬 Forcing NEW HYPOTHESIS "
-                        "(consecutive rejections ≥ 2)",
+                        "(consecutive rejections threshold reached)",
                         console=True,
                     )
                 return {
@@ -419,7 +381,6 @@ class PipelineOrchestrator:
                     "current_score": current_score,
                     "previous_score": previous_score,
                     "forced_new_hypothesis": force_new,
-                    "flat_iterations": 0,
                 }
 
         # Metrics not available — accept tentatively.
@@ -440,7 +401,6 @@ class PipelineOrchestrator:
             "current_score": current_score,
             "previous_score": previous_score,
             "forced_new_hypothesis": False,
-            "flat_iterations": self.consecutive_flat_iterations,
         }
 
     def _build_history_entry(
@@ -547,8 +507,6 @@ class PipelineOrchestrator:
             # Embed FSM state so agents can include it in their logs.
             "_fsm_state": self.current_state.value if self.current_state else "",
             "_task_id": self.context.task_id,
-            # Seed cross-iteration knowledge memory (empty on first run).
-            "knowledge_memory": self.knowledge_memory.to_dict(),
         }
         # The ResearchAgent subscribes to biology_insights; trigger it.
         await self.bus.publish("biology_insights", initial_message)
@@ -604,11 +562,6 @@ class PipelineOrchestrator:
                 if isinstance(exec_stats, dict):
                     execution_stats_log.append(dict(exec_stats))
                 total_iterations += 1
-
-                # Receive updated knowledge memory threaded through the evaluation chain.
-                incoming_memory_dict = data.get("knowledge_memory") or {}
-                if incoming_memory_dict:
-                    self.knowledge_memory = KnowledgeMemory.from_dict(incoming_memory_dict)
 
                 # Bug 1 fix: always increment self.context.iteration so that
                 # EvaluationAgent's `iteration >= max_iterations - 1` guard
@@ -716,15 +669,6 @@ class PipelineOrchestrator:
                     verdict_info = self._evaluate_iteration(data, next_iteration)
                     verdict = verdict_info["verdict"]
 
-                    # Tag the knowledge memory entries for this iteration with
-                    # the ACCEPT/REJECT verdict so the ResearchAgent can surface
-                    # useful vs. unhelpful knowledge in future retrievals.
-                    self.knowledge_memory.mark_iteration_outcome(
-                        next_iteration,
-                        verdict,
-                        verdict_info.get("metric_delta"),
-                    )
-
                     # On REJECT: revert the working artifact to the last accepted
                     # notebook/code state and augment feedback to force a new idea.
                     code_for_next = data.get("code") or ""
@@ -757,37 +701,31 @@ class PipelineOrchestrator:
                             )
                         technical_feedback = f"{revert_note}\n\n{technical_feedback}".strip()
 
-                    # On consecutive rejections or metric plateau: force route to research
-                    # for a new biological hypothesis rather than more code tweaks.
+                    # On consecutive rejections: force route to research for a
+                    # new biological hypothesis rather than more code tweaks.
                     if verdict_info.get("forced_new_hypothesis"):
-                        flat_iters = verdict_info.get("flat_iterations", 0)
                         suggested_target = "research"
-                        if flat_iters and flat_iters >= self._FLAT_FORCE_NEW_THRESHOLD:
-                            # Plateau — metric is flat, not degrading.  Need a
-                            # genuinely different biological modeling paradigm.
-                            knowledge_gap = (
-                                knowledge_gap
-                                or "novel biological mechanism and architectural paradigm "
-                                "for cell perturbation response prediction: the current "
-                                "approach has plateaued — explore self-supervised "
-                                "pre-training, multi-task biological objectives, "
-                                "graph-based molecular representations, or "
-                                "normalizing-flow uncertainty models"
-                            )
-                            technical_feedback = (
-                                f"[ANTI-STAGNATION] The metric has been flat for "
-                                f"{flat_iters} consecutive iterations. "
-                                "Incremental Architecture/Fusion/Loss tweaks are no "
-                                "longer effective. A fundamentally different biological "
-                                "modeling paradigm is required.\n\n"
-                                + technical_feedback
-                            ).strip()
-                        else:
-                            knowledge_gap = (
-                                knowledge_gap
-                                or "novel biological mechanism for cell perturbation "
-                                "response prediction beyond current approach"
-                            )
+                        knowledge_gap = (
+                            knowledge_gap
+                            or "novel biological mechanism for cell perturbation "
+                            "response prediction beyond current approach"
+                        )
+
+                    # Metric-safety routing guard: avoid over-using research hops,
+                    # especially in early iterations where code-level fixes usually
+                    # yield faster gains.
+                    if suggested_target == "research" and next_iteration < self.prefer_modeling_until_iteration:
+                        _log(
+                            "[Orchestrator] 🛡️ Routing guard: early iteration, keep focus on modeling.",
+                            console=True,
+                        )
+                        suggested_target = "modeling"
+                    if suggested_target == "research" and self.consecutive_research_routes >= self.max_research_hops:
+                        _log(
+                            "[Orchestrator] 🛡️ Routing guard: max research hops reached, fallback to modeling.",
+                            console=True,
+                        )
+                        suggested_target = "modeling"
 
                     history_entry = self._build_history_entry(
                         iteration=next_iteration,
@@ -823,6 +761,7 @@ class PipelineOrchestrator:
                     )
 
                     if suggested_target == "research":
+                        self.consecutive_research_routes += 1
                         self._enter_state(PipelineState.KNOWLEDGE_RETRIEVAL)
                         _log(
                             f"[Orchestrator] 🔄 Routing to ResearchAgent (knowledge_gap='{knowledge_gap}')",
@@ -844,12 +783,10 @@ class PipelineOrchestrator:
                                 "falsifiable_verdict": verdict_info,
                                 "_fsm_state": self.current_state.value if self.current_state else "",
                                 "_task_id": self.context.task_id,
-                                # Pass accumulated knowledge memory so ResearchAgent
-                                # can deduplicate and surface cross-iteration context.
-                                "knowledge_memory": self.knowledge_memory.to_dict(),
                             },
                         )
                     else:
+                        self.consecutive_research_routes = 0
                         self._enter_state(PipelineState.MODEL_GENERATION)
                         _log(
                             f"[Orchestrator] 🔄 Routing to ModelingAgent (feedback='{technical_feedback[:80]}…')",
@@ -873,8 +810,6 @@ class PipelineOrchestrator:
                                 "falsifiable_verdict": verdict_info,
                                 "_fsm_state": self.current_state.value if self.current_state else "",
                                 "_task_id": self.context.task_id,
-                                # Pass accumulated knowledge memory for prompt augmentation.
-                                "knowledge_memory": self.knowledge_memory.to_dict(),
                             },
                         )
                     continue
