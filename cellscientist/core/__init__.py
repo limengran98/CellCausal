@@ -4,7 +4,6 @@ from .message_bus import SimpleMessageBus, SUPPORTED_TOPICS
 from .agents import (
     AgentResponse,
     BaseAgent,
-    BiologicalConstraintVerifier,
     EvaluationAgent,
     ExecutionAgent,
     ModelingAgent,
@@ -44,7 +43,6 @@ __all__ = [
     # agents
     "AgentResponse",
     "BaseAgent",
-    "BiologicalConstraintVerifier",
     "EvaluationAgent",
     "ExecutionAgent",
     "ModelingAgent",

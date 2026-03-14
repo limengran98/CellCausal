@@ -517,251 +517,6 @@ class BaseAgent(abc.ABC):
 
 
 # =============================================================================
-# KnowledgeMemory — persistent cross-iteration evidence store
-# =============================================================================
-
-#: Maximum characters of knowledge memory context to inject into agent prompts.
-_MAX_MEMORY_CONTEXT_CHARS: int = 4000
-
-
-class KnowledgeMemory:
-    """Accumulates retrieved evidence items across pipeline iterations.
-
-    Responsibilities
-    ----------------
-    * **Deduplication** — items already retrieved in a previous iteration are
-      not re-injected, keeping the context fresh.
-    * **Usefulness tracking** — after each iteration the orchestrator calls
-      :meth:`mark_iteration_outcome` so the memory knows which knowledge
-      contributed to a metric improvement (ACCEPT) vs. regression (REJECT).
-    * **Context compression** — :meth:`to_context` renders a concise summary
-      suitable for injection into agent prompts, capped at *max_chars*.
-    * **Serialisation** — :meth:`to_dict` / :meth:`from_dict` enable lossless
-      round-trips through the JSON message bus.
-
-    Usage in the pipeline
-    ---------------------
-    The :class:`PipelineOrchestrator` owns a single ``KnowledgeMemory``
-    instance and passes its serialised form (``knowledge_memory`` key) to the
-    :class:`ResearchAgent` on each ``KNOWLEDGE_RETRIEVAL`` activation.  The
-    ResearchAgent updates the memory with newly retrieved items and forwards
-    the updated serialised memory through to the :class:`ModelingAgent` via
-    the Causal Context Payload.
-    """
-
-    #: Maximum number of evidence entries to retain (oldest are dropped).
-    MAX_ENTRIES: int = 50
-    #: Maximum characters to keep per scraped excerpt when stored in memory.
-    MAX_EXCERPT_CHARS: int = 500
-
-    def __init__(self) -> None:
-        # Full list of deduplicated evidence entries accumulated so far.
-        self._entries: List[Dict[str, Any]] = []
-        # Per-iteration metadata digests (one record per call to :meth:`update`).
-        self._iteration_digests: List[Dict[str, Any]] = []
-
-    # ------------------------------------------------------------------
-    # Mutation helpers
-    # ------------------------------------------------------------------
-
-    def update(
-        self,
-        items: List[Dict[str, Any]],
-        iteration: int,
-        knowledge_gap: str = "",
-    ) -> int:
-        """Add new evidence *items* to memory, skipping already-seen ones.
-
-        Args:
-            items: List of evidence item dicts (matching the
-                :class:`~cellscientist.core.external_knowledge_mirothink.EvidenceItem`
-                field layout: ``title``, ``url``, ``snippet``, ``eid``, …).
-            iteration: Current pipeline iteration number.
-            knowledge_gap: The knowledge-gap query that triggered this
-                retrieval round (stored for context).
-
-        Returns:
-            Number of *new* (non-duplicate) items actually added.
-        """
-        seen_urls: set = {e["url"] for e in self._entries if e.get("url")}
-        seen_titles: set = {e["title"] for e in self._entries if e.get("title")}
-
-        added = 0
-        for item in items:
-            url: str = item.get("url") or ""
-            title: str = item.get("title") or ""
-            # Skip stubs / error placeholders (no real URL and empty title).
-            if not url and not title:
-                continue
-            # Deduplicate by URL (preferred) or title.
-            if url and url in seen_urls:
-                continue
-            if title and title in seen_titles:
-                continue
-
-            seen_urls.add(url)
-            seen_titles.add(title)
-
-            # Trim long excerpts before storing to control memory size.
-            entry = dict(item)
-            excerpt = entry.get("scraped_excerpt") or ""
-            if len(excerpt) > self.MAX_EXCERPT_CHARS:
-                entry["scraped_excerpt"] = excerpt[: self.MAX_EXCERPT_CHARS] + "…"
-            entry["_added_at_iteration"] = iteration
-            entry["_knowledge_gap"] = knowledge_gap
-            self._entries.append(entry)
-            added += 1
-
-        # Trim oldest entries to stay within MAX_ENTRIES.
-        if len(self._entries) > self.MAX_ENTRIES:
-            self._entries = self._entries[-self.MAX_ENTRIES :]
-
-        self._iteration_digests.append(
-            {
-                "iteration": iteration,
-                "knowledge_gap": knowledge_gap,
-                "new_items_added": added,
-                "total_items": len(self._entries),
-                "verdict": "",        # filled in by mark_iteration_outcome()
-                "metric_delta": None,
-            }
-        )
-        return added
-
-    def mark_iteration_outcome(
-        self, iteration: int, verdict: str, metric_delta: Optional[float]
-    ) -> None:
-        """Record the ACCEPT/REJECT verdict for a given iteration.
-
-        This is called by the orchestrator after the Falsifiable Iteration
-        Protocol has issued its decision, so entries added during *iteration*
-        are retrospectively tagged with their usefulness.
-
-        Args:
-            iteration: The iteration number to update.
-            verdict: ``"ACCEPT"`` or ``"REJECT"``.
-            metric_delta: Metric change (positive = improvement).
-        """
-        # Tag every entry added in this iteration.
-        for entry in self._entries:
-            if entry.get("_added_at_iteration") == iteration:
-                entry["_verdict"] = verdict
-                entry["_metric_delta"] = metric_delta
-
-        # Update the digest record for this iteration.
-        for digest in self._iteration_digests:
-            if digest["iteration"] == iteration:
-                digest["verdict"] = verdict
-                digest["metric_delta"] = metric_delta
-                break
-
-    # ------------------------------------------------------------------
-    # Query helpers
-    # ------------------------------------------------------------------
-
-    def get_seen_urls(self) -> set:
-        """Return the set of URLs for all previously stored entries."""
-        return {e["url"] for e in self._entries if e.get("url")}
-
-    def get_seen_titles(self) -> set:
-        """Return the set of titles for all previously stored entries."""
-        return {e["title"] for e in self._entries if e.get("title")}
-
-    # ------------------------------------------------------------------
-    # Context rendering
-    # ------------------------------------------------------------------
-
-    def to_context(self, max_chars: int = 3000) -> str:
-        """Render accumulated memory as a concise context string.
-
-        The output is designed to be injected into agent prompts to provide
-        cross-iteration continuity.  It includes:
-
-        * A per-iteration retrieval digest (last 5 iterations).
-        * A short list of the most useful knowledge items (from ACCEPT
-          iterations that produced a positive metric delta).
-
-        Args:
-            max_chars: Hard cap on the returned string length.
-
-        Returns:
-            Formatted multi-line string, or an empty string when the memory
-            is empty.
-        """
-        if not self._iteration_digests:
-            return ""
-
-        lines: List[str] = ["## Cross-Iteration Knowledge Memory"]
-
-        # Per-iteration digest (most recent 5).
-        lines.append("### Retrieval History")
-        for rec in self._iteration_digests[-5:]:
-            verdict_str = rec.get("verdict") or "pending"
-            delta = rec.get("metric_delta")
-            delta_str = f" Δ={delta:+.4f}" if delta is not None else ""
-            gap = (rec.get("knowledge_gap") or "")[:80]
-            lines.append(
-                f"- Iter {rec['iteration']}: {rec['new_items_added']} new items"
-                f" | gap='{gap}' | {verdict_str}{delta_str}"
-            )
-
-        # Highlight previously useful knowledge items.
-        useful = [
-            e
-            for e in self._entries
-            if e.get("_verdict") == "ACCEPT"
-            and (e.get("_metric_delta") or 0) > 0
-        ]
-        if useful:
-            lines.append("### Previously Useful Knowledge (ACCEPT iterations)")
-            for entry in useful[-5:]:
-                eid = entry.get("eid") or entry.get("_added_at_iteration", "")
-                title = (entry.get("title") or "")[:80]
-                snippet = (entry.get("snippet") or "")[:200]
-                lines.append(f"- [{eid}] {title}: {snippet}")
-
-        # Warn about consistently rejected knowledge to help the agent avoid
-        # re-retrieving information that has not helped.
-        rejected_gaps: List[str] = [
-            rec["knowledge_gap"]
-            for rec in self._iteration_digests
-            if rec.get("verdict") == "REJECT" and rec.get("knowledge_gap")
-        ]
-        if rejected_gaps:
-            unique_rejected = list(dict.fromkeys(rejected_gaps))[-3:]
-            lines.append("### Knowledge Gaps That Did Not Help (consider alternatives)")
-            for gap in unique_rejected:
-                lines.append(f"- {gap[:120]}")
-
-        result = "\n".join(lines)
-        if len(result) > max_chars:
-            result = result[: max(0, max_chars - 3)] + "…"
-        return result
-
-    # ------------------------------------------------------------------
-    # Serialisation
-    # ------------------------------------------------------------------
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialise the memory to a plain dict for JSON message-bus transit."""
-        return {
-            "entries": list(self._entries),
-            "iteration_digests": list(self._iteration_digests),
-        }
-
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "KnowledgeMemory":
-        """Deserialise a previously :meth:`to_dict`-encoded memory.
-
-        Silently ignores unknown keys to handle schema evolution gracefully.
-        """
-        mem = cls()
-        mem._entries = list(d.get("entries") or [])
-        mem._iteration_digests = list(d.get("iteration_digests") or [])
-        return mem
-
-
-# =============================================================================
 # ResearchAgent
 # =============================================================================
 
@@ -807,15 +562,6 @@ class ResearchAgent(BaseAgent):
         knowledge_gap: str = message.get("knowledge_gap") or ""
         previous_iteration_logs: Dict[str, Any] = message.get("previous_iteration_logs") or {}
         falsifiable_verdict: Dict[str, Any] = message.get("falsifiable_verdict") or {}
-        iteration: int = int(message.get("iteration") or 0)
-
-        # Restore cross-iteration knowledge memory (deserialise from bus payload).
-        knowledge_memory_dict: Dict[str, Any] = message.get("knowledge_memory") or {}
-        knowledge_memory = (
-            KnowledgeMemory.from_dict(knowledge_memory_dict)
-            if knowledge_memory_dict
-            else KnowledgeMemory()
-        )
 
         # Use "refinement" stage for second-pass RAG, "design" for initial pass.
         stage: str = "refinement" if knowledge_gap else (message.get("stage") or "design")
@@ -841,7 +587,6 @@ class ResearchAgent(BaseAgent):
         # Attempt BioKB + literature retrieval; degrade gracefully on errors.
         bio_kb_data: Dict[str, Any] = {}
         literature_data: Dict[str, Any] = {}
-        pack_items_for_memory: List[Dict[str, Any]] = []
 
         # BioKB enrichment
         try:
@@ -868,7 +613,6 @@ class ResearchAgent(BaseAgent):
                 retrieve_external_knowledge,
                 knowledge_pack_to_markdown,
             )
-            from dataclasses import asdict as _asdict  # type: ignore
 
             query_text = knowledge_gap if knowledge_gap else (context_text or " ".join(smiles_list[:5]))
             pack = await asyncio.get_event_loop().run_in_executor(
@@ -881,27 +625,8 @@ class ResearchAgent(BaseAgent):
                 ),
             )
             literature_data = {"markdown_summary": knowledge_pack_to_markdown(pack)}
-
-            # Collect items for KnowledgeMemory deduplication tracking.
-            pack_items_for_memory = [_asdict(it) for it in (pack.items or [])]
         except Exception as exc:
             _log(f"[{self.agent_id}] Literature retrieval skipped: {exc}")
-
-        # ---- Update cross-iteration knowledge memory ----
-        # Only items not yet seen in previous iterations are recorded.  The
-        # count of new vs. duplicate items is logged for observability.
-        if pack_items_for_memory:
-            new_count = knowledge_memory.update(
-                pack_items_for_memory, iteration, knowledge_gap
-            )
-            _log(
-                f"[{self.agent_id}] KnowledgeMemory: +{new_count} new items "
-                f"(total={len(knowledge_memory._entries)})",
-                console=True,
-            )
-
-        # Render cross-iteration context for downstream agents.
-        memory_context: str = knowledge_memory.to_context()
 
         # ---- Innovation 2: SMILES-Driven Mechanism Prior ----
         # Build weak-supervision mechanism priors from SMILES chemical
@@ -914,7 +639,6 @@ class ResearchAgent(BaseAgent):
             smiles_mechanism_prior,
             (literature_data.get("markdown_summary") or "") if isinstance(literature_data, dict) else "",
             knowledge_gap,
-            iteration=iteration,
         )
 
         # Assemble the structured Causal Context Payload.
@@ -929,8 +653,6 @@ class ResearchAgent(BaseAgent):
             "knowledge_gap": knowledge_gap,
             "previous_iteration_logs": previous_iteration_logs,
             "falsifiable_verdict": falsifiable_verdict,
-            # Cross-iteration memory context for the ModelingAgent.
-            "knowledge_memory_context": memory_context,
             # Legacy keys preserved for backward compatibility.
             "bio_kb_summary": bio_kb_data,
             "literature_summary": literature_data,
@@ -942,8 +664,7 @@ class ResearchAgent(BaseAgent):
             f"domain_model_chains={len(domain_model_causal_chains)}, "
             f"biokb={'yes' if bio_kb_data else 'no'}, "
             f"literature={'yes' if literature_data else 'no'}, "
-            f"prev_logs={'yes' if previous_iteration_logs else 'no'}, "
-            f"memory_context={'yes' if memory_context else 'no'}",
+            f"prev_logs={'yes' if previous_iteration_logs else 'no'}",
             console=True,
         )
 
@@ -951,14 +672,11 @@ class ResearchAgent(BaseAgent):
             status="success",
             data={
                 "biological_insight_report": report,
-                "iteration": iteration,
+                "iteration": int(message.get("iteration") or 0),
                 "max_iterations": int(message.get("max_iterations") or 5),
                 "history_summary": message.get("history_summary") or [],
                 "best_metric_score": message.get("best_metric_score"),
                 "_task_id": message.get("_task_id") or "",
-                # Forward serialised memory so the orchestrator can pass it
-                # back on the next KNOWLEDGE_RETRIEVAL activation.
-                "knowledge_memory": knowledge_memory.to_dict(),
             },
             next_recipient="modeling",
         )
@@ -1081,27 +799,15 @@ class ResearchAgent(BaseAgent):
         smiles_priors: List[Dict[str, Any]],
         literature_md: str,
         knowledge_gap: str = "",
-        iteration: int = 0,
     ) -> List[Dict[str, Any]]:
         """Derive domain->model causal chains for modeling guidance.
 
         Each chain links:
         domain signal/hypothesis -> mechanism rationale -> concrete modeling choice.
-
-        The template pool is larger than what's returned each call.  An
-        iteration-aware offset ensures that different subsets of templates are
-        foregrounded across successive pipeline iterations, preventing the
-        model from being constrained to the same architectural suggestions
-        every round.
         """
         text = (literature_md or "").lower()
         kg = (knowledge_gap or "").strip()
-
-        # Full pool of diverse domain-to-model causal chain templates.
-        # Grouped into categories so the rotation below can surface different
-        # biological modeling paradigms across iterations.
-        _ALL_TEMPLATES = [
-            # --- Category 1: Signal-quality / DEG targets ---
+        chain_templates = [
             (
                 ("high-variance", "deg", "differentially expressed"),
                 "High-variance DEG signals are underfit",
@@ -1114,7 +820,6 @@ class ResearchAgent(BaseAgent):
                 "Scale bias can hurt PCC despite reasonable MSE",
                 "Add differentiable PCC term and post-hoc calibration head.",
             ),
-            # --- Category 2: Multi-modal fusion ---
             (
                 ("cross-attention", "multimodal", "fusion"),
                 "Cross-modal signal alignment is critical",
@@ -1127,104 +832,16 @@ class ResearchAgent(BaseAgent):
                 "Single linear head underfits magnitude scaling",
                 "Add dose-conditioned branch or monotonic calibration subnetwork.",
             ),
-            # --- Category 3: Graph-based molecular representation ---
-            (
-                ("graph", "gnn", "molecular graph", "atom"),
-                "Molecular topology encodes pharmacological mechanism",
-                "ECFP fingerprints lose subgraph connectivity information",
-                "Replace ECFP fingerprints with a GNN encoder over the molecular graph for richer structural features.",
-            ),
-            (
-                ("scaffold", "substructure", "functional group"),
-                "Shared molecular scaffolds predict shared pathway activity",
-                "Fingerprint similarity does not capture scaffold-level pharmacophore overlap",
-                "Apply scaffold-aware contrastive loss to bring molecules sharing functional groups closer in latent space.",
-            ),
-            # --- Category 4: Representation learning / pre-training ---
-            (
-                ("contrastive", "self-supervised", "pre-train"),
-                "Pre-training on unpaired cell data improves transfer",
-                "Supervised-only training on small labelled sets causes overfitting",
-                "Add a self-supervised contrastive pre-training stage on the morphology features before fine-tuning.",
-            ),
-            (
-                ("transfer", "domain adaptation", "pretrained"),
-                "Cell morphology features are transferable across compound families",
-                "Training from scratch on each dataset wastes cross-domain signal",
-                "Use a pre-trained morphology encoder frozen during early epochs, then fine-tuned end-to-end.",
-            ),
-            # --- Category 5: Multi-task and auxiliary objectives ---
-            (
-                ("multi-task", "auxiliary", "joint"),
-                "Jointly predicting multiple biological outcomes improves generalisation",
-                "Single-task models overfit to one metric at the expense of others",
-                "Add auxiliary heads for DEG_PCC_20 and R2_DM alongside the primary MSE objective.",
-            ),
-            (
-                ("pathway", "gene ontology", "go term", "biological process"),
-                "Pathway-level grouping provides inductive bias for gene co-regulation",
-                "Per-gene predictions ignore the known co-regulation structure of signalling cascades",
-                "Incorporate a pathway-consistency regularisation loss using known GO gene sets.",
-            ),
-            # --- Category 6: Uncertainty and distribution modelling ---
-            (
-                ("uncertainty", "bayesian", "dropout", "ensemble"),
-                "Prediction uncertainty correlates with tail-gene difficulty",
-                "Deterministic models cannot distinguish confident from uncertain predictions",
-                "Introduce Monte-Carlo dropout or deep ensembles to model predictive uncertainty and weight uncertain samples differently in the loss.",
-            ),
-            (
-                ("distribution", "normalizing flow", "vae", "latent"),
-                "Cell state perturbation is inherently a conditional distribution shift",
-                "Regression outputs do not capture multimodal cell-response distributions",
-                "Replace regression head with a conditional normalizing flow or VAE decoder to model the full response distribution.",
-            ),
-            # --- Category 7: Regularisation and robustness ---
-            (
-                ("regularization", "dropout", "weight decay", "overfitting"),
-                "Deep fusion models are prone to overfitting on small cohorts",
-                "High-capacity models memorise training folds and generalise poorly to held-out SMILES",
-                "Add structured dropout, mixup augmentation in latent space, and cross-fold consistency regularisation.",
-            ),
-            (
-                ("data augmentation", "noise", "perturbation"),
-                "Morphology measurements contain systematic measurement noise",
-                "Models trained on clean data fail under realistic acquisition noise",
-                "Apply Gaussian noise injection and feature-level dropout as augmentation during training.",
-            ),
         ]
 
-        # Keyword-triggered chains: always include ones whose keywords match the
-        # literature text or knowledge gap.
         chains: List[Dict[str, Any]] = []
-        for kws, signal, hypothesis, modeling in _ALL_TEMPLATES:
+        for kws, signal, hypothesis, modeling in chain_templates:
             if any(kw in text for kw in kws) or any(kw in kg.lower() for kw in kws):
                 chains.append({
                     "domain_signal": signal,
                     "causal_hypothesis": hypothesis,
                     "modeling_implication": modeling,
                 })
-
-        # Iteration-aware rotation: surface a different subset of templates on
-        # each iteration so the model is exposed to varied suggestions rather
-        # than always seeing the same keyword-triggered chains.
-        # We cycle through the full template pool using a fixed stride so that
-        # across N iterations the coverage is maximally diverse.
-        _ROTATION_WINDOW = 4
-        rotation_offset = (iteration * _ROTATION_WINDOW) % len(_ALL_TEMPLATES)
-        for i in range(_ROTATION_WINDOW):
-            idx = (rotation_offset + i) % len(_ALL_TEMPLATES)
-            _, signal, hypothesis, modeling = _ALL_TEMPLATES[idx]
-            candidate = {
-                "domain_signal": signal,
-                "causal_hypothesis": hypothesis,
-                "modeling_implication": modeling,
-            }
-            # Deduplicate against already-added chains.
-            if not any(
-                c["domain_signal"] == signal for c in chains
-            ):
-                chains.append(candidate)
 
         # Mechanism priors can also produce chain entries when targets/pathways exist.
         for p in (smiles_priors or [])[:10]:
@@ -1246,30 +863,6 @@ class ResearchAgent(BaseAgent):
                 "causal_hypothesis": "Observed performance likely dominated by representation/fusion mismatch",
                 "modeling_implication": "Prioritize robust baseline with conservative fusion and stable loss before adding complexity.",
             })
-
-        # Always inject the zero-dose causal law — an inviolable pharmacological
-        # first principle that MUST be present in the generated code as executable
-        # PyTorch logic, not only as a prompt description.
-        _zero_dose_chain: Dict[str, Any] = {
-            "domain_signal": "Drug dose causality law: zero dose → zero biological response",
-            "causal_hypothesis": (
-                "If a cell receives no drug (dose=0), the model output must equal the "
-                "unperturbed baseline (perturbation delta = 0), as required by the "
-                "fundamental causality law of pharmacology."
-            ),
-            "modeling_implication": (
-                "MANDATORY — implement dose-scaling in the forward pass: "
-                "``output = base_prediction * dose`` (or equivalent dose-gating) so that "
-                "dose=0 always produces zero perturbation output.  "
-                "Mark the implementation with the comment "
-                "'# CONSTRAINT: zero_dose_causal_law'.  "
-                "Verify with: "
-                "``assert torch.allclose(model(x, dose=0), torch.zeros_like(out), atol=1e-6)``."
-            ),
-            "constraint_type": "causal_law",
-        }
-        if not any(c.get("constraint_type") == "causal_law" for c in chains):
-            chains.append(_zero_dose_chain)
 
         # Deduplicate by triple fields and cap size.
         uniq = []
@@ -1451,7 +1044,6 @@ class ModelingAgent(BaseAgent):
         current_metrics: Optional[Dict[str, Any]],
         sci_rules: Dict[str, Any],
         previous_logs: Optional[Dict[str, Any]] = None,
-        memory_context: str = "",
     ) -> Dict[str, str]:
         """Build additive context while preserving the legacy prompt contract."""
         protected_str = ", ".join(sci_rules.get("protected_sections") or [])
@@ -1483,27 +1075,6 @@ class ModelingAgent(BaseAgent):
                 "Use the SMILES-derived weak supervision below as a semantic anchor, not as a perfect oracle.\n"
                 f"{mechanism_context}"
             )
-
-        # Always inject biological first-principles constraints as executable requirements.
-        # These must appear in the generated code as real PyTorch logic, not just comments.
-        sections.append(
-            "## BIOLOGICAL FIRST-PRINCIPLES CONSTRAINTS (MANDATORY — NOT OPTIONAL)\n"
-            "The following constraints MUST be implemented as executable PyTorch code.\n"
-            "They are inviolable causal laws.  Describing them in a comment is insufficient;\n"
-            "they must exist as actual tensor operations that enforce the invariant.\n\n"
-            "### Constraint 1 — Zero-Dose Causal Law (CRITICAL)\n"
-            "When drug dose = 0, the model output MUST be exactly zero (no perturbation).\n"
-            "Implementation: scale the final output by dose:\n"
-            "  ``output = base_prediction * dose``\n"
-            "or use an equivalent dose-gating mechanism.\n"
-            "Mark this line with the comment ``# CONSTRAINT: zero_dose_causal_law``.\n"
-            "Add a runtime assertion to make the invariant falsifiable:\n"
-            "  ``assert torch.allclose(model(x, dose=0), torch.zeros_like(out), atol=1e-6)``\n\n"
-            "### Constraint 2 — Mechanism Justification (ADVISORY)\n"
-            "For every major architectural or loss decision, add a comment block:\n"
-            "  ``# MECHANISM JUSTIFICATION: <biological rationale>``\n"
-            "so that the causal chain from biology to code is auditable."
-        )
 
         if literature:
             sections.append(
@@ -1539,17 +1110,6 @@ class ModelingAgent(BaseAgent):
 
         if falsifiable_context:
             sections.append(falsifiable_context.strip())
-
-        # Cross-iteration knowledge memory context (injected when available).
-        if memory_context:
-            sections.append(
-                "## CROSS-ITERATION KNOWLEDGE MEMORY\n"
-                "The following summarises knowledge retrieved in previous iterations, "
-                "which ones led to metric improvements (ACCEPT), and which did not (REJECT).\n"
-                "Consult this to avoid re-using knowledge that did not help and to "
-                "build on evidence that has already proven useful.\n"
-                f"{memory_context[:_MAX_MEMORY_CONTEXT_CHARS]}"
-            )
 
         return {
             "system_appendix": system_appendix,
@@ -1646,7 +1206,6 @@ class ModelingAgent(BaseAgent):
             current_metrics=current_metrics or insight_report.get("current_metrics") or previous_logs.get("raw_metrics") or previous_logs.get("metrics") or {},
             sci_rules=sci_rules,
             previous_logs=previous_logs,
-            memory_context=insight_report.get("knowledge_memory_context") or "",
         )
 
         original_system = str(spec.get("system") or "You are an expert.")
@@ -1919,11 +1478,6 @@ class ModelingAgent(BaseAgent):
                     "iteration": iteration,
                     "max_iterations": int(message.get("max_iterations") or 5),
                     "_task_id": task_id,
-                    # Transparent pass-through for cross-iteration knowledge memory.
-                    "knowledge_memory": message.get("knowledge_memory") or {},
-                    # Transparent pass-through for history so EvaluationAgent can
-                    # detect stagnation across iterations.
-                    "history_summary": history_summary,
                 })
 
                 metadata = artifact_payload.get("modeling_metadata") or {}
@@ -1993,17 +1547,6 @@ class ModelingAgent(BaseAgent):
                 "Every architectural decision MUST have a biological justification.\n"
                 "Include a comment block '# MECHANISM JUSTIFICATION:' explaining the "
                 "biological rationale for each major modeling decision.\n"
-                "\n## BIOLOGICAL FIRST-PRINCIPLES CONSTRAINTS (MANDATORY — NOT OPTIONAL)\n"
-                "The following constraints MUST appear in the generated code as executable\n"
-                "PyTorch tensor operations.  Describing them only in a comment is NOT sufficient.\n\n"
-                "### Constraint 1 — Zero-Dose Causal Law (CRITICAL)\n"
-                "When drug dose = 0, model output MUST be exactly zero.\n"
-                "Implementation: ``output = base_prediction * dose``\n"
-                "Mark this line: ``# CONSTRAINT: zero_dose_causal_law``\n"
-                "Verify: ``assert torch.allclose(model(x, dose=0), torch.zeros_like(out), atol=1e-6)``\n\n"
-                "### Constraint 2 — Mechanism Justification (ADVISORY)\n"
-                "For every major architectural decision, add:\n"
-                "  ``# MECHANISM JUSTIFICATION: <biological rationale>``\n"
             )
             if mechanism_context:
                 _mechanism_constraint += (
@@ -2079,11 +1622,6 @@ class ModelingAgent(BaseAgent):
                     "decision_type": "REFINE" if error_logs else "EXPLORE",
                 },
                 "_task_id": message.get("_task_id") or "",
-                # Transparent pass-through for cross-iteration knowledge memory.
-                "knowledge_memory": message.get("knowledge_memory") or {},
-                # Transparent pass-through for history so EvaluationAgent can
-                # detect stagnation across iterations.
-                "history_summary": message.get("history_summary") or [],
             },
             next_recipient="code_execution",
         )
@@ -2300,11 +1838,6 @@ class ExecutionAgent(BaseAgent):
                     "iteration": iteration,
                     "max_iterations": max_iterations,
                     "_task_id": task_id,
-                    # Transparent pass-through for cross-iteration knowledge memory.
-                    "knowledge_memory": message.get("knowledge_memory") or {},
-                    # Transparent pass-through for history so EvaluationAgent can
-                    # detect stagnation across iterations.
-                    "history_summary": message.get("history_summary") or [],
                 },
                 next_recipient="evaluation",
             )
@@ -2323,11 +1856,6 @@ class ExecutionAgent(BaseAgent):
                     "iteration": iteration,
                     "max_iterations": max_iterations,
                     "_task_id": task_id,
-                    # Transparent pass-through for cross-iteration knowledge memory.
-                    "knowledge_memory": message.get("knowledge_memory") or {},
-                    # Transparent pass-through for history so EvaluationAgent can
-                    # detect stagnation across iterations.
-                    "history_summary": message.get("history_summary") or [],
                 },
                 next_recipient="evaluation",
             )
@@ -2421,11 +1949,6 @@ class ExecutionAgent(BaseAgent):
                 "iteration": iteration,
                 "max_iterations": max_iterations,
                 "_task_id": task_id,
-                # Transparent pass-through for cross-iteration knowledge memory.
-                "knowledge_memory": message.get("knowledge_memory") or {},
-                # Transparent pass-through for history so EvaluationAgent can
-                # detect stagnation across iterations.
-                "history_summary": message.get("history_summary") or [],
             },
             next_recipient="evaluation",
         )
@@ -2505,172 +2028,6 @@ _DEG_METRIC_PATTERNS: List[tuple] = [
     ("PCC_DM",     rf"pcc_?dm[:\s=]+{_METRIC_VALUE_RE}"),
     ("R2_DM",      rf"r2_?dm[:\s=]+{_METRIC_VALUE_RE}"),
 ]
-
-
-# =============================================================================
-# BiologicalConstraintVerifier
-# =============================================================================
-
-
-class BiologicalConstraintVerifier:
-    """Static analyzer that detects *Mechanistic Loss* in generated PyTorch code.
-
-    Current automated agent frameworks over-rely on "code executes" and
-    "metric improves" as the sole feedback signals.  This creates a fatal
-    blind spot: a model can execute successfully and even show a metric
-    improvement while silently *violating* biological first-principles
-    (Implementation Degradation / False Positive Alignment).
-
-    This verifier scans the generated Python/PyTorch source for patterns
-    that indicate whether key causal constraints are present as *executable*
-    logic rather than merely as passive comments or prompt text.
-
-    Two severity levels are distinguished:
-
-    * **critical** — inviolable causal laws that, if absent, indicate the
-      model is biologically unsound regardless of metric values.
-    * **advisory** — best-practice patterns that improve biological plausibility
-      but whose absence is not by itself a disqualifying failure.
-
-    Typical usage::
-
-        report = BiologicalConstraintVerifier.verify(generated_code)
-        if report["mechanistic_loss"]:
-            print(report["summary"])
-    """
-
-    #: Constraint definitions.  Each entry is a dict with keys:
-    #: ``name``, ``description``, ``patterns`` (list of regex strings),
-    #: and ``severity`` (``"critical"`` or ``"advisory"``).
-    CONSTRAINTS: List[Dict[str, Any]] = [
-        {
-            "name": "zero_dose_causal_law",
-            "description": (
-                "Zero drug dose must produce zero model output (pharmacological "
-                "causality law).  Implement as element-wise dose-scaling, e.g. "
-                "``output = prediction * dose``, or an equivalent dose-gating "
-                "mechanism, so that dose=0 always yields a zero perturbation delta."
-            ),
-            "patterns": [
-                r"\*\s*dose",                          # output * dose
-                r"dose\s*\*",                          # dose * output
-                r"\bx\b[^\n]{0,10}\*\s*dose",          # x * dose shorthand (single line)
-                r"dose_scal",                          # dose_scale / dose_scaling variable
-                r"dose_gate",                          # dose_gate variable
-                r"dose_mask",                          # dose_mask variable
-                r"dose_factor",                        # dose_factor variable
-                r"dose_weight",                        # dose_weight variable
-                r"\bif\b[^\n]{0,60}\bdose\b[^\n]{0,30}==\s*0",  # if dose == 0: ... (single line)
-                r"torch\.zeros_like[^;)\n]{0,80}dose", # torch.zeros_like(...dose...) (bounded)
-                r"#\s*CONSTRAINT\s*:\s*zero_?dose",    # explicit constraint comment
-                r"#\s*zero[_\s-]?dose",                # inline zero-dose comment
-                r"#\s*dose[_\s-]?zero",                # inline dose-zero comment
-            ],
-            "severity": "critical",
-        },
-        {
-            "name": "mechanism_justification_comment",
-            "description": (
-                "Generated code should contain a '# MECHANISM JUSTIFICATION:' or "
-                "'# CONSTRAINT:' comment block that explains the biological rationale "
-                "behind major modeling decisions, making the causal chain auditable."
-            ),
-            "patterns": [
-                r"#\s*MECHANISM\s+JUSTIFICATION",
-                r"#\s*CONSTRAINT\s*:",
-                r"#\s*BIOLOGICAL\s+CONSTRAINT",
-                r"#\s*CAUSAL\s+LAW",
-                r"#\s*BIO(?:LOGICAL)?\s+PRIOR",
-            ],
-            "severity": "advisory",
-        },
-    ]
-
-    @classmethod
-    def verify(cls, code: str) -> Dict[str, Any]:
-        """Check *code* for biological constraint implementations.
-
-        Args:
-            code: Python source code produced by :class:`ModelingAgent`.
-
-        Returns:
-            Dict with the following keys:
-
-            * ``mechanistic_loss`` (bool): ``True`` if any *critical*
-              constraint is absent — indicating Implementation Degradation.
-            * ``results`` (list[dict]): Per-constraint outcomes with keys
-              ``name``, ``severity``, ``found``, and ``description``.
-            * ``missing_critical`` (list[str]): Names of absent critical
-              constraints.
-            * ``missing_advisory`` (list[str]): Names of absent advisory
-              constraints.
-            * ``summary`` (str): Human-readable summary suitable for
-              injecting into the :class:`EvaluationAgent` feedback loop.
-        """
-        if not code or not code.strip():
-            return {
-                "mechanistic_loss": False,
-                "results": [],
-                "missing_critical": [],
-                "missing_advisory": [],
-                "summary": "No code provided; skipping biological constraint verification.",
-            }
-
-        results: List[Dict[str, Any]] = []
-        missing_critical: List[str] = []
-        missing_advisory: List[str] = []
-
-        for constraint in cls.CONSTRAINTS:
-            name: str = constraint["name"]
-            description: str = constraint["description"]
-            patterns: List[str] = constraint["patterns"]
-            severity: str = constraint["severity"]
-            found = any(
-                re.search(pat, code, re.IGNORECASE | re.MULTILINE)
-                for pat in patterns
-            )
-            results.append(
-                {
-                    "name": name,
-                    "severity": severity,
-                    "found": found,
-                    "description": description,
-                }
-            )
-            if not found:
-                if severity == "critical":
-                    missing_critical.append(name)
-                else:
-                    missing_advisory.append(name)
-
-        mechanistic_loss = len(missing_critical) > 0
-
-        summary_parts: List[str] = []
-        if missing_critical:
-            summary_parts.append(
-                "⚠️ MECHANISTIC LOSS DETECTED — critical biological constraints absent: "
-                + ", ".join(missing_critical)
-                + ". These are inviolable causal laws that MUST be implemented as "
-                "executable PyTorch code, not just described in comments."
-            )
-        if missing_advisory:
-            summary_parts.append(
-                "Advisory constraints not found: "
-                + ", ".join(missing_advisory)
-                + ". Consider adding them for biological plausibility."
-            )
-        if not missing_critical and not missing_advisory:
-            summary_parts.append("✅ All biological constraints verified in generated code.")
-        elif not missing_critical:
-            summary_parts.append("✅ All critical biological constraints verified.")
-
-        return {
-            "mechanistic_loss": mechanistic_loss,
-            "results": results,
-            "missing_critical": missing_critical,
-            "missing_advisory": missing_advisory,
-            "summary": " ".join(summary_parts),
-        }
 
 
 class EvaluationAgent(BaseAgent):
@@ -2851,9 +2208,6 @@ class EvaluationAgent(BaseAgent):
         insight_report: Dict[str, Any] = message.get("insight_report") or {}
         iteration: int = int(message.get("iteration") or 0)
         max_iterations: int = int(message.get("max_iterations") or 5)
-        history_summary: List[Dict[str, Any]] = message.get("history_summary") or []
-        # Transparent pass-through for cross-iteration knowledge memory.
-        knowledge_memory: Dict[str, Any] = message.get("knowledge_memory") or {}
 
         # Load dynamic metric config from pipeline/review configuration.
         metric_cfg = self._get_metric_config()
@@ -2901,16 +2255,6 @@ class EvaluationAgent(BaseAgent):
         # Convenience alias kept for orchestrator's best-accuracy tracking.
         accuracy: Optional[float] = primary_value
 
-        # ---- Biological Constraint Verification (Mechanistic Loss Detection) ----
-        # Check if the generated code actually implements biological first-principles
-        # as executable logic, not just as prompt descriptions.  A metric improvement
-        # achieved by code that violates biological constraints is a False Positive.
-        constraint_report = BiologicalConstraintVerifier.verify(code)
-        _log(
-            f"├─ Biological constraints: {constraint_report['summary']}",
-            console=True,
-        )
-
         # Goal achieved → SUCCESS.
         if self._goal_met(all_metrics, target_metric, pass_threshold, direction):
             _log(
@@ -2937,7 +2281,6 @@ class EvaluationAgent(BaseAgent):
                     "insight_report": insight_report,
                     "iteration": iteration,
                     "max_iterations": max_iterations,
-                    "knowledge_memory": knowledge_memory,
                 },
                 next_recipient="orchestration",
             )
@@ -2952,13 +2295,9 @@ class EvaluationAgent(BaseAgent):
             feedback_package = await self._generate_feedback_package(
                 stdout, stderr, tb, code, all_metrics, target_metric,
                 pass_threshold, direction,
-                constraint_report=constraint_report,
-                iteration=iteration,
-                history_summary=history_summary,
             )
             feedback_package["metric_delta"] = metric_delta
             feedback_package["metric_trend"] = metric_trend
-            feedback_package["constraint_report"] = constraint_report
             return AgentResponse(
                 status="needs_iteration",
                 data={
@@ -2981,7 +2320,6 @@ class EvaluationAgent(BaseAgent):
                     "insight_report": insight_report,
                     "iteration": iteration,
                     "max_iterations": max_iterations,
-                    "knowledge_memory": knowledge_memory,
                 },
                 next_recipient="orchestration",
             )
@@ -2990,13 +2328,9 @@ class EvaluationAgent(BaseAgent):
         feedback_package = await self._generate_feedback_package(
             stdout, stderr, tb, code, all_metrics, target_metric,
             pass_threshold, direction,
-            constraint_report=constraint_report,
-            iteration=iteration,
-            history_summary=history_summary,
         )
         feedback_package["metric_delta"] = metric_delta
         feedback_package["metric_trend"] = metric_trend
-        feedback_package["constraint_report"] = constraint_report
         suggested_target = feedback_package.get("suggested_target", "modeling")
         _log(f"├─ Verdict: REFINE (target={suggested_target})", console=True)
         return AgentResponse(
@@ -3020,7 +2354,6 @@ class EvaluationAgent(BaseAgent):
                 "insight_report": insight_report,
                 "iteration": iteration,
                 "max_iterations": max_iterations,
-                "knowledge_memory": knowledge_memory,
             },
             next_recipient="orchestration",
         )
@@ -3039,10 +2372,6 @@ class EvaluationAgent(BaseAgent):
         target_metric: str,
         pass_threshold: float,
         direction: str,
-        *,
-        constraint_report: Optional[Dict[str, Any]] = None,
-        iteration: int = 0,
-        history_summary: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Use the LLM to produce a structured feedback package.
 
@@ -3051,16 +2380,6 @@ class EvaluationAgent(BaseAgent):
         * ``technical_feedback`` — actionable guidance for :class:`ModelingAgent`
         * ``knowledge_gap`` — search topic for :class:`ResearchAgent`
         * ``suggested_target`` — ``"modeling"`` or ``"research"``
-
-        When *constraint_report* indicates Mechanistic Loss, the biological
-        constraint violations are prepended to ``technical_feedback`` so that
-        the :class:`ModelingAgent` is explicitly directed to fix them in the
-        next iteration.
-
-        When *iteration* > 1 and *history_summary* shows no improvement,
-        the feedback is augmented with anti-stagnation guidance that explicitly
-        asks for a fundamentally different approach rather than incremental
-        Architecture/Fusion/Loss tweaks.
 
         Falls back to a heuristic package if the LLM call fails.
 
@@ -3073,182 +2392,55 @@ class EvaluationAgent(BaseAgent):
             target_metric: Primary metric name (e.g. ``"PCC"``).
             pass_threshold: Numeric success threshold.
             direction: ``"maximize"`` or ``"minimize"``.
-            constraint_report: Optional output from
-                :meth:`BiologicalConstraintVerifier.verify`.  When provided
-                and ``mechanistic_loss`` is ``True``, the violation summary is
-                prepended to the returned ``technical_feedback``.
-            iteration: Current pipeline iteration number (0-indexed).
-            history_summary: Ordered list of per-iteration history records from
-                the orchestrator.  Used to detect stagnation and extract the
-                list of previously tried strategies.
 
         Returns:
             Dict with ``technical_feedback``, ``knowledge_gap``, and
             ``suggested_target`` keys.
         """
-        history_summary = history_summary or []
         primary_value = all_metrics.get(target_metric)
         primary_str = f"{primary_value:.4f}" if primary_value is not None else "N/A"
         metrics_summary = "\n".join(
             f"  {k}: {v:.4f}" if v is not None else f"  {k}: N/A"
             for k, v in all_metrics.items()
         )
-
-        # Build a constraint-violation preamble to inject into feedback when
-        # Mechanistic Loss is detected.  The guidance lines are generated
-        # dynamically from the CONSTRAINTS definitions so that new constraints
-        # are automatically covered without manual updates.
-        constraint_preamble = ""
-        if constraint_report and constraint_report.get("mechanistic_loss"):
-            missing_critical: List[str] = constraint_report.get("missing_critical") or []
-            if missing_critical:
-                missing_str = ", ".join(missing_critical)
-                # Build per-constraint guidance from the class-level definitions.
-                constraint_guidance_lines: List[str] = []
-                constraint_lookup = {c["name"]: c for c in BiologicalConstraintVerifier.CONSTRAINTS}
-                for name in missing_critical:
-                    desc = constraint_lookup.get(name, {}).get("description", name)
-                    constraint_guidance_lines.append(f"  • {name}: {desc}")
-                guidance_block = "\n".join(constraint_guidance_lines)
-                constraint_preamble = (
-                    f"\n\n⚠️ MECHANISTIC LOSS DETECTED — the following critical biological "
-                    f"constraints are ABSENT from the generated code: {missing_str}.\n"
-                    "These are inviolable causal laws that MUST be implemented as executable "
-                    "PyTorch tensor operations in the next iteration:\n"
-                    + guidance_block + "\n"
-                )
-
-        # Detect stagnation: extract tried strategies and check for flat scores.
-        # Use the same delta threshold as the orchestrator's _FLAT_DELTA_THRESHOLD so
-        # both components agree on what constitutes a "flat" iteration.
-        _FLAT_DELTA_THRESHOLD = 0.0005
-        tried_strategies: List[str] = [
-            str(h.get("strategy") or h.get("decision") or "")
-            for h in history_summary
-            if h.get("strategy") or h.get("decision")
-        ]
-        flat_count = 0
-        if len(history_summary) >= 2:
-            scores = [
-                h.get("score")
-                for h in history_summary[-3:]
-                if h.get("score") is not None
-            ]
-            if len(scores) >= 2:
-                deltas = [abs(scores[i] - scores[i - 1]) for i in range(1, len(scores))]
-                flat_count = sum(1 for d in deltas if d < _FLAT_DELTA_THRESHOLD)
-
-        is_stagnating = iteration >= 2 and flat_count >= 1
-
-        # Build the stagnation-aware context string for the prompt.
-        stagnation_context = ""
-        if is_stagnating and tried_strategies:
-            unique_tried = list(dict.fromkeys(s for s in tried_strategies if s))[:8]
-            stagnation_context = (
-                f"\n\n## ⚠️ ANTI-STAGNATION ALERT (iteration {iteration})\n"
-                f"The primary metric has not improved meaningfully over the last "
-                f"{flat_count + 1} iterations. "
-                "Do NOT propose any further incremental changes to:\n"
-                "  - Node A (Architecture/Backbone)\n"
-                "  - Node B (Fusion/Attention)\n"
-                "  - Node C (Loss Function)\n"
-                "if those dimensions have already been tweaked.\n\n"
-                "Strategies already attempted (DO NOT REPEAT):\n"
-                + "\n".join(f"  • {s}" for s in unique_tried)
-                + "\n\nInstead, propose a FUNDAMENTALLY DIFFERENT biological modeling "
-                "paradigm, for example:\n"
-                "  - Self-supervised pre-training on unlabelled morphology data\n"
-                "  - GNN-based molecular graph encoder instead of fingerprints\n"
-                "  - Multi-task objectives (jointly predict multiple cellular responses)\n"
-                "  - Pathway-consistency regularisation using gene ontology sets\n"
-                "  - Normalizing-flow / VAE decoder for distribution modelling\n"
-                "  - Contrastive representation learning across treatment groups\n"
-            )
-        elif is_stagnating:
-            stagnation_context = (
-                f"\n\n## ⚠️ ANTI-STAGNATION ALERT (iteration {iteration})\n"
-                "The primary metric has not improved meaningfully in recent iterations. "
-                "Propose a FUNDAMENTALLY DIFFERENT biological modeling paradigm rather "
-                "than incremental Architecture/Fusion/Loss tweaks."
-            )
-
         try:
             from .llm_client import chat_json, resolve_llm_config  # type: ignore
 
             llm_cfg = resolve_llm_config(self.config)
-
-            # When stagnating, use a less prescriptive system prompt that
-            # encourages exploration beyond the fixed 3-node hierarchy.
-            if is_stagnating:
-                system_prompt = (
-                    "You are a Principal AI Scientist evaluating a virtual cell perturbation "
-                    "model that has STAGNATED — the primary metric has not improved for "
-                    "multiple iterations. "
-                    "Your task is to identify the ROOT CAUSE of stagnation and propose a "
-                    "FUNDAMENTALLY DIFFERENT biological modeling direction. "
-                    "Do NOT suggest incremental tweaks to the current architecture. "
-                    "Return a JSON object with exactly these keys:\n"
-                    "- technical_feedback (str): Root-cause analysis and a concrete proposal "
-                    "for a NEW modeling paradigm (e.g., self-supervised pre-training, GNN "
-                    "molecular encoder, normalizing flow, multi-task objectives, pathway "
-                    "regularisation). Be specific about what code changes to make.\n"
-                    "- knowledge_gap (str): A targeted literature search query for the "
-                    "proposed new paradigm (e.g., 'contrastive learning cell morphology "
-                    "perturbation prediction'). Required when a new paradigm is proposed.\n"
-                    "- suggested_target (str): Either 'modeling' or 'research'. Prefer "
-                    "'research' when a genuinely new biological hypothesis is needed."
-                )
-            else:
-                system_prompt = (
-                    "You are a Principal AI Scientist evaluating a virtual cell perturbation model. "
-                    "Analyse the execution output and the full biological metric suite, then return a "
-                    "JSON object with exactly these keys:\n"
-                    "- technical_feedback (str): Specific, actionable guidance grounded in the metric "
-                    "analysis. When the metric is improving, focus on the bottleneck sub-metric. "
-                    "When the metric is flat, propose a different modeling angle beyond the standard "
-                    "Architecture/Fusion/Loss three-node hierarchy "
-                    "(e.g., biological priors, pre-training, graph representations, uncertainty). "
-                    "E.g., 'DEG_PCC_20 is low → consider pathway-aware weighting using GO gene sets.'.\n"
-                    "- knowledge_gap (str): A targeted literature search query if more biological "
-                    "context is needed (e.g., 'MAPK pathway for DEG high-variance gene modeling'). "
-                    "Empty string if not needed.\n"
-                    "- suggested_target (str): Either 'modeling' (code changes priority) or "
-                    "'research' (more biological knowledge needed first)."
-                )
-            constraint_section = ""
-            if constraint_report and constraint_report.get("mechanistic_loss"):
-                constraint_section = (
-                    f"\n\n### Biological Constraint Violations\n"
-                    f"{constraint_report['summary']}\n"
-                    "Fix these FIRST before any metric optimisation."
-                )
+            system_prompt = (
+                "You are a Principal AI Scientist evaluating a virtual cell perturbation model. "
+                "Analyse the execution output and the full biological metric suite, then return a "
+                "JSON object with exactly these keys:\n"
+                "- technical_feedback (str): Specific, actionable guidance grounded in the metric "
+                "analysis. Reference Hypergraph Node concepts (Architecture/Backbone, "
+                "Data Fusion/Attention, Loss Function & Optimization) and cell-granularity "
+                "(T0-T6 Jupyter cells). E.g., 'DEG_PCC_20 is low → the model struggles with "
+                "high-variance genes; add a rank-based loss term in Node C (Loss).'.\n"
+                "- knowledge_gap (str): A targeted literature search query if more biological "
+                "context is needed (e.g., 'MAPK pathway for DEG high-variance gene modeling'). "
+                "Empty string if not needed.\n"
+                "- suggested_target (str): Either 'modeling' (code changes priority) or "
+                "'research' (more biological knowledge needed first)."
+            )
             user_content = (
-                f"## Metric Suite Results (iteration {iteration})\n"
+                f"## Metric Suite Results\n"
                 f"Primary metric: {target_metric} = {primary_str} "
                 f"(goal: {direction} {pass_threshold})\n\n"
                 f"Full DEG metric suite:\n{metrics_summary}\n\n"
                 f"### stdout (last 500 chars)\n{stdout[-500:]}\n\n"
                 f"### stderr / traceback (last 500 chars)\n{(tb or stderr)[-500:]}\n\n"
                 f"### Code snippet (first 300 chars)\n{code[:300]}"
-                + constraint_section
-                + stagnation_context
             )
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ]
-            # Use a higher temperature when stagnating to encourage diverse
-            # suggestions rather than the same incremental tweaks.
-            temperature = 0.7 if is_stagnating else 0.3
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: chat_json(messages, llm_config=llm_cfg, temperature=temperature),
+                lambda: chat_json(messages, llm_config=llm_cfg, temperature=0.3),
             )
-            technical_feedback = str(result.get("technical_feedback") or "")
-            if constraint_preamble:
-                technical_feedback = constraint_preamble.strip() + "\n\n" + technical_feedback
             return {
-                "technical_feedback": technical_feedback,
+                "technical_feedback": str(result.get("technical_feedback") or ""),
                 "knowledge_gap": str(result.get("knowledge_gap") or ""),
                 "suggested_target": str(result.get("suggested_target") or "modeling"),
             }
@@ -3259,42 +2451,20 @@ class EvaluationAgent(BaseAgent):
             )
             # Heuristic fallback: prefer code fix if there's an error, else research.
             if tb or stderr:
-                feedback = f"Fix the execution error: {(tb or stderr)[:300]}"
-                if constraint_preamble:
-                    feedback = constraint_preamble.strip() + "\n\n" + feedback
                 return {
-                    "technical_feedback": feedback,
+                    "technical_feedback": (
+                        f"Fix the execution error: {(tb or stderr)[:300]}"
+                    ),
                     "knowledge_gap": "",
                     "suggested_target": "modeling",
                 }
-            if is_stagnating:
-                base_feedback = (
-                    f"[ANTI-STAGNATION] Iteration {iteration}: {target_metric} ({primary_str}) "
-                    f"has not improved for {flat_count + 1} iterations. "
-                    "Stop tweaking Architecture/Fusion/Loss. Propose a fundamentally different "
-                    "biological modeling paradigm: self-supervised pre-training, GNN molecular "
-                    "encoder, multi-task objectives, or pathway-consistency regularisation."
-                )
-                if constraint_preamble:
-                    base_feedback = constraint_preamble.strip() + "\n\n" + base_feedback
-                return {
-                    "technical_feedback": base_feedback,
-                    "knowledge_gap": (
-                        "self-supervised pre-training contrastive learning cell perturbation "
-                        "response prediction GNN molecular encoder"
-                    ),
-                    "suggested_target": "research",
-                }
-            base_feedback = (
-                f"Current {target_metric} ({primary_str}) is below the "
-                f"{direction} threshold of {pass_threshold}. "
-                "Review the Hypergraph Node architecture (Node A: Backbone, "
-                "Node B: Fusion, Node C: Loss) and ensure DEG metrics improve."
-            )
-            if constraint_preamble:
-                base_feedback = constraint_preamble.strip() + "\n\n" + base_feedback
             return {
-                "technical_feedback": base_feedback,
+                "technical_feedback": (
+                    f"Current {target_metric} ({primary_str}) is below the "
+                    f"{direction} threshold of {pass_threshold}. "
+                    "Review the Hypergraph Node architecture (Node A: Backbone, "
+                    "Node B: Fusion, Node C: Loss) and ensure DEG metrics improve."
+                ),
                 "knowledge_gap": (
                     "Retrieve SOTA papers on GNN models for cell perturbation "
                     "response prediction, focusing on DEG high-variance gene modeling"
