@@ -1,23 +1,25 @@
 {
   "_comment": "TIER 3: Review stage overrides. Inherits from pipeline_config.json. Only specify differences.",
-  
   "paths": {
     "generate_execution_root": "./results/${dataset_name}/generate_execution",
     "review_feedback_root": "./results/${dataset_name}/review_feedback",
     "explicit_source_path": null
   },
-  
   "llm": {
     "model": "gemini-3-pro-all",
     "temperature": 0.7
   },
-  
   "review": {
     "target_metric": "PCC",
     "direction": "maximize",
     "max_iterations": 10,
+    "enable_biological_constraint_verifier": false,
     "pass_threshold": 0.7,
-    "force_cells": [0, 1, 4],
+    "force_cells": [
+      0,
+      1,
+      4
+    ],
     "protected_sections": [
       "SECTION 1",
       "SECTION 2",
@@ -36,11 +38,9 @@
       "3. Loss Function & Optimization Strategy"
     ]
   },
-  
   "exec": {
     "timeout_seconds": 18000
   },
-  
   "literature": {
     "bio_kb": {
       "_comment": "Review stage: more aggressive BioKB querying for optimization",
