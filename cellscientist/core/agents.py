@@ -2255,28 +2255,6 @@ class EvaluationAgent(BaseAgent):
         # Convenience alias kept for orchestrator's best-accuracy tracking.
         accuracy: Optional[float] = primary_value
 
-        # ---- Biological Constraint Verification (Mechanistic Loss Detection) ----
-        # Feature gate: disabled by default due to observed regression in online
-        # optimization performance. Keep the implementation for optional ablations.
-        verifier_enabled = bool(
-            (self.config.get("review") or {}).get("enable_biological_constraint_verifier", False)
-        )
-        if verifier_enabled:
-            constraint_report = BiologicalConstraintVerifier.verify(code)
-            _log(
-                f"├─ Biological constraints: {constraint_report['summary']}",
-                console=True,
-            )
-        else:
-            constraint_report = {
-                "mechanistic_loss": False,
-                "missing_critical": [],
-                "missing_advisory": [],
-                "present": [],
-                "summary": "disabled (enable_biological_constraint_verifier=false)",
-            }
-            _log("├─ Biological constraints: disabled", console=True)
-
         # Goal achieved → SUCCESS.
         if self._goal_met(all_metrics, target_metric, pass_threshold, direction):
             _log(
@@ -2461,10 +2439,13 @@ class EvaluationAgent(BaseAgent):
                 None,
                 lambda: chat_json(messages, llm_config=llm_cfg, temperature=0.3),
             )
+            suggested_target = str(result.get("suggested_target") or "modeling").strip().lower()
+            if suggested_target not in {"modeling", "research"}:
+                suggested_target = "modeling"
             return {
                 "technical_feedback": str(result.get("technical_feedback") or ""),
                 "knowledge_gap": str(result.get("knowledge_gap") or ""),
-                "suggested_target": str(result.get("suggested_target") or "modeling"),
+                "suggested_target": suggested_target,
             }
         except Exception as exc:
             _log(
@@ -2484,14 +2465,15 @@ class EvaluationAgent(BaseAgent):
                 "technical_feedback": (
                     f"Current {target_metric} ({primary_str}) is below the "
                     f"{direction} threshold of {pass_threshold}. "
-                    "Review the Hypergraph Node architecture (Node A: Backbone, "
-                    "Node B: Fusion, Node C: Loss) and ensure DEG metrics improve."
+                    "Prioritize code-level fixes in Hypergraph Node A/B/C first "
+                    "(backbone, fusion, and loss), then request additional literature "
+                    "only if gains plateau."
                 ),
                 "knowledge_gap": (
                     "Retrieve SOTA papers on GNN models for cell perturbation "
                     "response prediction, focusing on DEG high-variance gene modeling"
                 ),
-                "suggested_target": "research",
+                "suggested_target": "modeling",
             }
 
     @staticmethod

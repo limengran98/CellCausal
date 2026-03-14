@@ -36,7 +36,12 @@
       "1. Model Architecture (Backbone/Encoder)",
       "2. Data Fusion Mechanism (Interaction/Attention)",
       "3. Loss Function & Optimization Strategy"
-    ]
+    ],
+    "new_hypothesis_rejection_threshold": 3,
+    "routing_policy": {
+      "prefer_modeling_until_iteration": 2,
+      "max_research_hops": 1
+    }
   },
   "exec": {
     "timeout_seconds": 18000
@@ -44,7 +49,7 @@
   "literature": {
     "bio_kb": {
       "_comment": "Review stage: more aggressive BioKB querying for optimization",
-      "inject_max_items": 12,
+      "inject_max_items": 8,
       "max_targets_per_smiles": 10,
       "max_pathways_per_target": 15
     }
