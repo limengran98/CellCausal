@@ -16,26 +16,11 @@ system: |
   - **REFINE**: Use when the previous run IMPROVED. **Lock non-focus parts** (e.g., keep Backbone, only change Loss) to perform "Constraint Projection".
 
   **THE HIERARCHY**:
-  The Model Code is treated as a Hypergraph Node decomposed into three core sub-nodes. You must optimize them dynamically:
+  The Model Code is treated as a Hypergraph Node decomposed into three sub-nodes. You must optimize them dynamically:
   1. **Node A (Architecture)**: The backbone.
   2. **Node B (Fusion)**: How modalities (Images + Molecules) interact.
   3. **Node C (Loss)**: The training objective.
-
-  **ANTI-STAGNATION EXPANSION** — when the metric has not improved for 2+ iterations, the three-node
-  hierarchy above is INSUFFICIENT. You MUST explore one of the following extended nodes instead:
-  4. **Node D (Biological Priors)**: External gene-pathway knowledge graphs, GO terms, or PPI networks as
-     inductive bias (e.g., pathway-consistency regularisation, GO-gene-set weighting).
-  5. **Node E (Pre-training / Transfer)**: Self-supervised pre-training on unlabelled morphology data or
-     transfer learning from related cell datasets before supervised fine-tuning.
-  6. **Node F (Multi-task)**: Jointly predict multiple cellular responses (e.g., DEG_PCC_20 + R2_DM
-     simultaneously) to improve generalisation.
-  7. **Node G (Molecular Graph)**: Replace fingerprint/ECFP encoding with a GNN over the molecular graph
-     for richer structural representation.
-  8. **Node H (Uncertainty / Distribution)**: Model predictive uncertainty via MC-dropout, deep ensembles,
-     or replace the regression head with a normalizing-flow / VAE decoder.
-  9. **Node I (Contrastive / Representation)**: Contrastive learning across treatment groups or between
-     perturbed and unperturbed cells to improve latent structure.
-
+  
   **THE PROCESS (SCIENTIFIC REFLECTION)**:
   1. **REVIEW HISTORY**: Read the `HISTORY` section below. Identify which strategies have failed or plateaued. **DO NOT blindly repeat failed approaches.**
   2. **SELECT STRATEGY**: Choose a specific strategy from the "INNOVATION GUIDE" below.
@@ -45,12 +30,10 @@ system: |
   1. **REVIEW HISTORY**: Critically analyze `${experiment_history}`. 
      - *Why* did previous architectures fail? (e.g., "The loss didn't converge," "Overfitting on training set," "Ranking metric low despite good MSE").
      - **DO NOT** repeat failed mechanisms.
-     - **List every `selected_strategy` from HISTORY that resulted in REJECTED or zero-delta outcomes — you MUST NOT reproduce any of them.**
   2. **FIRST-PRINCIPLES REASONING**: Instead of picking from a list, **INVENT** a solution based on the failure mode.
      - *If ranking is bad*: Can you design a Loss Function that penalizes disorder?
      - *If interaction is weak*: Can you use Hypernetworks, Cross-Attention, or Geometric priors?
      - *If distribution shifts*: Can you use Normalizing Flows or VAEs?
-     - *If metric is flat*: Have you tried Node D-I (biological priors, pre-training, multi-task, GNN, uncertainty, contrastive)?
   3. **IMPLEMENT**: Write the code.
 
   ================================================================================
@@ -85,7 +68,7 @@ system: |
     {
       "semantic_gradient_analysis": "Analyze the 'DATA FEEDBACK' section. E.g., 'MSE improved but PCC dropped, implying scaling issues.'",
       "decision_type": "EXPLORE" or "REFINE",
-      "focus_area": "Architecture" or "Fusion" or "Loss" or "Biological_Priors" or "Pre_Training" or "Multi_Task" or "Molecular_Graph" or "Uncertainty" or "Contrastive" or "All",
+      "focus_area": "Architecture" or "Fusion" or "Loss" or "All",
       "used_evidence_ids": ["B1", "L3", ...],
       "subtasks_to_update": ["Optional list of sub-task names you will update this iteration (e.g. 'Model Architecture')"],
       "new_subtasks": [
@@ -120,12 +103,6 @@ user_template: |
   **HISTORY**:
   ${history_summary}
 
-  **STRATEGIES ALREADY TRIED — DO NOT REPEAT**:
-  Review every entry in HISTORY above. Extract the `selected_strategy` value for any iteration
-  where `status` was "REJECTED" or `metric_delta` was approximately 0 (no improvement).
-  You MUST NOT reproduce any of those strategies. If all of Node A/B/C variants are exhausted,
-  switch to one of the extended nodes (D through I) from the ANTI-STAGNATION EXPANSION section.
-
   **EXTERNAL KNOWLEDGE (retrieved standards / papers / notes)**:
   ${external_knowledge_md}
 
@@ -143,16 +120,13 @@ user_template: |
 
   INSTRUCTION: 
     1. Analyze History & Metrics.
-    2. **ANTI-STAGNATION CHECK**: If HISTORY shows 2+ iterations without improvement in ${target_metric},
-       you MUST choose EXPLORE decision_type and select a strategy from extended nodes D–I, NOT from
-       the standard Architecture/Fusion/Loss (A/B/C) nodes.
-    3. Check **EXTERNAL KNOWLEDGE** for relevant scientific insights or debugging help.
-    4. Identify which evidence items (e.g., [B1], [L3]) you consulted and include their IDs in `used_evidence_ids`.
-    5. Select a NEW Strategy from the Guide (never reuse a strategy that already appeared in HISTORY).
-    6. Update the **Strategy Doc** (Markdown).
-    7. Update the **Model Definition** (Code).
-    8. **COMPATIBILITY CHECK**: Ensure your new code integrates seamlessly with the **FULL NOTEBOOK CONTEXT**. 
+    2. Check **EXTERNAL KNOWLEDGE** for relevant scientific insights or debugging help.
+    3. Identify which evidence items (e.g., [B1], [L3]) you consulted and include their IDs in `used_evidence_ids`.
+    4. Select a NEW Strategy from the Guide
+    5. Update the **Strategy Doc** (Markdown).
+    6. Update the **Model Definition** (Code).
+    7. **COMPATIBILITY CHECK**: Ensure your new code integrates seamlessly with the **FULL NOTEBOOK CONTEXT**. 
        - Do NOT change variable names that are relied upon by the context.
        - Do NOT output code that requires modifying the read-only cells to run.
-    9. Ensure strictly valid JSON output using indices from the text above.
-    10. **MANDATORY**: Include `used_evidence_ids` field with the Evidence IDs you referenced (e.g., ["B1", "L3"]).
+    8. Ensure strictly valid JSON output using indices from the text above.
+    9. **MANDATORY**: Include `used_evidence_ids` field with the Evidence IDs you referenced (e.g., ["B1", "L3"]).
