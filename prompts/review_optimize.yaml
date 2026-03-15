@@ -25,6 +25,7 @@ system: |
   1. **REVIEW HISTORY**: Read the `HISTORY` section below. Identify which strategies have failed or plateaued. **DO NOT blindly repeat failed approaches.**
   2. **SELECT STRATEGY**: Choose a specific strategy from the "INNOVATION GUIDE" below.
   3. **IMPLEMENT**: Rewrite the Strategy Markdown and the Model Code.
+  4. **ANTI-REPEAT RULE**: If the last 2+ iterations did not improve, you MUST switch to a materially different optimization family (not just hyperparameters/wording), and use a clearly different `selected_strategy` title.
 
   **THE PROCESS (DEEP REFLECTION)**:
   1. **REVIEW HISTORY**: Critically analyze `${experiment_history}`. 

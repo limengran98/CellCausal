@@ -547,7 +547,46 @@ def _expand_vars(text, context):
         return ""
     return re.sub(r"\$\{(\w+)\}", lambda m: str(context.get(m.group(1), m.group(0))), text)
 
-def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, iteration, best_metric_val, workspace, history_summary, task_graph_state_text=None):
+
+def _normalize_strategy_name(name):
+    """Normalize strategy names so near-identical titles can be compared."""
+    if not name:
+        return ""
+    name = str(name).strip().lower()
+    return re.sub(r"[^a-z0-9]+", " ", name).strip()
+
+
+def _recent_non_improved_count(history_summary):
+    """Count consecutive trailing iterations that did not produce an improvement."""
+    count = 0
+    for item in reversed(history_summary or []):
+        if item.get("status") == "IMPROVED":
+            break
+        count += 1
+    return count
+
+
+def _is_redundant_strategy(suggestion, history_summary):
+    """Detect repeated strategy titles after non-improvement to force real iteration."""
+    if not isinstance(suggestion, dict):
+        return False
+
+    curr = _normalize_strategy_name(suggestion.get("selected_strategy"))
+    if not curr:
+        return False
+
+    for item in reversed(history_summary or []):
+        prev = _normalize_strategy_name(item.get("strategy"))
+        if not prev:
+            continue
+        if prev == curr and item.get("status") != "IMPROVED":
+            return True
+        # Stop once we reach the most recent improved iteration.
+        if item.get("status") == "IMPROVED":
+            return False
+    return False
+
+def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, iteration, best_metric_val, workspace, history_summary, task_graph_state_text=None, extra_instruction=None):
     """
     Generates optimization suggestions.
     Builds a richer history context including strategies, decisions and reflections.
@@ -586,7 +625,9 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
     if not history_summary:
         history_text = "No previous iterations. This is the first attempt."
     else:
+        trailing_failures = _recent_non_improved_count(history_summary)
         history_text = "--- PREVIOUS EXPERIMENTS HISTORY (Read Carefully to Avoid Repeats) ---\n"
+        history_text += f"Consecutive non-improving iterations: {trailing_failures}\n"
         for h in history_summary:
             iter_num = h.get('iter')
             strat = h.get('strategy', 'Unknown')
@@ -606,6 +647,14 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
             history_text += f"  - Action: {decision} (Focus: {focus})\n"
             history_text += f"  - Score: {score_disp} ({status})\n"
             history_text += f"  - Reflection: {reflect}...\n"
+
+        if trailing_failures >= 2:
+            history_text += (
+                "\n[ANTI-REPEAT MANDATE]\n"
+                "- The last iterations did not improve. You MUST propose a materially different strategy "
+                "(different loss+fusion or architecture family), not a minor parameter tweak.\n"
+                "- Explicitly avoid reusing recent failed strategy titles.\n"
+            )
 
     models_data = current_metrics.get("models", {}) if isinstance(current_metrics, dict) else {}
     baseline_key = next((k for k in models_data.keys() if "baseline" in k.lower()), None)
@@ -676,6 +725,9 @@ def generate_optimization_suggestion(cfg, nb, mutable_indices, current_metrics, 
 
             if "${semantic_gradient_analysis}" not in (p_data.get("user_template", "") or ""):
                 user_prompt += f"\n\n**DATA FEEDBACK (SEMANTIC GRADIENT)**:\n{semantic_gradient_text}"
+
+            if extra_instruction:
+                user_prompt += f"\n\n**ITERATION OVERRIDE**:\n{extra_instruction}"
 
         except Exception as e:
             _log(f"[WARN] Failed to load prompt yaml: {e}", console=False)
@@ -940,6 +992,28 @@ def optimize_loop(cfg, workspace_dir, base_nb_path):
                 cfg, nb, mutable_indices, curr_metrics_obj, i, best_score_so_far, workspace_dir, history_summary,
                 task_graph_state_text=task_graph_state_text
             )
+
+            stagnation_rounds = _recent_non_improved_count(history_summary)
+            suggestion_retries = int((review_cfg.get("suggestion_retries") or 2))
+            retry_idx = 0
+            while retry_idx < suggestion_retries:
+                if not suggestion or "edits" not in suggestion:
+                    _log("[WARN] Invalid LLM response. Retrying with stricter instruction.", console=True)
+                elif stagnation_rounds >= 2 and _is_redundant_strategy(suggestion, history_summary):
+                    _log("[REVIEW] 🔁 Redundant strategy detected after stagnation. Forcing non-repetitive redesign.", console=True)
+                else:
+                    break
+
+                retry_idx += 1
+                suggestion = generate_optimization_suggestion(
+                    cfg, nb, mutable_indices, curr_metrics_obj, i, best_score_so_far, workspace_dir, history_summary,
+                    task_graph_state_text=task_graph_state_text,
+                    extra_instruction=(
+                        "Recent attempts stagnated. Return a materially different plan: change optimization family "
+                        "(e.g., ranking loss + calibration + different fusion block), avoid previous strategy titles, "
+                        "and explain why this is not a minor tweak."
+                    )
+                )
 
             if not suggestion or "edits" not in suggestion:
                 _log("[WARN] Invalid LLM response. Skipping.", console=False)
