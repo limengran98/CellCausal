@@ -257,6 +257,39 @@ class PipelineOrchestrator:
     # Falsifiable Iteration Protocol
     # ------------------------------------------------------------------
 
+    def _should_trigger_breakthrough_mode(self) -> bool:
+        """Return True when recent score trajectory indicates a plateau.
+
+        In plateau mode we allow one macro redesign step (no immediate revert)
+        to escape tiny local tweaks.
+        """
+        review_cfg = (self.config.get("review") or {}) if isinstance(self.config.get("review"), dict) else {}
+        if not bool(review_cfg.get("enable_breakthrough_mode", True)):
+            return False
+
+        window = int(review_cfg.get("breakthrough_stagnation_window", 4) or 4)
+        min_gain = float(review_cfg.get("breakthrough_min_gain", 0.005) or 0.005)
+        if len(self.iteration_history) < max(3, window):
+            return False
+
+        recent = self.iteration_history[-window:]
+        vals: List[float] = []
+        for row in recent:
+            try:
+                v = row.get("score")
+                if v is None:
+                    continue
+                vals.append(float(v))
+            except Exception:
+                continue
+
+        if len(vals) < 3:
+            return False
+
+        net_gain = vals[-1] - vals[0]
+        swing = max(vals) - min(vals)
+        return (net_gain < min_gain) and (swing < max(min_gain * 2.0, 0.01))
+
     def _evaluate_iteration(
         self, data: Dict[str, Any], iteration: int
     ) -> Dict[str, Any]:
@@ -658,41 +691,53 @@ class PipelineOrchestrator:
                     verdict_info = self._evaluate_iteration(data, next_iteration)
                     verdict = verdict_info["verdict"]
 
-                    # On REJECT: revert the working artifact to the last accepted
-                    # notebook/code state and augment feedback to force a new idea.
+                    # On REJECT: default behavior is revert-to-last-accepted.
+                    # Under breakthrough mode (plateau), keep one non-reverted
+                    # macro redesign attempt to escape local minima.
                     code_for_next = data.get("code") or ""
                     notebook_for_next = data.get("notebook_json") or ""
                     artifact_type_for_next = data.get("artifact_type") or ""
                     modeling_metadata_for_next = dict(data.get("modeling_metadata") or {})
+                    breakthrough_mode = self._should_trigger_breakthrough_mode()
                     if verdict == "REJECT":
-                        if self.last_accepted_code:
-                            code_for_next = self.last_accepted_code
-                        if self.last_accepted_notebook_json:
-                            notebook_for_next = self.last_accepted_notebook_json
-                        if self.last_accepted_artifact_type:
-                            artifact_type_for_next = self.last_accepted_artifact_type
-                        if self.last_accepted_modeling_metadata:
-                            modeling_metadata_for_next = dict(self.last_accepted_modeling_metadata)
-                        prev_score = verdict_info.get("previous_score")
-                        curr_score = verdict_info.get("current_score")
-                        if prev_score is not None and curr_score is not None:
-                            revert_note = (
-                                f"[FALSIFICATION] The previous change DEGRADED "
-                                f"the metric ({prev_score:.4f} → {curr_score:.4f}). "
-                                f"The working artifact has been REVERTED to the last accepted state. "
-                                f"Please try a fundamentally different approach."
-                            )
+                        if not breakthrough_mode:
+                            if self.last_accepted_code:
+                                code_for_next = self.last_accepted_code
+                            if self.last_accepted_notebook_json:
+                                notebook_for_next = self.last_accepted_notebook_json
+                            if self.last_accepted_artifact_type:
+                                artifact_type_for_next = self.last_accepted_artifact_type
+                            if self.last_accepted_modeling_metadata:
+                                modeling_metadata_for_next = dict(self.last_accepted_modeling_metadata)
+                            prev_score = verdict_info.get("previous_score")
+                            curr_score = verdict_info.get("current_score")
+                            if prev_score is not None and curr_score is not None:
+                                revert_note = (
+                                    f"[FALSIFICATION] The previous change DEGRADED "
+                                    f"the metric ({prev_score:.4f} → {curr_score:.4f}). "
+                                    f"The working artifact has been REVERTED to the last accepted state. "
+                                    f"Please try a fundamentally different approach."
+                                )
+                            else:
+                                revert_note = (
+                                    "[FALSIFICATION] The previous change was rejected. "
+                                    "The working artifact has been REVERTED to the last accepted state. "
+                                    "Please try a fundamentally different approach."
+                                )
+                            technical_feedback = f"{revert_note}\n\n{technical_feedback}".strip()
                         else:
-                            revert_note = (
-                                "[FALSIFICATION] The previous change was rejected. "
-                                "The working artifact has been REVERTED to the last accepted state. "
-                                "Please try a fundamentally different approach."
+                            jump_note = (
+                                "[BREAKTHROUGH_MODE] Recent iterations are plateauing. "
+                                "Do NOT do tiny parameter nudges. Perform one macro redesign "
+                                "(fusion block or loss family change) while keeping I/O contracts unchanged."
                             )
-                        technical_feedback = f"{revert_note}\n\n{technical_feedback}".strip()
+                            technical_feedback = f"{jump_note}\n\n{technical_feedback}".strip()
+                            suggested_target = "modeling"
 
                     # On consecutive rejections: force route to research for a
                     # new biological hypothesis rather than more code tweaks.
-                    if verdict_info.get("forced_new_hypothesis"):
+                    # In breakthrough mode, keep one modeling jump chance.
+                    if verdict_info.get("forced_new_hypothesis") and not breakthrough_mode:
                         suggested_target = "research"
                         knowledge_gap = (
                             knowledge_gap

@@ -2286,7 +2286,7 @@ class EvaluationAgent(BaseAgent):
             )
 
         # Max iterations reached → REFINE with exhausted flag.
-        if iteration >= max_iterations - 1:
+        if iteration >= max_iterations:
             _log(
                 f"[{self.agent_id}] ⚠️ Max iterations reached without meeting "
                 f"'{target_metric}' goal.",
