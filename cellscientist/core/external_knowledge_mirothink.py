@@ -383,8 +383,42 @@ def _build_query(context_text: str, stage: str, cfg: Dict[str, Any], query_hint:
             return True
         return False
 
+    def _sanitize_query_hint(raw: str) -> str:
+        """Remove notebook/code scaffold noise from query hints.
+
+        Some review prompts may accidentally leak notebook headers and import
+        snippets (e.g., "CELL INDEX READ-ONLY CONTEXT import sys ..."), which
+        significantly hurts retrieval quality. This helper keeps only useful,
+        natural-language-like tokens.
+        """
+        import re
+
+        toks = re.findall(r"[A-Za-z][A-Za-z0-9_\-]{2,}", raw or "")
+        deny = {
+            "cell", "index", "read", "only", "context", "target", "optimize",
+            "import", "from", "code", "markdown", "unnamed", "setup", "data", "loading",
+            # Common module names frequently leaked from notebook source
+            "sys", "os", "h5py", "numpy", "pandas", "torch", "utils",
+        }
+        keep: List[str] = []
+        seen = set()
+        for t in toks:
+            tl = t.lower()
+            if tl in deny or _is_noise_token(t):
+                continue
+            # Strongly prefer domain-ish words over code-ish tokens.
+            if tl.startswith(("nn", "plt", "df", "np", "pd")):
+                continue
+            if tl in seen:
+                continue
+            seen.add(tl)
+            keep.append(t)
+            if len(keep) >= term_limit:
+                break
+        return " ".join(keep)
+
     if query_hint and query_hint.strip():
-        hint = query_hint.strip()
+        hint = _sanitize_query_hint(query_hint.strip())
     else:
         import re
 
@@ -402,6 +436,10 @@ def _build_query(context_text: str, stage: str, cfg: Dict[str, Any], query_hint:
             if len(uniq) >= term_limit:
                 break
         hint = " ".join(uniq)
+
+    if not hint:
+        # Last-resort safe fallback to avoid empty or code-polluted queries.
+        hint = "single-cell perturbation response modeling"
 
     # Prefer academic-ish results by adding common anchors.
     academic_bias = ' (paper OR arxiv OR "journal" OR doi OR pubmed OR "technical report" OR "specification")'
