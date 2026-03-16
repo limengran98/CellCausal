@@ -100,13 +100,33 @@ class TestFalsifiableProtocol:
         assert result["forced_new_hypothesis"] is False
 
     def test_consecutive_rejections_force_new_hypothesis(self):
-        """Two consecutive rejections should force a new hypothesis."""
+        """Force-new requires rejections plus multi-metric plateau evidence."""
         orch = self._make_orchestrator()
-        orch._evaluate_iteration({"accuracy": 0.5, "code": "x=1"}, 0)
-        orch._evaluate_iteration({"accuracy": 0.3, "code": "x=2"}, 1)
-        result = orch._evaluate_iteration({"accuracy": 0.2, "code": "x=3"}, 2)
+        orch.config.setdefault("review", {})["plateau_tol_primary"] = 0.01
+        orch._evaluate_iteration(
+            {"accuracy": 0.3650, "code": "x=1", "metrics": {"DEG_PCC_20": 0.34, "DEG_PCC_50": 0.36, "R2": 0.07}},
+            0,
+        )
+        orch._evaluate_iteration(
+            {"accuracy": 0.3580, "code": "x=2", "metrics": {"DEG_PCC_20": 0.339, "DEG_PCC_50": 0.358, "R2": 0.065}},
+            1,
+        )
+        result = orch._evaluate_iteration(
+            {"accuracy": 0.3550, "code": "x=3", "metrics": {"DEG_PCC_20": 0.338, "DEG_PCC_50": 0.357, "R2": 0.064}},
+            2,
+        )
         assert result["verdict"] == "REJECT"
         assert result["forced_new_hypothesis"] is True
+
+    def test_trend_improvement_can_be_accepted_without_beating_best(self):
+        """Dual-track logic accepts positive trend even below global best."""
+        orch = self._make_orchestrator()
+        orch._evaluate_iteration({"accuracy": 0.50, "code": "x=1"}, 0)
+        r1 = orch._evaluate_iteration({"accuracy": 0.45, "code": "x=2"}, 1)
+        assert r1["verdict"] == "REJECT"
+        r2 = orch._evaluate_iteration({"accuracy": 0.46, "code": "x=3"}, 2)
+        assert r2["verdict"] == "ACCEPT"
+        assert r2["trend_delta"] == pytest.approx(0.01)
 
     def test_rejection_resets_on_accept(self):
         """Consecutive rejection counter resets after an accept."""
