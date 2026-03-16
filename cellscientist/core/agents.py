@@ -1277,6 +1277,33 @@ class ModelingAgent(BaseAgent):
 
         metric_failure_profile = self._build_metric_failure_profile(current_metrics or {})
 
+        review_cfg = (self.config.get("review") or {}) if isinstance(self.config.get("review"), dict) else {}
+        macro_interval = int(review_cfg.get("macro_rewrite_interval", 3) or 3)
+        macro_min_stagnation = int(review_cfg.get("macro_rewrite_min_stagnation", 2) or 2)
+        trailing_non_improved = 0
+        for item in reversed(history_summary or []):
+            if str(item.get("status") or "").upper() == "IMPROVED":
+                break
+            trailing_non_improved += 1
+
+        macro_rewrite = (
+            iteration > 0
+            and macro_interval > 0
+            and (iteration % macro_interval == 0)
+            and trailing_non_improved >= macro_min_stagnation
+        )
+        extra_instruction = ""
+        if macro_rewrite:
+            extra_instruction = (
+                "[MACRO_REWRITE_REQUIRED] You have entered a stagnation region. "
+                "Do not do local patching. Replace one major modeling block (fusion/attention/loss family) "
+                "with a materially different design while preserving data I/O contracts."
+            )
+            _log(
+                f"[MODEL] 🔁 Macro rewrite activated (iteration={iteration}, trailing_non_improved={trailing_non_improved})",
+                console=True,
+            )
+
         task_graph_state = (
             "# AGENT MODE CONTEXT\n"
             f"best_metric_score: {best_metric_score}\n\n"
@@ -1302,6 +1329,7 @@ class ModelingAgent(BaseAgent):
                 workspace,
                 history_summary or [],
                 task_graph_state_text=task_graph_state,
+                extra_instruction=extra_instruction,
             ),
         )
         if not isinstance(suggestion, dict):
@@ -1323,7 +1351,7 @@ class ModelingAgent(BaseAgent):
         updated_notebook_json = nbformat.writes(nb)
         script_text = _notebook_to_script_text(nb)
         metadata = {
-            "generation_mode": "legacy_review_refinement",
+            "generation_mode": "legacy_review_macro_rewrite" if macro_rewrite else "legacy_review_refinement",
             "selected_strategy": suggestion.get("selected_strategy") or "",
             "decision_type": suggestion.get("decision_type") or "",
             "focus_area": suggestion.get("focus_area") or "",
@@ -1475,6 +1503,8 @@ class ModelingAgent(BaseAgent):
                     )
                 artifact_payload.update({
                     "insight_report": insight_report,
+                    "history_summary": history_summary,
+                    "best_metric_score": best_metric_score,
                     "iteration": iteration,
                     "max_iterations": int(message.get("max_iterations") or 5),
                     "_task_id": task_id,
@@ -1792,6 +1822,8 @@ class ExecutionAgent(BaseAgent):
         raw_code: str = message.get("code") or ""
         insight_report: Dict[str, Any] = message.get("insight_report") or {}
         modeling_metadata: Dict[str, Any] = message.get("modeling_metadata") or {}
+        history_summary: List[Dict[str, Any]] = message.get("history_summary") or []
+        best_metric_score = message.get("best_metric_score")
         iteration: int = int(message.get("iteration") or 0)
         task_id: str = str(message.get("_task_id") or "")
         max_iterations: int = int(message.get("max_iterations") or 5)
@@ -1835,6 +1867,8 @@ class ExecutionAgent(BaseAgent):
                     "trial_dir": exec_payload.get("trial_dir") or "",
                     "insight_report": insight_report,
                     "modeling_metadata": modeling_metadata,
+                    "history_summary": history_summary,
+                    "best_metric_score": best_metric_score,
                     "iteration": iteration,
                     "max_iterations": max_iterations,
                     "_task_id": task_id,
@@ -1853,6 +1887,8 @@ class ExecutionAgent(BaseAgent):
                     "insight_report": insight_report,
                     "artifact_type": str(message.get("artifact_type") or "raw_python"),
                     "modeling_metadata": modeling_metadata,
+                    "history_summary": history_summary,
+                    "best_metric_score": best_metric_score,
                     "iteration": iteration,
                     "max_iterations": max_iterations,
                     "_task_id": task_id,
@@ -1946,6 +1982,8 @@ class ExecutionAgent(BaseAgent):
                 "artifact_type": str(message.get("artifact_type") or "raw_python"),
                 "modeling_metadata": modeling_metadata,
                 "insight_report": insight_report,
+                "history_summary": history_summary,
+                "best_metric_score": best_metric_score,
                 "iteration": iteration,
                 "max_iterations": max_iterations,
                 "_task_id": task_id,
@@ -2206,6 +2244,8 @@ class EvaluationAgent(BaseAgent):
         notebook_json: str = str(message.get("notebook_json") or "")
         modeling_metadata: Dict[str, Any] = message.get("modeling_metadata") or {}
         insight_report: Dict[str, Any] = message.get("insight_report") or {}
+        history_summary: List[Dict[str, Any]] = message.get("history_summary") or []
+        best_metric_score = message.get("best_metric_score")
         iteration: int = int(message.get("iteration") or 0)
         max_iterations: int = int(message.get("max_iterations") or 5)
 
@@ -2295,6 +2335,8 @@ class EvaluationAgent(BaseAgent):
             feedback_package = await self._generate_feedback_package(
                 stdout, stderr, tb, code, all_metrics, target_metric,
                 pass_threshold, direction,
+                history_summary=history_summary,
+                best_metric_score=best_metric_score,
             )
             feedback_package["metric_delta"] = metric_delta
             feedback_package["metric_trend"] = metric_trend
@@ -2328,6 +2370,8 @@ class EvaluationAgent(BaseAgent):
         feedback_package = await self._generate_feedback_package(
             stdout, stderr, tb, code, all_metrics, target_metric,
             pass_threshold, direction,
+            history_summary=history_summary,
+            best_metric_score=best_metric_score,
         )
         feedback_package["metric_delta"] = metric_delta
         feedback_package["metric_trend"] = metric_trend
@@ -2372,6 +2416,8 @@ class EvaluationAgent(BaseAgent):
         target_metric: str,
         pass_threshold: float,
         direction: str,
+        history_summary: Optional[List[Dict[str, Any]]] = None,
+        best_metric_score: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Use the LLM to produce a structured feedback package.
 
@@ -2403,6 +2449,24 @@ class EvaluationAgent(BaseAgent):
             f"  {k}: {v:.4f}" if v is not None else f"  {k}: N/A"
             for k, v in all_metrics.items()
         )
+        recent = history_summary or []
+        trailing_non_improved = 0
+        for item in reversed(recent):
+            if str(item.get("status") or "").upper() == "IMPROVED":
+                break
+            trailing_non_improved += 1
+        hist_tail = []
+        for item in recent[-4:]:
+            try:
+                score = item.get("score")
+                score_str = f"{float(score):.4f}" if score is not None else "N/A"
+            except Exception:
+                score_str = "N/A"
+            hist_tail.append(
+                f"iter={item.get('iter')}, status={item.get('status')}, "
+                f"strategy={item.get('strategy')}, score={score_str}"
+            )
+        history_digest = "\n".join(hist_tail) if hist_tail else "N/A"
         try:
             from .llm_client import chat_json, resolve_llm_config  # type: ignore
 
@@ -2427,6 +2491,12 @@ class EvaluationAgent(BaseAgent):
                 f"Primary metric: {target_metric} = {primary_str} "
                 f"(goal: {direction} {pass_threshold})\n\n"
                 f"Full DEG metric suite:\n{metrics_summary}\n\n"
+                f"## Iteration Trajectory Constraints\n"
+                f"best_metric_score={best_metric_score}\n"
+                f"trailing_non_improved={trailing_non_improved}\n"
+                f"recent_history:\n{history_digest}\n\n"
+                f"Instruction: You MUST incorporate trajectory context. If repeated non-improvement is high, "
+                f"prioritize structural/modeling changes over minor tuning.\n\n"
                 f"### stdout (last 500 chars)\n{stdout[-500:]}\n\n"
                 f"### stderr / traceback (last 500 chars)\n{(tb or stderr)[-500:]}\n\n"
                 f"### Code snippet (first 300 chars)\n{code[:300]}"
