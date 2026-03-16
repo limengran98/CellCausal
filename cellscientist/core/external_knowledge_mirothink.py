@@ -383,13 +383,12 @@ def _build_query(context_text: str, stage: str, cfg: Dict[str, Any], query_hint:
             return True
         return False
 
-    def _sanitize_query_hint(raw: str) -> str:
-        """Remove notebook/code scaffold noise from query hints.
+    def _sanitize_terms(raw: str) -> str:
+        """Remove notebook/code scaffold noise from hint/context text.
 
-        Some review prompts may accidentally leak notebook headers and import
-        snippets (e.g., "CELL INDEX READ-ONLY CONTEXT import sys ..."), which
-        significantly hurts retrieval quality. This helper keeps only useful,
-        natural-language-like tokens.
+        Review-stage prompts may leak notebook headers and import snippets
+        (e.g., "CELL INDEX READ-ONLY CONTEXT import sys ..."). We apply the
+        same sanitizer to both explicit query hints and context-derived terms.
         """
         import re
 
@@ -397,8 +396,11 @@ def _build_query(context_text: str, stage: str, cfg: Dict[str, Any], query_hint:
         deny = {
             "cell", "index", "read", "only", "context", "target", "optimize",
             "import", "from", "code", "markdown", "unnamed", "setup", "data", "loading",
+            "read-only",
             # Common module names frequently leaked from notebook source
-            "sys", "os", "h5py", "numpy", "pandas", "torch", "utils",
+            "sys", "os", "h5py", "numpy", "pandas", "torch", "utils", "functional",
+            # Common prompt/template leakage
+            "legacy", "contract", "guardrails", "locked", "section", "sections", "agent_mode_virtual_cell_context",
         }
         keep: List[str] = []
         seen = set()
@@ -418,24 +420,15 @@ def _build_query(context_text: str, stage: str, cfg: Dict[str, Any], query_hint:
         return " ".join(keep)
 
     if query_hint and query_hint.strip():
-        hint = _sanitize_query_hint(query_hint.strip())
+        hint = _sanitize_terms(query_hint.strip())
     else:
-        import re
+        # Apply the same sanitizer for context-derived queries to avoid
+        # leaking notebook scaffold tokens into search terms.
+        hint = _sanitize_terms(context_text or "")
 
-        toks = re.findall(r"[A-Za-z][A-Za-z0-9_\-]{2,}", context_text or "")
-        uniq: List[str] = []
-        seen = set()
-        for t in toks:
-            if _is_noise_token(t):
-                continue
-            tl = t.lower()
-            if tl in seen:
-                continue
-            seen.add(tl)
-            uniq.append(t)
-            if len(uniq) >= term_limit:
-                break
-        hint = " ".join(uniq)
+    if not hint:
+        # Last-resort safe fallback to avoid empty or code-polluted queries.
+        hint = "single-cell perturbation response modeling"
 
     if not hint:
         # Last-resort safe fallback to avoid empty or code-polluted queries.

@@ -33,3 +33,17 @@ def test_build_query_uses_safe_default_when_hint_is_noise_only():
         query_hint="CELL INDEX READ ONLY CONTEXT import sys os numpy torch",
     )
     assert "single-cell perturbation response modeling" in q.lower()
+
+
+def test_build_query_sanitizes_context_when_no_hint_provided():
+    q = _build_query(
+        context_text="CELL INDEX READ-ONLY CONTEXT import h5py numpy pandas torch functional from utils",
+        stage="review",
+        cfg=_cfg(),
+        query_hint=None,
+    )
+    ql = q.lower()
+    assert "cell index" not in ql
+    assert "import h5py" not in ql
+    assert "functional" not in ql
+    assert "single-cell perturbation response modeling" in ql

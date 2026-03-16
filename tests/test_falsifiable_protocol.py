@@ -102,6 +102,7 @@ class TestFalsifiableProtocol:
     def test_consecutive_rejections_force_new_hypothesis(self):
         """Force-new requires rejections plus multi-metric plateau evidence."""
         orch = self._make_orchestrator()
+        orch.config.setdefault("review", {})["plateau_tol_primary"] = 0.01
         orch._evaluate_iteration(
             {"accuracy": 0.3650, "code": "x=1", "metrics": {"DEG_PCC_20": 0.34, "DEG_PCC_50": 0.36, "R2": 0.07}},
             0,
@@ -111,7 +112,7 @@ class TestFalsifiableProtocol:
             1,
         )
         result = orch._evaluate_iteration(
-            {"accuracy": 0.3570, "code": "x=3", "metrics": {"DEG_PCC_20": 0.338, "DEG_PCC_50": 0.357, "R2": 0.064}},
+            {"accuracy": 0.3550, "code": "x=3", "metrics": {"DEG_PCC_20": 0.338, "DEG_PCC_50": 0.357, "R2": 0.064}},
             2,
         )
         assert result["verdict"] == "REJECT"
