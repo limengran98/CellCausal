@@ -538,15 +538,20 @@ def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
     success_rate = experiment.get("success_rate")
     best_metric = experiment.get("best_metric") or "PCC"
     best_value = experiment.get("best_at_budget")
+    clean_rate = experiment.get("clean_rate")
+    bug_rate = experiment.get("bug_rate")
     total_time = total.get("time_sec")
 
     sr_txt = f"{float(success_rate) * 100:.1f}%" if isinstance(success_rate, (int, float)) else "-"
+    clean_txt = f"{float(clean_rate) * 100:.1f}%" if isinstance(clean_rate, (int, float)) else "-"
+    bug_txt = f"{float(bug_rate) * 100:.1f}%" if isinstance(bug_rate, (int, float)) else "-"
     best_txt = f"{best_metric}={float(best_value):.4f}" if isinstance(best_value, (int, float)) else "-"
     time_txt = f"{float(total_time):.1f}s" if isinstance(total_time, (int, float)) else "-"
 
     lines = [
         f"[PipelineSummary] dataset={dataset}",
         f"[PipelineSummary] success={succeeded}/{attempted} ({sr_txt})",
+        f"[PipelineSummary] clean_rate={clean_txt} | bug_rate={bug_txt}",
         f"[PipelineSummary] best={best_txt}",
         f"[PipelineSummary] total_time={time_txt}",
     ]
@@ -555,8 +560,13 @@ def print_final_scoreboard(summary: Dict[str, Any], console=None) -> None:
         rev_attempted = int(review.get("attempted") or 0)
         rev_succeeded = int(review.get("succeeded") or 0)
         rev_sr = review.get("success_rate")
+        rev_clean = review.get("clean_rate")
+        rev_bug = review.get("bug_rate")
         rev_sr_txt = f"{float(rev_sr) * 100:.1f}%" if isinstance(rev_sr, (int, float)) else "-"
+        rev_clean_txt = f"{float(rev_clean) * 100:.1f}%" if isinstance(rev_clean, (int, float)) else "-"
+        rev_bug_txt = f"{float(rev_bug) * 100:.1f}%" if isinstance(rev_bug, (int, float)) else "-"
         lines.append(f"[PipelineSummary] review_success={rev_succeeded}/{rev_attempted} ({rev_sr_txt})")
+        lines.append(f"[PipelineSummary] review_clean_rate={rev_clean_txt} | review_bug_rate={rev_bug_txt}")
 
     console = console if console is not None else _maybe_console()
     if console:
