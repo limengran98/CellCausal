@@ -255,6 +255,23 @@ class TestModelingReferenceRecipe:
         assert len(nb.cells) == 3
         assert nb.cells[1].cell_type == "code"
 
+    def test_reference_recipe_disabled_for_other_dataset_without_mapping(self):
+        bus = SimpleMessageBus()
+        cfg = _minimal_config()
+        cfg["dataset_name"] = "OTHERSET"
+        agent = ModelingAgent(bus, cfg)
+        assert agent._should_use_reference_recipe() is False
+
+    def test_reference_recipe_enabled_with_explicit_file_mapping(self, tmp_path):
+        bus = SimpleMessageBus()
+        recipe = tmp_path / "custom.py"
+        recipe.write_text('print("x")\n', encoding='utf-8')
+        cfg = _minimal_config()
+        cfg["dataset_name"] = "OTHERSET"
+        cfg["reference_recipe"] = {"enabled": True, "file": str(recipe)}
+        agent = ModelingAgent(bus, cfg)
+        assert agent._should_use_reference_recipe() is True
+
 
 # =============================================================================
 # EvaluationAgent — Metric Comparison

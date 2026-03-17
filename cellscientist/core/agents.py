@@ -1170,12 +1170,51 @@ class ModelingAgent(BaseAgent):
         return "\n".join(bullets)
 
     def _should_use_reference_recipe(self) -> bool:
-        """Whether to force deterministic BBBC036 reference recipe generation."""
-        ds = str(self.config.get("dataset_name") or "").strip().upper()
-        if ds != "BBBC036":
-            return False
+        """Whether to force deterministic reference-recipe notebook generation."""
         recipe_cfg = (self.config.get("reference_recipe") or {}) if isinstance(self.config.get("reference_recipe"), dict) else {}
-        return bool(recipe_cfg.get("enabled", True))
+        if not bool(recipe_cfg.get("enabled", True)):
+            return False
+        return bool(self._resolve_reference_recipe_path())
+
+    def _resolve_reference_recipe_path(self) -> str:
+        """Resolve reference recipe file from config and dataset name.
+
+        Resolution order:
+        1) reference_recipe.file
+        2) reference_recipe.by_dataset[dataset_name]
+        3) prompts/reference_recipes/{dataset}.py
+        4) prompts/reference_recipes/{dataset}_ddmia.py
+        5) prompts/reference_recipes/bbbc036_ddmia.py (legacy fallback)
+        """
+        recipe_cfg = (self.config.get("reference_recipe") or {}) if isinstance(self.config.get("reference_recipe"), dict) else {}
+        ds_raw = str(self.config.get("dataset_name") or "").strip()
+        ds = ds_raw.lower().replace("-", "_")
+
+        candidates: List[str] = []
+
+        explicit = str(recipe_cfg.get("file") or "").strip()
+        if explicit:
+            candidates.append(explicit)
+
+        by_dataset = recipe_cfg.get("by_dataset") if isinstance(recipe_cfg.get("by_dataset"), dict) else {}
+        if ds_raw and isinstance(by_dataset, dict):
+            mapped = by_dataset.get(ds_raw) or by_dataset.get(ds_raw.upper()) or by_dataset.get(ds)
+            if isinstance(mapped, str) and mapped.strip():
+                candidates.append(mapped.strip())
+
+        if ds:
+            candidates.append(os.path.join("prompts", "reference_recipes", f"{ds}.py"))
+            candidates.append(os.path.join("prompts", "reference_recipes", f"{ds}_ddmia.py"))
+
+        # Legacy compatibility only for BBBC036-like dataset names.
+        if ds in {"bbbc036", "bbbc_036"} or ds_raw.upper() == "BBBC036":
+            candidates.append(os.path.join("prompts", "reference_recipes", "bbbc036_ddmia.py"))
+
+        for c in candidates:
+            full = c if os.path.isabs(c) else os.path.join(_project_root(), c)
+            if os.path.exists(full):
+                return full
+        return ""
 
     def _build_notebook_from_recipe(self, recipe_path: str):
         """Build a notebook from a `# ---- cell ----` delimited python recipe."""
@@ -1217,19 +1256,20 @@ class ModelingAgent(BaseAgent):
         os.makedirs(debug_dir, exist_ok=True)
 
         if self._should_use_reference_recipe():
-            recipe_path = os.path.join(_project_root(), "prompts", "reference_recipes", "bbbc036_ddmia.py")
-            if os.path.exists(recipe_path):
+            recipe_path = self._resolve_reference_recipe_path()
+            if recipe_path:
                 nb = self._build_notebook_from_recipe(recipe_path)
                 notebook_json = nbformat.writes(nb)
                 script_text = _notebook_to_script_text(nb)
+                ds_name = str(self.config.get("dataset_name") or "GENERIC").strip()
                 metadata = {
                     "generation_mode": "legacy_reference_recipe_initial",
-                    "selected_strategy": "BBBC036-DDMIA-Reference",
+                    "selected_strategy": f"{ds_name}-ReferenceRecipe",
                     "decision_type": "EXPLORE",
                     "focus_area": "All",
                     "reference_recipe_file": recipe_path,
                 }
-                _log("[MODEL] ✅ Using deterministic BBBC036 reference recipe for initial notebook.", console=True)
+                _log(f"[MODEL] ✅ Using deterministic reference recipe for initial notebook: {recipe_path}", console=True)
                 return {
                     "artifact_type": "notebook_ipynb",
                     "notebook_json": notebook_json,
