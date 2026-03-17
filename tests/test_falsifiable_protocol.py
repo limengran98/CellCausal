@@ -141,6 +141,18 @@ class TestFalsifiableProtocol:
         assert result["verdict"] == "REJECT"
         assert result["forced_new_hypothesis"] is False
 
+    def test_best_anchor_does_not_regress_after_plateau_accept(self):
+        """Global best anchor should remain monotonic in protocol comparisons."""
+        orch = self._make_orchestrator()
+        orch._evaluate_iteration({"accuracy": 0.5000, "code": "x=1"}, 0)
+        plateau = orch._evaluate_iteration({"accuracy": 0.4990, "code": "x=2"}, 1)
+        assert plateau["verdict"] == "ACCEPT"
+
+        result = orch._evaluate_iteration({"accuracy": 0.5005, "code": "x=3"}, 2)
+        assert result["verdict"] == "ACCEPT"
+        assert result["previous_score"] == pytest.approx(0.5000)
+        assert result["metric_delta"] == pytest.approx(0.0005)
+
     def test_equal_score_accepted(self):
         """Equal score (delta=0) should be accepted."""
         orch = self._make_orchestrator()

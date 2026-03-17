@@ -388,6 +388,8 @@ class PipelineOrchestrator:
                 self.last_accepted_artifact_type = artifact_type or self.last_accepted_artifact_type
                 self.last_accepted_modeling_metadata = dict(modeling_metadata or {})
                 self.consecutive_rejections = 0
+                if current_score > self.best_metric_score:
+                    self.best_metric_score = current_score
             _log(
                 f"[Falsifiable] ✅ ACCEPT (first iteration, "
                 f"score={current_score})",
@@ -406,9 +408,14 @@ class PipelineOrchestrator:
         review_cfg = (self.config.get("review") or {}) if isinstance(self.config.get("review"), dict) else {}
         epsilon = float(review_cfg.get("acceptance_epsilon", 0.002) or 0.002)
 
-        # Compare with global best anchor + previous-iteration trend (dual-track).
+        # Compare with global-best anchor + previous-iteration trend (dual-track).
+        # NOTE: `last_accepted_metrics` may drift downward on plateau accepts; do not
+        # use it as the best anchor for logging/acceptance semantics.
         if current_score is not None and previous_score is not None:
-            best_delta = current_score - previous_score
+            best_anchor = previous_score
+            if self.best_metric_score != -float("inf"):
+                best_anchor = max(best_anchor, self.best_metric_score)
+            best_delta = current_score - best_anchor
             prev_iter_score = None
             if len(self.iteration_history) >= 2:
                 try:
@@ -440,7 +447,7 @@ class PipelineOrchestrator:
                 trend_disp = f"{trend_delta:+.4f}" if trend_delta is not None else "N/A"
                 _log(
                     f"[Falsifiable] ✅ ACCEPT ({reason}) — "
-                    f"best_anchor={previous_score:.4f}, current={current_score:.4f}, "
+                    f"best_anchor={best_anchor:.4f}, current={current_score:.4f}, "
                     f"Δbest={best_delta:+.4f}, Δprev={trend_disp}",
                     console=True,
                 )
@@ -449,7 +456,7 @@ class PipelineOrchestrator:
                     "metric_delta": best_delta,
                     "trend_delta": trend_delta,
                     "current_score": current_score,
-                    "previous_score": previous_score,
+                    "previous_score": best_anchor,
                     "forced_new_hypothesis": False,
                 }
             else:
@@ -460,7 +467,7 @@ class PipelineOrchestrator:
                 trend_disp = f"{trend_delta:+.4f}" if trend_delta is not None else "N/A"
                 _log(
                     f"[Falsifiable] ❌ REJECT — score degraded: "
-                    f"{previous_score:.4f} → {current_score:.4f} "
+                    f"{best_anchor:.4f} → {current_score:.4f} "
                     f"(Δbest={best_delta:+.4f}, Δprev={trend_disp})",
                     console=True,
                 )
@@ -480,7 +487,7 @@ class PipelineOrchestrator:
                     "metric_delta": best_delta,
                     "trend_delta": trend_delta,
                     "current_score": current_score,
-                    "previous_score": previous_score,
+                    "previous_score": best_anchor,
                     "forced_new_hypothesis": force_new,
                 }
 
@@ -681,8 +688,8 @@ class PipelineOrchestrator:
                             prev = best_accuracy
                             best_accuracy = acc_float
                             _log(
-                                f"📈 [IMPROVEMENT] New best score: {acc_float:.4f} "
-                                f"(Prev: {prev:.4f})",
+                                f"📈 [IMPROVEMENT] New best score: {acc_float:.6f} "
+                                f"(Prev: {prev:.6f}, Δ={acc_float - prev:+.6f})",
                                 console=True,
                             )
                         # Track Global Best Checkpoint.
