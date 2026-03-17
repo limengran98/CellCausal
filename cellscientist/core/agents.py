@@ -1169,6 +1169,29 @@ class ModelingAgent(BaseAgent):
 
         return "\n".join(bullets)
 
+    def _should_use_reference_recipe(self) -> bool:
+        """Whether to force deterministic BBBC036 reference recipe generation."""
+        ds = str(self.config.get("dataset_name") or "").strip().upper()
+        if ds != "BBBC036":
+            return False
+        recipe_cfg = (self.config.get("reference_recipe") or {}) if isinstance(self.config.get("reference_recipe"), dict) else {}
+        return bool(recipe_cfg.get("enabled", True))
+
+    def _build_notebook_from_recipe(self, recipe_path: str):
+        """Build a notebook from a `# ---- cell ----` delimited python recipe."""
+        import nbformat  # type: ignore
+
+        with open(recipe_path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+        cells_raw = [c.strip() for c in raw.split("# ---- cell ----") if c.strip()]
+        nb = nbformat.v4.new_notebook()
+        for idx, cell_src in enumerate(cells_raw):
+            if idx == 0 and (cell_src.startswith('"""') or cell_src.startswith("#")):
+                nb.cells.append(nbformat.v4.new_markdown_cell(cell_src))
+            else:
+                nb.cells.append(nbformat.v4.new_code_cell(cell_src))
+        return nb
+
     async def _generate_legacy_notebook_artifact(
         self,
         *,
@@ -1192,6 +1215,27 @@ class ModelingAgent(BaseAgent):
         workspace = _ensure_task_workspace(task_id, "modeling", iteration)
         debug_dir = os.path.join(workspace, "debug_prompt")
         os.makedirs(debug_dir, exist_ok=True)
+
+        if self._should_use_reference_recipe():
+            recipe_path = os.path.join(_project_root(), "prompts", "reference_recipes", "bbbc036_ddmia.py")
+            if os.path.exists(recipe_path):
+                nb = self._build_notebook_from_recipe(recipe_path)
+                notebook_json = nbformat.writes(nb)
+                script_text = _notebook_to_script_text(nb)
+                metadata = {
+                    "generation_mode": "legacy_reference_recipe_initial",
+                    "selected_strategy": "BBBC036-DDMIA-Reference",
+                    "decision_type": "EXPLORE",
+                    "focus_area": "All",
+                    "reference_recipe_file": recipe_path,
+                }
+                _log("[MODEL] ✅ Using deterministic BBBC036 reference recipe for initial notebook.", console=True)
+                return {
+                    "artifact_type": "notebook_ipynb",
+                    "notebook_json": notebook_json,
+                    "code": script_text,
+                    "modeling_metadata": metadata,
+                }
 
         prompt_path = self._resolve_legacy_prompt_file()
         with open(prompt_path, "r", encoding="utf-8") as fh:

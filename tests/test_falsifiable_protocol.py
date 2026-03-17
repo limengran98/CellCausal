@@ -237,6 +237,25 @@ class TestModelingAgentMechanismPrior:
         assert "Substrate for ADH" in result
 
 
+class TestModelingReferenceRecipe:
+    def test_should_use_reference_recipe_for_bbbc036_default(self):
+        bus = SimpleMessageBus()
+        cfg = _minimal_config()
+        cfg["dataset_name"] = "BBBC036"
+        agent = ModelingAgent(bus, cfg)
+        assert agent._should_use_reference_recipe() is True
+
+    def test_build_notebook_from_recipe_splits_cells(self, tmp_path):
+        bus = SimpleMessageBus()
+        cfg = _minimal_config()
+        agent = ModelingAgent(bus, cfg)
+        p = tmp_path / "r.py"
+        p.write_text('# Title\n# ---- cell ----\nprint("a")\n# ---- cell ----\nprint("b")\n', encoding='utf-8')
+        nb = agent._build_notebook_from_recipe(str(p))
+        assert len(nb.cells) == 3
+        assert nb.cells[1].cell_type == "code"
+
+
 # =============================================================================
 # EvaluationAgent — Metric Comparison
 # =============================================================================

@@ -31,3 +31,22 @@ if "requests" not in sys.modules:
     req.post = _not_available
     sys.modules["requests"] = req
 
+
+if "nbformat" not in sys.modules:
+    nbm = types.ModuleType("nbformat")
+
+    class _V4:
+        @staticmethod
+        def new_notebook():
+            return types.SimpleNamespace(cells=[])
+
+        @staticmethod
+        def new_markdown_cell(src):
+            return types.SimpleNamespace(cell_type="markdown", source=src)
+
+        @staticmethod
+        def new_code_cell(src):
+            return types.SimpleNamespace(cell_type="code", source=src)
+
+    nbm.v4 = _V4()
+    sys.modules["nbformat"] = nbm
