@@ -288,7 +288,7 @@ with open(os.path.join(OUTPUT_DIR, "metrics.json"), "w", encoding="utf-8") as f:
 
 with open(os.path.join(OUTPUT_DIR, "analysis_summary.json"), "w", encoding="utf-8") as f:
     json.dump({
-        "experiment_name": "BBBC036 DD-MIA Reference",
+        "experiment_name": "DD-MIA Reference",
         "winner": winner,
         "improvement_pcc": float(innov["PCC"] - baseline["PCC"]),
     }, f, indent=2)
