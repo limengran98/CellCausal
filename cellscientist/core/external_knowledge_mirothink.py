@@ -383,25 +383,52 @@ def _build_query(context_text: str, stage: str, cfg: Dict[str, Any], query_hint:
             return True
         return False
 
-    if query_hint and query_hint.strip():
-        hint = query_hint.strip()
-    else:
+    def _sanitize_terms(raw: str) -> str:
+        """Remove notebook/code scaffold noise from hint/context text.
+
+        Review-stage prompts may leak notebook headers and import snippets
+        (e.g., "CELL INDEX READ-ONLY CONTEXT import sys ..."). We apply the
+        same sanitizer to both explicit query hints and context-derived terms.
+        """
         import re
 
-        toks = re.findall(r"[A-Za-z][A-Za-z0-9_\-]{2,}", context_text or "")
-        uniq: List[str] = []
+        toks = re.findall(r"[A-Za-z][A-Za-z0-9_\-]{2,}", raw or "")
+        deny = {
+            "cell", "index", "read", "only", "context", "target", "optimize",
+            "import", "from", "code", "markdown", "unnamed", "setup", "data", "loading",
+            "read-only",
+            # Common module names frequently leaked from notebook source
+            "sys", "os", "h5py", "numpy", "pandas", "torch", "utils", "functional",
+            # Common prompt/template leakage
+            "legacy", "contract", "guardrails", "locked", "section", "sections", "agent_mode_virtual_cell_context",
+        }
+        keep: List[str] = []
         seen = set()
         for t in toks:
-            if _is_noise_token(t):
-                continue
             tl = t.lower()
+            if tl in deny or _is_noise_token(t):
+                continue
+            # Strongly prefer domain-ish words over code-ish tokens.
+            if tl.startswith(("nn", "plt", "df", "np", "pd")):
+                continue
             if tl in seen:
                 continue
             seen.add(tl)
-            uniq.append(t)
-            if len(uniq) >= term_limit:
+            keep.append(t)
+            if len(keep) >= term_limit:
                 break
-        hint = " ".join(uniq)
+        return " ".join(keep)
+
+    if query_hint and query_hint.strip():
+        hint = _sanitize_terms(query_hint.strip())
+    else:
+        # Apply the same sanitizer for context-derived queries to avoid
+        # leaking notebook scaffold tokens into search terms.
+        hint = _sanitize_terms(context_text or "")
+
+    if not hint:
+        # Last-resort safe fallback to avoid empty or code-polluted queries.
+        hint = "single-cell perturbation response modeling"
 
     # Prefer academic-ish results by adding common anchors.
     academic_bias = ' (paper OR arxiv OR "journal" OR doi OR pubmed OR "technical report" OR "specification")'

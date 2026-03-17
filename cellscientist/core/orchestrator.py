@@ -290,6 +290,53 @@ class PipelineOrchestrator:
         swing = max(vals) - min(vals)
         return (net_gain < min_gain) and (swing < max(min_gain * 2.0, 0.01))
 
+    def _is_multi_metric_plateau(self) -> bool:
+        """Detect plateau using multiple biological metrics, not only PCC.
+
+        Uses a small trailing window and checks whether score movement stays
+        within narrow tolerances across primary + DEG + R2 signals.
+        """
+        review_cfg = (self.config.get("review") or {}) if isinstance(self.config.get("review"), dict) else {}
+        window = int(review_cfg.get("force_new_plateau_window", 3) or 3)
+        if len(self.iteration_history) < max(3, window):
+            return False
+
+        recent = self.iteration_history[-window:]
+        metric_tols = {
+            "score": float(review_cfg.get("plateau_tol_primary", 0.004) or 0.004),
+            "DEG_PCC_20": float(review_cfg.get("plateau_tol_deg_pcc", 0.02) or 0.02),
+            "DEG_PCC_50": float(review_cfg.get("plateau_tol_deg_pcc", 0.02) or 0.02),
+            "R2": float(review_cfg.get("plateau_tol_r2", 0.03) or 0.03),
+        }
+
+        def _delta(metric_name: str) -> Optional[float]:
+            first = recent[0]
+            last = recent[-1]
+            if metric_name == "score":
+                a = first.get("score")
+                b = last.get("score")
+            else:
+                a = ((first.get("metrics") or {}) if isinstance(first.get("metrics"), dict) else {}).get(metric_name)
+                b = ((last.get("metrics") or {}) if isinstance(last.get("metrics"), dict) else {}).get(metric_name)
+            try:
+                if a is None or b is None:
+                    return None
+                return float(b) - float(a)
+            except Exception:
+                return None
+
+        observed = 0
+        stable = 0
+        for metric_name, tol in metric_tols.items():
+            d = _delta(metric_name)
+            if d is None:
+                continue
+            observed += 1
+            if abs(d) <= tol:
+                stable += 1
+
+        return observed >= 2 and stable >= 2
+
     def _evaluate_iteration(
         self, data: Dict[str, Any], iteration: int
     ) -> Dict[str, Any]:
@@ -356,26 +403,51 @@ class PipelineOrchestrator:
 
         self.iteration_history.append(record)
 
-        # Compare with the previous accepted score.
+        review_cfg = (self.config.get("review") or {}) if isinstance(self.config.get("review"), dict) else {}
+        epsilon = float(review_cfg.get("acceptance_epsilon", 0.002) or 0.002)
+
+        # Compare with global best anchor + previous-iteration trend (dual-track).
         if current_score is not None and previous_score is not None:
-            delta = current_score - previous_score
-            if delta >= 0:
-                # Improvement or no change — ACCEPT / LOCK.
+            best_delta = current_score - previous_score
+            prev_iter_score = None
+            if len(self.iteration_history) >= 2:
+                try:
+                    prev_iter_score = float(self.iteration_history[-2].get("score"))
+                except Exception:
+                    prev_iter_score = None
+            trend_delta = (current_score - prev_iter_score) if prev_iter_score is not None else None
+
+            accept_vs_best = best_delta >= epsilon
+            accept_vs_trend = trend_delta is not None and trend_delta >= epsilon
+            accept_plateau = (best_delta > -epsilon) or (trend_delta is not None and trend_delta > -epsilon)
+
+            if accept_vs_best or accept_vs_trend or accept_plateau:
+                # ACCEPT / LOCK working state (best checkpoint is maintained separately).
                 self.last_accepted_code = code
                 self.last_accepted_metrics = {"accuracy": current_score, **metrics}
                 self.last_accepted_notebook_json = notebook_json or self.last_accepted_notebook_json
                 self.last_accepted_artifact_type = artifact_type or self.last_accepted_artifact_type
                 self.last_accepted_modeling_metadata = dict(modeling_metadata or {})
                 self.consecutive_rejections = 0
+
+                if accept_vs_best:
+                    reason = "beat_best"
+                elif accept_vs_trend:
+                    reason = "improved_vs_previous"
+                else:
+                    reason = "within_epsilon_plateau"
+
+                trend_disp = f"{trend_delta:+.4f}" if trend_delta is not None else "N/A"
                 _log(
-                    f"[Falsifiable] ✅ ACCEPT — score improved: "
-                    f"{previous_score:.4f} → {current_score:.4f} "
-                    f"(Δ={delta:+.4f})",
+                    f"[Falsifiable] ✅ ACCEPT ({reason}) — "
+                    f"best_anchor={previous_score:.4f}, current={current_score:.4f}, "
+                    f"Δbest={best_delta:+.4f}, Δprev={trend_disp}",
                     console=True,
                 )
                 return {
                     "verdict": "ACCEPT",
-                    "metric_delta": delta,
+                    "metric_delta": best_delta,
+                    "trend_delta": trend_delta,
                     "current_score": current_score,
                     "previous_score": previous_score,
                     "forced_new_hypothesis": False,
@@ -383,23 +455,30 @@ class PipelineOrchestrator:
             else:
                 # Degradation — REJECT / REVERT.
                 self.consecutive_rejections += 1
-                force_new = self.consecutive_rejections >= 2
+                min_rejects = int(review_cfg.get("force_new_min_rejections", 2) or 2)
+                force_new = self.consecutive_rejections >= min_rejects and self._is_multi_metric_plateau()
+                trend_disp = f"{trend_delta:+.4f}" if trend_delta is not None else "N/A"
                 _log(
                     f"[Falsifiable] ❌ REJECT — score degraded: "
                     f"{previous_score:.4f} → {current_score:.4f} "
-                    f"(Δ={delta:+.4f}, consecutive_rejections="
-                    f"{self.consecutive_rejections})",
+                    f"(Δbest={best_delta:+.4f}, Δprev={trend_disp})",
+                    console=True,
+                )
+                _log(
+                    f"[Falsifiable] ├─ consecutive_rejections={self.consecutive_rejections}, "
+                    f"multi_metric_plateau={self._is_multi_metric_plateau()}",
                     console=True,
                 )
                 if force_new:
                     _log(
                         "[Falsifiable] 🔬 Forcing NEW HYPOTHESIS "
-                        "(consecutive rejections ≥ 2)",
+                        "(rejections + multi-metric plateau)",
                         console=True,
                     )
                 return {
                     "verdict": "REJECT",
-                    "metric_delta": delta,
+                    "metric_delta": best_delta,
+                    "trend_delta": trend_delta,
                     "current_score": current_score,
                     "previous_score": previous_score,
                     "forced_new_hypothesis": force_new,
