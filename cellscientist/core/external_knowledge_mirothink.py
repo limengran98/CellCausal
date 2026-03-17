@@ -430,10 +430,6 @@ def _build_query(context_text: str, stage: str, cfg: Dict[str, Any], query_hint:
         # Last-resort safe fallback to avoid empty or code-polluted queries.
         hint = "single-cell perturbation response modeling"
 
-    if not hint:
-        # Last-resort safe fallback to avoid empty or code-polluted queries.
-        hint = "single-cell perturbation response modeling"
-
     # Prefer academic-ish results by adding common anchors.
     academic_bias = ' (paper OR arxiv OR "journal" OR doi OR pubmed OR "technical report" OR "specification")'
     parts = [p for p in [base_kw, hint, stage_kw] if p]
