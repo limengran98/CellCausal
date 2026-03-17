@@ -100,13 +100,33 @@ class TestFalsifiableProtocol:
         assert result["forced_new_hypothesis"] is False
 
     def test_consecutive_rejections_force_new_hypothesis(self):
-        """Two consecutive rejections should force a new hypothesis."""
+        """Force-new requires rejections plus multi-metric plateau evidence."""
         orch = self._make_orchestrator()
-        orch._evaluate_iteration({"accuracy": 0.5, "code": "x=1"}, 0)
-        orch._evaluate_iteration({"accuracy": 0.3, "code": "x=2"}, 1)
-        result = orch._evaluate_iteration({"accuracy": 0.2, "code": "x=3"}, 2)
+        orch.config.setdefault("review", {})["plateau_tol_primary"] = 0.01
+        orch._evaluate_iteration(
+            {"accuracy": 0.3650, "code": "x=1", "metrics": {"DEG_PCC_20": 0.34, "DEG_PCC_50": 0.36, "R2": 0.07}},
+            0,
+        )
+        orch._evaluate_iteration(
+            {"accuracy": 0.3580, "code": "x=2", "metrics": {"DEG_PCC_20": 0.339, "DEG_PCC_50": 0.358, "R2": 0.065}},
+            1,
+        )
+        result = orch._evaluate_iteration(
+            {"accuracy": 0.3550, "code": "x=3", "metrics": {"DEG_PCC_20": 0.338, "DEG_PCC_50": 0.357, "R2": 0.064}},
+            2,
+        )
         assert result["verdict"] == "REJECT"
         assert result["forced_new_hypothesis"] is True
+
+    def test_trend_improvement_can_be_accepted_without_beating_best(self):
+        """Dual-track logic accepts positive trend even below global best."""
+        orch = self._make_orchestrator()
+        orch._evaluate_iteration({"accuracy": 0.50, "code": "x=1"}, 0)
+        r1 = orch._evaluate_iteration({"accuracy": 0.45, "code": "x=2"}, 1)
+        assert r1["verdict"] == "REJECT"
+        r2 = orch._evaluate_iteration({"accuracy": 0.46, "code": "x=3"}, 2)
+        assert r2["verdict"] == "ACCEPT"
+        assert r2["trend_delta"] == pytest.approx(0.01)
 
     def test_rejection_resets_on_accept(self):
         """Consecutive rejection counter resets after an accept."""
@@ -215,6 +235,42 @@ class TestModelingAgentMechanismPrior:
         assert "ADH1" in result
         assert "Ethanol metabolism" in result
         assert "Substrate for ADH" in result
+
+
+class TestModelingReferenceRecipe:
+    def test_should_use_reference_recipe_for_bbbc036_default(self):
+        bus = SimpleMessageBus()
+        cfg = _minimal_config()
+        cfg["dataset_name"] = "BBBC036"
+        agent = ModelingAgent(bus, cfg)
+        assert agent._should_use_reference_recipe() is True
+
+    def test_build_notebook_from_recipe_splits_cells(self, tmp_path):
+        bus = SimpleMessageBus()
+        cfg = _minimal_config()
+        agent = ModelingAgent(bus, cfg)
+        p = tmp_path / "r.py"
+        p.write_text('# Title\n# ---- cell ----\nprint("a")\n# ---- cell ----\nprint("b")\n', encoding='utf-8')
+        nb = agent._build_notebook_from_recipe(str(p))
+        assert len(nb.cells) == 3
+        assert nb.cells[1].cell_type == "code"
+
+    def test_reference_recipe_disabled_for_other_dataset_without_mapping(self):
+        bus = SimpleMessageBus()
+        cfg = _minimal_config()
+        cfg["dataset_name"] = "OTHERSET"
+        agent = ModelingAgent(bus, cfg)
+        assert agent._should_use_reference_recipe() is False
+
+    def test_reference_recipe_enabled_with_explicit_file_mapping(self, tmp_path):
+        bus = SimpleMessageBus()
+        recipe = tmp_path / "custom.py"
+        recipe.write_text('print("x")\n', encoding='utf-8')
+        cfg = _minimal_config()
+        cfg["dataset_name"] = "OTHERSET"
+        cfg["reference_recipe"] = {"enabled": True, "file": str(recipe)}
+        agent = ModelingAgent(bus, cfg)
+        assert agent._should_use_reference_recipe() is True
 
 
 # =============================================================================
