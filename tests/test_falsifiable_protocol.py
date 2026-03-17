@@ -238,10 +238,10 @@ class TestModelingAgentMechanismPrior:
 
 
 class TestModelingReferenceRecipe:
-    def test_should_use_reference_recipe_for_bbbc036_default(self):
+    def test_should_use_reference_recipe_for_any_dataset_when_arch_recipe_exists(self):
         bus = SimpleMessageBus()
         cfg = _minimal_config()
-        cfg["dataset_name"] = "BBBC036"
+        cfg["dataset_name"] = "ANYSET"
         agent = ModelingAgent(bus, cfg)
         assert agent._should_use_reference_recipe() is True
 
@@ -255,10 +255,11 @@ class TestModelingReferenceRecipe:
         assert len(nb.cells) == 3
         assert nb.cells[1].cell_type == "code"
 
-    def test_reference_recipe_disabled_for_other_dataset_without_mapping(self):
+    def test_reference_recipe_disabled_when_architecture_recipe_missing(self):
         bus = SimpleMessageBus()
         cfg = _minimal_config()
         cfg["dataset_name"] = "OTHERSET"
+        cfg["reference_recipe"] = {"enabled": True, "architecture": "nonexistent_arch"}
         agent = ModelingAgent(bus, cfg)
         assert agent._should_use_reference_recipe() is False
 

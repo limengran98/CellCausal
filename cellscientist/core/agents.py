@@ -1181,20 +1181,25 @@ class ModelingAgent(BaseAgent):
 
         Resolution order:
         1) reference_recipe.file
-        2) reference_recipe.by_dataset[dataset_name]
-        3) prompts/reference_recipes/{dataset}.py
-        4) prompts/reference_recipes/{dataset}_ddmia.py
-        5) prompts/reference_recipes/bbbc036_ddmia.py (legacy fallback)
+        2) reference_recipe.architecture (e.g. "ddmia")
+        3) prompts/reference_recipes/{architecture}_reference.py
+        4) reference_recipe.by_dataset[dataset_name]
+        5) prompts/reference_recipes/{dataset}.py
+        6) prompts/reference_recipes/{dataset}_ddmia.py
         """
         recipe_cfg = (self.config.get("reference_recipe") or {}) if isinstance(self.config.get("reference_recipe"), dict) else {}
         ds_raw = str(self.config.get("dataset_name") or "").strip()
         ds = ds_raw.lower().replace("-", "_")
+        arch = str(recipe_cfg.get("architecture") or "ddmia").strip().lower().replace("-", "_")
 
         candidates: List[str] = []
 
         explicit = str(recipe_cfg.get("file") or "").strip()
         if explicit:
             candidates.append(explicit)
+
+        if arch:
+            candidates.append(os.path.join("prompts", "reference_recipes", f"{arch}_reference.py"))
 
         by_dataset = recipe_cfg.get("by_dataset") if isinstance(recipe_cfg.get("by_dataset"), dict) else {}
         if ds_raw and isinstance(by_dataset, dict):
@@ -1205,10 +1210,6 @@ class ModelingAgent(BaseAgent):
         if ds:
             candidates.append(os.path.join("prompts", "reference_recipes", f"{ds}.py"))
             candidates.append(os.path.join("prompts", "reference_recipes", f"{ds}_ddmia.py"))
-
-        # Legacy compatibility only for BBBC036-like dataset names.
-        if ds in {"bbbc036", "bbbc_036"} or ds_raw.upper() == "BBBC036":
-            candidates.append(os.path.join("prompts", "reference_recipes", "bbbc036_ddmia.py"))
 
         for c in candidates:
             full = c if os.path.isabs(c) else os.path.join(_project_root(), c)
@@ -1261,10 +1262,10 @@ class ModelingAgent(BaseAgent):
                 nb = self._build_notebook_from_recipe(recipe_path)
                 notebook_json = nbformat.writes(nb)
                 script_text = _notebook_to_script_text(nb)
-                ds_name = str(self.config.get("dataset_name") or "GENERIC").strip()
+                arch = str(((self.config.get("reference_recipe") or {}) if isinstance(self.config.get("reference_recipe"), dict) else {}).get("architecture") or "DDMIA").upper()
                 metadata = {
                     "generation_mode": "legacy_reference_recipe_initial",
-                    "selected_strategy": f"{ds_name}-ReferenceRecipe",
+                    "selected_strategy": f"{arch}-ReferenceRecipe",
                     "decision_type": "EXPLORE",
                     "focus_area": "All",
                     "reference_recipe_file": recipe_path,
