@@ -72,6 +72,17 @@ class TestFalsifiableProtocol:
         ):
             return PipelineOrchestrator(cfg)
 
+    def test_resolve_refine_target_respects_explicit_research(self):
+        orch = self._make_orchestrator()
+        out = orch._resolve_refine_target({"suggested_target": "research"})
+        assert out == "research"
+
+    def test_resolve_refine_target_uses_task_graph_fallback(self):
+        orch = self._make_orchestrator()
+        with patch("cellscientist.core.orchestrator.route_active_tasks", return_value=[]):
+            out = orch._resolve_refine_target({"suggested_target": "modeling", "focus_area": "All"})
+        assert out == "research"
+
     def test_first_iteration_always_accepted(self):
         """First iteration should always be accepted."""
         orch = self._make_orchestrator()
@@ -100,13 +111,33 @@ class TestFalsifiableProtocol:
         assert result["forced_new_hypothesis"] is False
 
     def test_consecutive_rejections_force_new_hypothesis(self):
-        """Two consecutive rejections should force a new hypothesis."""
+        """Force-new requires rejections plus multi-metric plateau evidence."""
         orch = self._make_orchestrator()
-        orch._evaluate_iteration({"accuracy": 0.5, "code": "x=1"}, 0)
-        orch._evaluate_iteration({"accuracy": 0.3, "code": "x=2"}, 1)
-        result = orch._evaluate_iteration({"accuracy": 0.2, "code": "x=3"}, 2)
+        orch.config.setdefault("review", {})["plateau_tol_primary"] = 0.01
+        orch._evaluate_iteration(
+            {"accuracy": 0.3650, "code": "x=1", "metrics": {"DEG_PCC_20": 0.34, "DEG_PCC_50": 0.36, "R2": 0.07}},
+            0,
+        )
+        orch._evaluate_iteration(
+            {"accuracy": 0.3580, "code": "x=2", "metrics": {"DEG_PCC_20": 0.339, "DEG_PCC_50": 0.358, "R2": 0.065}},
+            1,
+        )
+        result = orch._evaluate_iteration(
+            {"accuracy": 0.3550, "code": "x=3", "metrics": {"DEG_PCC_20": 0.338, "DEG_PCC_50": 0.357, "R2": 0.064}},
+            2,
+        )
         assert result["verdict"] == "REJECT"
         assert result["forced_new_hypothesis"] is True
+
+    def test_trend_improvement_can_be_accepted_without_beating_best(self):
+        """Dual-track logic accepts positive trend even below global best."""
+        orch = self._make_orchestrator()
+        orch._evaluate_iteration({"accuracy": 0.50, "code": "x=1"}, 0)
+        r1 = orch._evaluate_iteration({"accuracy": 0.45, "code": "x=2"}, 1)
+        assert r1["verdict"] == "REJECT"
+        r2 = orch._evaluate_iteration({"accuracy": 0.46, "code": "x=3"}, 2)
+        assert r2["verdict"] == "ACCEPT"
+        assert r2["trend_delta"] == pytest.approx(0.01)
 
     def test_rejection_resets_on_accept(self):
         """Consecutive rejection counter resets after an accept."""
@@ -121,6 +152,18 @@ class TestFalsifiableProtocol:
         assert result["verdict"] == "REJECT"
         assert result["forced_new_hypothesis"] is False
 
+    def test_best_anchor_does_not_regress_after_plateau_accept(self):
+        """Global best anchor should remain monotonic in protocol comparisons."""
+        orch = self._make_orchestrator()
+        orch._evaluate_iteration({"accuracy": 0.5000, "code": "x=1"}, 0)
+        plateau = orch._evaluate_iteration({"accuracy": 0.4990, "code": "x=2"}, 1)
+        assert plateau["verdict"] == "ACCEPT"
+
+        result = orch._evaluate_iteration({"accuracy": 0.5005, "code": "x=3"}, 2)
+        assert result["verdict"] == "ACCEPT"
+        assert result["previous_score"] == pytest.approx(0.5000)
+        assert result["metric_delta"] == pytest.approx(0.0005)
+
     def test_equal_score_accepted(self):
         """Equal score (delta=0) should be accepted."""
         orch = self._make_orchestrator()
@@ -128,6 +171,23 @@ class TestFalsifiableProtocol:
         result = orch._evaluate_iteration({"accuracy": 0.5, "code": "x=2"}, 1)
         assert result["verdict"] == "ACCEPT"
         assert result["metric_delta"] == 0.0
+
+    def test_plateau_below_threshold_eventually_rejected_and_forced_new_hypothesis(self):
+        """Avoid endless plateau ACCEPT when score remains far below pass threshold."""
+        orch = self._make_orchestrator()
+        orch.config.setdefault("review", {})["pass_threshold"] = 0.35
+        orch.config["review"]["acceptance_epsilon"] = 0.002
+        orch.config["review"]["max_plateau_accepts_below_threshold"] = 2
+
+        orch._evaluate_iteration({"accuracy": 0.2580, "code": "x=1"}, 0)
+        r1 = orch._evaluate_iteration({"accuracy": 0.2579, "code": "x=2"}, 1)
+        r2 = orch._evaluate_iteration({"accuracy": 0.2578, "code": "x=3"}, 2)
+        r3 = orch._evaluate_iteration({"accuracy": 0.2577, "code": "x=4"}, 3)
+
+        assert r1["verdict"] == "ACCEPT"
+        assert r2["verdict"] == "ACCEPT"
+        assert r3["verdict"] == "REJECT"
+        assert r3["forced_new_hypothesis"] is True
 
     def test_iteration_history_populated(self):
         """Iteration history should be populated."""
@@ -215,6 +275,60 @@ class TestModelingAgentMechanismPrior:
         assert "ADH1" in result
         assert "Ethanol metabolism" in result
         assert "Substrate for ADH" in result
+
+
+class TestModelingReferenceRecipe:
+    def test_should_use_reference_recipe_for_any_dataset_when_arch_recipe_exists(self):
+        bus = SimpleMessageBus()
+        cfg = _minimal_config()
+        cfg["dataset_name"] = "ANYSET"
+        agent = ModelingAgent(bus, cfg)
+        assert agent._should_use_reference_recipe() is True
+
+    def test_reference_recipe_initial_only_default(self):
+        bus = SimpleMessageBus()
+        cfg = _minimal_config()
+        cfg["dataset_name"] = "ANYSET"
+        agent = ModelingAgent(bus, cfg)
+        assert agent._should_use_reference_recipe_for_iteration(0) is True
+        assert agent._should_use_reference_recipe_for_iteration(1) is False
+
+    def test_reference_recipe_can_be_enabled_for_all_iterations(self):
+        bus = SimpleMessageBus()
+        cfg = _minimal_config()
+        cfg["dataset_name"] = "ANYSET"
+        cfg["reference_recipe"] = {"enabled": True, "architecture": "ddmia", "initial_only": False}
+        agent = ModelingAgent(bus, cfg)
+        assert agent._should_use_reference_recipe_for_iteration(0) is True
+        assert agent._should_use_reference_recipe_for_iteration(3) is True
+
+    def test_build_notebook_from_recipe_splits_cells(self, tmp_path):
+        bus = SimpleMessageBus()
+        cfg = _minimal_config()
+        agent = ModelingAgent(bus, cfg)
+        p = tmp_path / "r.py"
+        p.write_text('# Title\n# ---- cell ----\nprint("a")\n# ---- cell ----\nprint("b")\n', encoding='utf-8')
+        nb = agent._build_notebook_from_recipe(str(p))
+        assert len(nb.cells) == 3
+        assert nb.cells[1].cell_type == "code"
+
+    def test_reference_recipe_disabled_when_architecture_recipe_missing(self):
+        bus = SimpleMessageBus()
+        cfg = _minimal_config()
+        cfg["dataset_name"] = "OTHERSET"
+        cfg["reference_recipe"] = {"enabled": True, "architecture": "nonexistent_arch"}
+        agent = ModelingAgent(bus, cfg)
+        assert agent._should_use_reference_recipe() is False
+
+    def test_reference_recipe_enabled_with_explicit_file_mapping(self, tmp_path):
+        bus = SimpleMessageBus()
+        recipe = tmp_path / "custom.py"
+        recipe.write_text('print("x")\n', encoding='utf-8')
+        cfg = _minimal_config()
+        cfg["dataset_name"] = "OTHERSET"
+        cfg["reference_recipe"] = {"enabled": True, "file": str(recipe)}
+        agent = ModelingAgent(bus, cfg)
+        assert agent._should_use_reference_recipe() is True
 
 
 # =============================================================================

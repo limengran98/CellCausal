@@ -1169,6 +1169,84 @@ class ModelingAgent(BaseAgent):
 
         return "\n".join(bullets)
 
+    def _should_use_reference_recipe(self) -> bool:
+        """Whether to force deterministic reference-recipe notebook generation."""
+        recipe_cfg = (self.config.get("reference_recipe") or {}) if isinstance(self.config.get("reference_recipe"), dict) else {}
+        if not bool(recipe_cfg.get("enabled", True)):
+            return False
+        return bool(self._resolve_reference_recipe_path())
+
+    def _should_use_reference_recipe_for_iteration(self, iteration: int) -> bool:
+        """Apply reference-recipe policy for a specific modeling iteration.
+
+        By default, reference recipes are used only for the very first notebook
+        seed (iteration 0). Later hypothesis resets should return control to the
+        LLM-driven modeling flow for broader exploration.
+        """
+        if not self._should_use_reference_recipe():
+            return False
+        recipe_cfg = (self.config.get("reference_recipe") or {}) if isinstance(self.config.get("reference_recipe"), dict) else {}
+        initial_only = bool(recipe_cfg.get("initial_only", True))
+        if not initial_only:
+            return True
+        return int(iteration or 0) == 0
+
+    def _resolve_reference_recipe_path(self) -> str:
+        """Resolve reference recipe file from config and dataset name.
+
+        Resolution order:
+        1) reference_recipe.file
+        2) reference_recipe.architecture (e.g. "ddmia")
+        3) prompts/reference_recipes/{architecture}_reference.py
+        4) reference_recipe.by_dataset[dataset_name]
+        5) prompts/reference_recipes/{dataset}.py
+        6) prompts/reference_recipes/{dataset}_ddmia.py
+        """
+        recipe_cfg = (self.config.get("reference_recipe") or {}) if isinstance(self.config.get("reference_recipe"), dict) else {}
+        ds_raw = str(self.config.get("dataset_name") or "").strip()
+        ds = ds_raw.lower().replace("-", "_")
+        arch = str(recipe_cfg.get("architecture") or "ddmia").strip().lower().replace("-", "_")
+
+        candidates: List[str] = []
+
+        explicit = str(recipe_cfg.get("file") or "").strip()
+        if explicit:
+            candidates.append(explicit)
+
+        if arch:
+            candidates.append(os.path.join("prompts", "reference_recipes", f"{arch}_reference.py"))
+
+        by_dataset = recipe_cfg.get("by_dataset") if isinstance(recipe_cfg.get("by_dataset"), dict) else {}
+        if ds_raw and isinstance(by_dataset, dict):
+            mapped = by_dataset.get(ds_raw) or by_dataset.get(ds_raw.upper()) or by_dataset.get(ds)
+            if isinstance(mapped, str) and mapped.strip():
+                candidates.append(mapped.strip())
+
+        if ds:
+            candidates.append(os.path.join("prompts", "reference_recipes", f"{ds}.py"))
+            candidates.append(os.path.join("prompts", "reference_recipes", f"{ds}_ddmia.py"))
+
+        for c in candidates:
+            full = c if os.path.isabs(c) else os.path.join(_project_root(), c)
+            if os.path.exists(full):
+                return full
+        return ""
+
+    def _build_notebook_from_recipe(self, recipe_path: str):
+        """Build a notebook from a `# ---- cell ----` delimited python recipe."""
+        import nbformat  # type: ignore
+
+        with open(recipe_path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+        cells_raw = [c.strip() for c in raw.split("# ---- cell ----") if c.strip()]
+        nb = nbformat.v4.new_notebook()
+        for idx, cell_src in enumerate(cells_raw):
+            if idx == 0 and (cell_src.startswith('"""') or cell_src.startswith("#")):
+                nb.cells.append(nbformat.v4.new_markdown_cell(cell_src))
+            else:
+                nb.cells.append(nbformat.v4.new_code_cell(cell_src))
+        return nb
+
     async def _generate_legacy_notebook_artifact(
         self,
         *,
@@ -1192,6 +1270,28 @@ class ModelingAgent(BaseAgent):
         workspace = _ensure_task_workspace(task_id, "modeling", iteration)
         debug_dir = os.path.join(workspace, "debug_prompt")
         os.makedirs(debug_dir, exist_ok=True)
+
+        if self._should_use_reference_recipe_for_iteration(iteration):
+            recipe_path = self._resolve_reference_recipe_path()
+            if recipe_path:
+                nb = self._build_notebook_from_recipe(recipe_path)
+                notebook_json = nbformat.writes(nb)
+                script_text = _notebook_to_script_text(nb)
+                arch = str(((self.config.get("reference_recipe") or {}) if isinstance(self.config.get("reference_recipe"), dict) else {}).get("architecture") or "DDMIA").upper()
+                metadata = {
+                    "generation_mode": "legacy_reference_recipe_initial",
+                    "selected_strategy": f"{arch}-ReferenceRecipe",
+                    "decision_type": "EXPLORE",
+                    "focus_area": "All",
+                    "reference_recipe_file": recipe_path,
+                }
+                _log(f"[MODEL] ✅ Using deterministic reference recipe for initial notebook: {recipe_path}", console=True)
+                return {
+                    "artifact_type": "notebook_ipynb",
+                    "notebook_json": notebook_json,
+                    "code": script_text,
+                    "modeling_metadata": metadata,
+                }
 
         prompt_path = self._resolve_legacy_prompt_file()
         with open(prompt_path, "r", encoding="utf-8") as fh:
@@ -1277,6 +1377,33 @@ class ModelingAgent(BaseAgent):
 
         metric_failure_profile = self._build_metric_failure_profile(current_metrics or {})
 
+        review_cfg = (self.config.get("review") or {}) if isinstance(self.config.get("review"), dict) else {}
+        macro_interval = int(review_cfg.get("macro_rewrite_interval", 3) or 3)
+        macro_min_stagnation = int(review_cfg.get("macro_rewrite_min_stagnation", 2) or 2)
+        trailing_non_improved = 0
+        for item in reversed(history_summary or []):
+            if str(item.get("status") or "").upper() == "IMPROVED":
+                break
+            trailing_non_improved += 1
+
+        macro_rewrite = (
+            iteration > 0
+            and macro_interval > 0
+            and (iteration % macro_interval == 0)
+            and trailing_non_improved >= macro_min_stagnation
+        )
+        extra_instruction = ""
+        if macro_rewrite:
+            extra_instruction = (
+                "[MACRO_REWRITE_REQUIRED] You have entered a stagnation region. "
+                "Do not do local patching. Replace one major modeling block (fusion/attention/loss family) "
+                "with a materially different design while preserving data I/O contracts."
+            )
+            _log(
+                f"[MODEL] 🔁 Macro rewrite activated (iteration={iteration}, trailing_non_improved={trailing_non_improved})",
+                console=True,
+            )
+
         task_graph_state = (
             "# AGENT MODE CONTEXT\n"
             f"best_metric_score: {best_metric_score}\n\n"
@@ -1302,6 +1429,7 @@ class ModelingAgent(BaseAgent):
                 workspace,
                 history_summary or [],
                 task_graph_state_text=task_graph_state,
+                extra_instruction=extra_instruction,
             ),
         )
         if not isinstance(suggestion, dict):
@@ -1323,7 +1451,7 @@ class ModelingAgent(BaseAgent):
         updated_notebook_json = nbformat.writes(nb)
         script_text = _notebook_to_script_text(nb)
         metadata = {
-            "generation_mode": "legacy_review_refinement",
+            "generation_mode": "legacy_review_macro_rewrite" if macro_rewrite else "legacy_review_refinement",
             "selected_strategy": suggestion.get("selected_strategy") or "",
             "decision_type": suggestion.get("decision_type") or "",
             "focus_area": suggestion.get("focus_area") or "",
@@ -1475,6 +1603,8 @@ class ModelingAgent(BaseAgent):
                     )
                 artifact_payload.update({
                     "insight_report": insight_report,
+                    "history_summary": history_summary,
+                    "best_metric_score": best_metric_score,
                     "iteration": iteration,
                     "max_iterations": int(message.get("max_iterations") or 5),
                     "_task_id": task_id,
@@ -1792,6 +1922,8 @@ class ExecutionAgent(BaseAgent):
         raw_code: str = message.get("code") or ""
         insight_report: Dict[str, Any] = message.get("insight_report") or {}
         modeling_metadata: Dict[str, Any] = message.get("modeling_metadata") or {}
+        history_summary: List[Dict[str, Any]] = message.get("history_summary") or []
+        best_metric_score = message.get("best_metric_score")
         iteration: int = int(message.get("iteration") or 0)
         task_id: str = str(message.get("_task_id") or "")
         max_iterations: int = int(message.get("max_iterations") or 5)
@@ -1835,6 +1967,8 @@ class ExecutionAgent(BaseAgent):
                     "trial_dir": exec_payload.get("trial_dir") or "",
                     "insight_report": insight_report,
                     "modeling_metadata": modeling_metadata,
+                    "history_summary": history_summary,
+                    "best_metric_score": best_metric_score,
                     "iteration": iteration,
                     "max_iterations": max_iterations,
                     "_task_id": task_id,
@@ -1853,6 +1987,8 @@ class ExecutionAgent(BaseAgent):
                     "insight_report": insight_report,
                     "artifact_type": str(message.get("artifact_type") or "raw_python"),
                     "modeling_metadata": modeling_metadata,
+                    "history_summary": history_summary,
+                    "best_metric_score": best_metric_score,
                     "iteration": iteration,
                     "max_iterations": max_iterations,
                     "_task_id": task_id,
@@ -1946,6 +2082,8 @@ class ExecutionAgent(BaseAgent):
                 "artifact_type": str(message.get("artifact_type") or "raw_python"),
                 "modeling_metadata": modeling_metadata,
                 "insight_report": insight_report,
+                "history_summary": history_summary,
+                "best_metric_score": best_metric_score,
                 "iteration": iteration,
                 "max_iterations": max_iterations,
                 "_task_id": task_id,
@@ -2206,6 +2344,8 @@ class EvaluationAgent(BaseAgent):
         notebook_json: str = str(message.get("notebook_json") or "")
         modeling_metadata: Dict[str, Any] = message.get("modeling_metadata") or {}
         insight_report: Dict[str, Any] = message.get("insight_report") or {}
+        history_summary: List[Dict[str, Any]] = message.get("history_summary") or []
+        best_metric_score = message.get("best_metric_score")
         iteration: int = int(message.get("iteration") or 0)
         max_iterations: int = int(message.get("max_iterations") or 5)
 
@@ -2295,6 +2435,8 @@ class EvaluationAgent(BaseAgent):
             feedback_package = await self._generate_feedback_package(
                 stdout, stderr, tb, code, all_metrics, target_metric,
                 pass_threshold, direction,
+                history_summary=history_summary,
+                best_metric_score=best_metric_score,
             )
             feedback_package["metric_delta"] = metric_delta
             feedback_package["metric_trend"] = metric_trend
@@ -2328,6 +2470,8 @@ class EvaluationAgent(BaseAgent):
         feedback_package = await self._generate_feedback_package(
             stdout, stderr, tb, code, all_metrics, target_metric,
             pass_threshold, direction,
+            history_summary=history_summary,
+            best_metric_score=best_metric_score,
         )
         feedback_package["metric_delta"] = metric_delta
         feedback_package["metric_trend"] = metric_trend
@@ -2372,6 +2516,8 @@ class EvaluationAgent(BaseAgent):
         target_metric: str,
         pass_threshold: float,
         direction: str,
+        history_summary: Optional[List[Dict[str, Any]]] = None,
+        best_metric_score: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Use the LLM to produce a structured feedback package.
 
@@ -2403,6 +2549,24 @@ class EvaluationAgent(BaseAgent):
             f"  {k}: {v:.4f}" if v is not None else f"  {k}: N/A"
             for k, v in all_metrics.items()
         )
+        recent = history_summary or []
+        trailing_non_improved = 0
+        for item in reversed(recent):
+            if str(item.get("status") or "").upper() == "IMPROVED":
+                break
+            trailing_non_improved += 1
+        hist_tail = []
+        for item in recent[-4:]:
+            try:
+                score = item.get("score")
+                score_str = f"{float(score):.4f}" if score is not None else "N/A"
+            except Exception:
+                score_str = "N/A"
+            hist_tail.append(
+                f"iter={item.get('iter')}, status={item.get('status')}, "
+                f"strategy={item.get('strategy')}, score={score_str}"
+            )
+        history_digest = "\n".join(hist_tail) if hist_tail else "N/A"
         try:
             from .llm_client import chat_json, resolve_llm_config  # type: ignore
 
@@ -2420,13 +2584,19 @@ class EvaluationAgent(BaseAgent):
                 "context is needed (e.g., 'MAPK pathway for DEG high-variance gene modeling'). "
                 "Empty string if not needed.\n"
                 "- suggested_target (str): Either 'modeling' (code changes priority) or "
-                "'research' (more biological knowledge needed first)."
+                "'research' (more biological knowledge needed first).\n- focus_area (str, optional): one area in optimization hierarchy or 'All'.\n- subtasks_to_update (list[str], optional): concrete subtask names to prioritize."
             )
             user_content = (
                 f"## Metric Suite Results\n"
                 f"Primary metric: {target_metric} = {primary_str} "
                 f"(goal: {direction} {pass_threshold})\n\n"
                 f"Full DEG metric suite:\n{metrics_summary}\n\n"
+                f"## Iteration Trajectory Constraints\n"
+                f"best_metric_score={best_metric_score}\n"
+                f"trailing_non_improved={trailing_non_improved}\n"
+                f"recent_history:\n{history_digest}\n\n"
+                f"Instruction: You MUST incorporate trajectory context. If repeated non-improvement is high, "
+                f"prioritize structural/modeling changes over minor tuning.\n\n"
                 f"### stdout (last 500 chars)\n{stdout[-500:]}\n\n"
                 f"### stderr / traceback (last 500 chars)\n{(tb or stderr)[-500:]}\n\n"
                 f"### Code snippet (first 300 chars)\n{code[:300]}"
@@ -2443,6 +2613,8 @@ class EvaluationAgent(BaseAgent):
                 "technical_feedback": str(result.get("technical_feedback") or ""),
                 "knowledge_gap": str(result.get("knowledge_gap") or ""),
                 "suggested_target": str(result.get("suggested_target") or "modeling"),
+                "focus_area": str(result.get("focus_area") or "All"),
+                "subtasks_to_update": result.get("subtasks_to_update") if isinstance(result.get("subtasks_to_update"), list) else [],
             }
         except Exception as exc:
             _log(
@@ -2457,6 +2629,8 @@ class EvaluationAgent(BaseAgent):
                     ),
                     "knowledge_gap": "",
                     "suggested_target": "modeling",
+                    "focus_area": "All",
+                    "subtasks_to_update": [],
                 }
             return {
                 "technical_feedback": (
@@ -2470,6 +2644,8 @@ class EvaluationAgent(BaseAgent):
                     "response prediction, focusing on DEG high-variance gene modeling"
                 ),
                 "suggested_target": "research",
+                "focus_area": "All",
+                "subtasks_to_update": [],
             }
 
     @staticmethod
