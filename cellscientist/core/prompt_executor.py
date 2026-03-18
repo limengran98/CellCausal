@@ -13,6 +13,7 @@ from .llm_client import chat_json, chat_text
 
 # Unified auto-fix utilities
 from . import notebook_autofix as _autofix
+from .cell_naming import infer_task_name_from_cell
 
 # =============================================================================
 # Unified Logging Helper for Subprocess Module
@@ -204,7 +205,7 @@ class GraphExecutor(NotebookClient):
                 # Identify Task
                 task_meta = cell.metadata.get("subtask", {})
                 task_id = task_meta.get("id", f"Cell_{cell_idx}")
-                task_name = task_meta.get("name") or f"Cell_{cell_idx + 1}"
+                task_name = infer_task_name_from_cell(cell, cell_idx)
                 
                 _log(f"├─ ⚛ Execute: Cell {executed_cells + 1}/{total_cells} [{task_name}]", console=True)
 

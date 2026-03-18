@@ -1176,6 +1176,21 @@ class ModelingAgent(BaseAgent):
             return False
         return bool(self._resolve_reference_recipe_path())
 
+    def _should_use_reference_recipe_for_iteration(self, iteration: int) -> bool:
+        """Apply reference-recipe policy for a specific modeling iteration.
+
+        By default, reference recipes are used only for the very first notebook
+        seed (iteration 0). Later hypothesis resets should return control to the
+        LLM-driven modeling flow for broader exploration.
+        """
+        if not self._should_use_reference_recipe():
+            return False
+        recipe_cfg = (self.config.get("reference_recipe") or {}) if isinstance(self.config.get("reference_recipe"), dict) else {}
+        initial_only = bool(recipe_cfg.get("initial_only", True))
+        if not initial_only:
+            return True
+        return int(iteration or 0) == 0
+
     def _resolve_reference_recipe_path(self) -> str:
         """Resolve reference recipe file from config and dataset name.
 
@@ -1256,7 +1271,7 @@ class ModelingAgent(BaseAgent):
         debug_dir = os.path.join(workspace, "debug_prompt")
         os.makedirs(debug_dir, exist_ok=True)
 
-        if self._should_use_reference_recipe():
+        if self._should_use_reference_recipe_for_iteration(iteration):
             recipe_path = self._resolve_reference_recipe_path()
             if recipe_path:
                 nb = self._build_notebook_from_recipe(recipe_path)

@@ -274,6 +274,23 @@ class TestModelingReferenceRecipe:
         agent = ModelingAgent(bus, cfg)
         assert agent._should_use_reference_recipe() is True
 
+    def test_reference_recipe_initial_only_default(self):
+        bus = SimpleMessageBus()
+        cfg = _minimal_config()
+        cfg["dataset_name"] = "ANYSET"
+        agent = ModelingAgent(bus, cfg)
+        assert agent._should_use_reference_recipe_for_iteration(0) is True
+        assert agent._should_use_reference_recipe_for_iteration(1) is False
+
+    def test_reference_recipe_can_be_enabled_for_all_iterations(self):
+        bus = SimpleMessageBus()
+        cfg = _minimal_config()
+        cfg["dataset_name"] = "ANYSET"
+        cfg["reference_recipe"] = {"enabled": True, "architecture": "ddmia", "initial_only": False}
+        agent = ModelingAgent(bus, cfg)
+        assert agent._should_use_reference_recipe_for_iteration(0) is True
+        assert agent._should_use_reference_recipe_for_iteration(3) is True
+
     def test_build_notebook_from_recipe_splits_cells(self, tmp_path):
         bus = SimpleMessageBus()
         cfg = _minimal_config()
