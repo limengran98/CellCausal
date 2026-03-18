@@ -213,6 +213,8 @@ class PipelineOrchestrator:
         self.last_accepted_metrics: Dict[str, Any] = {}
         # Counter for consecutive rejections; triggers forced new hypothesis.
         self.consecutive_rejections: int = 0
+        # Count near-flat accepted iterations while still below target threshold.
+        self.low_progress_streak: int = 0
 
         # Bootstrap: enter the INITIALIZING state.
         self._enter_state(PipelineState.INITIALIZING)
@@ -444,6 +446,34 @@ class PipelineOrchestrator:
                 else:
                     reason = "within_epsilon_plateau"
 
+                direction = str(review_cfg.get("direction", "maximize") or "maximize").lower()
+                pass_threshold = float(review_cfg.get("pass_threshold", 0.7) or 0.7)
+                goal_met = (current_score <= pass_threshold) if direction == "minimize" else (current_score >= pass_threshold)
+                max_plateau_below_target = int(review_cfg.get("max_plateau_accepts_below_threshold", 2) or 2)
+
+                if reason == "within_epsilon_plateau" and not goal_met:
+                    self.low_progress_streak += 1
+                else:
+                    self.low_progress_streak = 0
+
+                if reason == "within_epsilon_plateau" and not goal_met and self.low_progress_streak > max_plateau_below_target:
+                    # Prevent infinite near-flat ACCEPT cycles when far below target.
+                    self.consecutive_rejections += 1
+                    _log(
+                        "[Falsifiable] ❌ REJECT (stagnation_below_threshold) — "
+                        f"current={current_score:.4f}, threshold={pass_threshold:.4f}, "
+                        f"plateau_streak={self.low_progress_streak}",
+                        console=True,
+                    )
+                    return {
+                        "verdict": "REJECT",
+                        "metric_delta": best_delta,
+                        "trend_delta": trend_delta,
+                        "current_score": current_score,
+                        "previous_score": best_anchor,
+                        "forced_new_hypothesis": True,
+                    }
+
                 trend_disp = f"{trend_delta:+.4f}" if trend_delta is not None else "N/A"
                 _log(
                     f"[Falsifiable] ✅ ACCEPT ({reason}) — "
@@ -462,6 +492,7 @@ class PipelineOrchestrator:
             else:
                 # Degradation — REJECT / REVERT.
                 self.consecutive_rejections += 1
+                self.low_progress_streak = 0
                 min_rejects = int(review_cfg.get("force_new_min_rejections", 2) or 2)
                 force_new = self.consecutive_rejections >= min_rejects and self._is_multi_metric_plateau()
                 trend_disp = f"{trend_delta:+.4f}" if trend_delta is not None else "N/A"

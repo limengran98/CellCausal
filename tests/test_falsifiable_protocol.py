@@ -161,6 +161,23 @@ class TestFalsifiableProtocol:
         assert result["verdict"] == "ACCEPT"
         assert result["metric_delta"] == 0.0
 
+    def test_plateau_below_threshold_eventually_rejected_and_forced_new_hypothesis(self):
+        """Avoid endless plateau ACCEPT when score remains far below pass threshold."""
+        orch = self._make_orchestrator()
+        orch.config.setdefault("review", {})["pass_threshold"] = 0.35
+        orch.config["review"]["acceptance_epsilon"] = 0.002
+        orch.config["review"]["max_plateau_accepts_below_threshold"] = 2
+
+        orch._evaluate_iteration({"accuracy": 0.2580, "code": "x=1"}, 0)
+        r1 = orch._evaluate_iteration({"accuracy": 0.2579, "code": "x=2"}, 1)
+        r2 = orch._evaluate_iteration({"accuracy": 0.2578, "code": "x=3"}, 2)
+        r3 = orch._evaluate_iteration({"accuracy": 0.2577, "code": "x=4"}, 3)
+
+        assert r1["verdict"] == "ACCEPT"
+        assert r2["verdict"] == "ACCEPT"
+        assert r3["verdict"] == "REJECT"
+        assert r3["forced_new_hypothesis"] is True
+
     def test_iteration_history_populated(self):
         """Iteration history should be populated."""
         orch = self._make_orchestrator()
