@@ -851,16 +851,19 @@ class PipelineOrchestrator:
                             technical_feedback = f"{jump_note}\n\n{technical_feedback}".strip()
                             suggested_target = "modeling"
 
-                    # On consecutive rejections: force route to research for a
-                    # new biological hypothesis rather than more code tweaks.
-                    # In breakthrough mode, keep one modeling jump chance.
-                    if verdict_info.get("forced_new_hypothesis") and not breakthrough_mode:
+                    # On forced-new-hypothesis: always route to research to avoid
+                    # endless modeling-only loops under plateau/breakthrough states.
+                    if verdict_info.get("forced_new_hypothesis"):
                         suggested_target = "research"
                         knowledge_gap = (
                             knowledge_gap
                             or "novel biological mechanism for cell perturbation "
                             "response prediction beyond current approach"
                         )
+                        technical_feedback = (
+                            "[HYPOTHESIS_RESET] Route to ResearchAgent for a new causal hypothesis.\n\n"
+                            + (technical_feedback or "")
+                        ).strip()
 
                     history_entry = self._build_history_entry(
                         iteration=next_iteration,

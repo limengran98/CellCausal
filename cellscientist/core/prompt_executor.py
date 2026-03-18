@@ -204,7 +204,7 @@ class GraphExecutor(NotebookClient):
                 # Identify Task
                 task_meta = cell.metadata.get("subtask", {})
                 task_id = task_meta.get("id", f"Cell_{cell_idx}")
-                task_name = task_meta.get("name", "Unnamed")
+                task_name = task_meta.get("name") or f"Cell_{cell_idx + 1}"
                 
                 _log(f"├─ ⚛ Execute: Cell {executed_cells + 1}/{total_cells} [{task_name}]", console=True)
 
