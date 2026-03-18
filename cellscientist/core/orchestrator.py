@@ -45,6 +45,7 @@ from .agents import (
     TaskContext,
 )
 from .message_bus import SimpleMessageBus
+from .task_graph import init_task_graph_from_config, route_active_tasks
 from .llm_client import TokenMeter
 
 logger = logging.getLogger(__name__)
@@ -182,6 +183,13 @@ class PipelineOrchestrator:
         # Build shared task context.
         self.context: TaskContext = TaskContext.from_config(config)
 
+        # Reuse the existing task-graph framework for hybrid routing decisions
+        # (deterministic constraints + LLM-proposed focus areas).
+        review_cfg = (self.config.get("review") or {}) if isinstance(self.config.get("review"), dict) else {}
+        self.routing_task_graph: Dict[str, Any] = init_task_graph_from_config(
+            review_cfg.get("optimization_hierarchy", []) or []
+        )
+
         # FSM state tracking.  Start from a sentinel value so that the first
         # real _enter_state() call produces a clean `None → INITIALIZING` entry
         # in transition_history (stored as ``INITIALIZING → INITIALIZING`` for
@@ -229,6 +237,29 @@ class PipelineOrchestrator:
     # ------------------------------------------------------------------
     # FSM helpers
     # ------------------------------------------------------------------
+
+    def _resolve_refine_target(self, feedback_package: Dict[str, Any]) -> str:
+        """Resolve refine target using task-graph routing primitives.
+
+        This keeps routing policy deterministic while still consuming LLM-proposed
+        `focus_area` / `subtasks_to_update` hints.
+        """
+        suggested = str((feedback_package or {}).get("suggested_target") or "modeling").strip().lower()
+        if suggested == "research":
+            return "research"
+
+        suggestion = {
+            "focus_area": (feedback_package or {}).get("focus_area") or "All",
+            "subtasks_to_update": (feedback_package or {}).get("subtasks_to_update") or [],
+        }
+        try:
+            active_task_ids = route_active_tasks(self.routing_task_graph, suggestion)
+            if not active_task_ids:
+                return "research"
+        except Exception:
+            # Keep behavior safe if task-graph hints are malformed.
+            return suggested if suggested in {"modeling", "research"} else "modeling"
+        return "modeling"
 
     def _enter_state(self, new_state: PipelineState) -> None:
         """Transition to *new_state* and emit the legacy phase alias.
@@ -796,7 +827,7 @@ class PipelineOrchestrator:
                 if decision == "REFINE":
                     self._enter_state(PipelineState.FEEDBACK_ROUTING)
                     feedback_package = data.get("feedback_package") or {}
-                    suggested_target = feedback_package.get("suggested_target", "modeling")
+                    suggested_target = self._resolve_refine_target(feedback_package)
                     technical_feedback = feedback_package.get("technical_feedback", "")
                     knowledge_gap = feedback_package.get("knowledge_gap", "")
                     # next_iteration uses self.context.iteration which was already
@@ -1262,6 +1293,18 @@ class PipelineOrchestrator:
 # =============================================================================
 
 
+def _resolve_orchestrator_backend(config: Dict[str, Any]) -> str:
+    """Resolve orchestration backend name from config.
+
+    Supported values:
+    - ``native`` (default): current built-in FSM orchestrator.
+    - ``langgraph``: reserved for LangGraph backend integration.
+    """
+    orch_cfg = (config.get("orchestrator") or {}) if isinstance(config.get("orchestrator"), dict) else {}
+    backend = str(orch_cfg.get("backend") or "native").strip().lower()
+    return backend or "native"
+
+
 async def run_orchestrator(config: Dict[str, Any]) -> Dict[str, Any]:
     """Async entry-point: create the orchestrator and run the pipeline.
 
@@ -1286,7 +1329,20 @@ def run_orchestrator_sync(config: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Summary dict from :meth:`PipelineOrchestrator.run`.
     """
-    return asyncio.run(run_orchestrator(config))
+    backend = _resolve_orchestrator_backend(config)
+    if backend == "native":
+        return asyncio.run(run_orchestrator(config))
+    if backend == "langgraph":
+        try:
+            import langgraph  # type: ignore  # noqa: F401
+        except Exception as exc:
+            raise RuntimeError(
+                "orchestrator.backend='langgraph' requested but LangGraph is not installed. "
+                "Install dependency first or switch backend to 'native'."
+            ) from exc
+        from .orchestrator_langgraph import run_orchestrator_langgraph  # type: ignore
+        return asyncio.run(run_orchestrator_langgraph(config))
+    raise ValueError(f"Unsupported orchestrator backend: {backend}")
 
 
 def load_config(pipeline_config_path: str = "configs/pipeline_config.json") -> Dict[str, Any]:

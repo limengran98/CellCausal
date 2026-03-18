@@ -72,6 +72,17 @@ class TestFalsifiableProtocol:
         ):
             return PipelineOrchestrator(cfg)
 
+    def test_resolve_refine_target_respects_explicit_research(self):
+        orch = self._make_orchestrator()
+        out = orch._resolve_refine_target({"suggested_target": "research"})
+        assert out == "research"
+
+    def test_resolve_refine_target_uses_task_graph_fallback(self):
+        orch = self._make_orchestrator()
+        with patch("cellscientist.core.orchestrator.route_active_tasks", return_value=[]):
+            out = orch._resolve_refine_target({"suggested_target": "modeling", "focus_area": "All"})
+        assert out == "research"
+
     def test_first_iteration_always_accepted(self):
         """First iteration should always be accepted."""
         orch = self._make_orchestrator()

@@ -2584,7 +2584,7 @@ class EvaluationAgent(BaseAgent):
                 "context is needed (e.g., 'MAPK pathway for DEG high-variance gene modeling'). "
                 "Empty string if not needed.\n"
                 "- suggested_target (str): Either 'modeling' (code changes priority) or "
-                "'research' (more biological knowledge needed first)."
+                "'research' (more biological knowledge needed first).\n- focus_area (str, optional): one area in optimization hierarchy or 'All'.\n- subtasks_to_update (list[str], optional): concrete subtask names to prioritize."
             )
             user_content = (
                 f"## Metric Suite Results\n"
@@ -2613,6 +2613,8 @@ class EvaluationAgent(BaseAgent):
                 "technical_feedback": str(result.get("technical_feedback") or ""),
                 "knowledge_gap": str(result.get("knowledge_gap") or ""),
                 "suggested_target": str(result.get("suggested_target") or "modeling"),
+                "focus_area": str(result.get("focus_area") or "All"),
+                "subtasks_to_update": result.get("subtasks_to_update") if isinstance(result.get("subtasks_to_update"), list) else [],
             }
         except Exception as exc:
             _log(
@@ -2627,6 +2629,8 @@ class EvaluationAgent(BaseAgent):
                     ),
                     "knowledge_gap": "",
                     "suggested_target": "modeling",
+                    "focus_area": "All",
+                    "subtasks_to_update": [],
                 }
             return {
                 "technical_feedback": (
@@ -2640,6 +2644,8 @@ class EvaluationAgent(BaseAgent):
                     "response prediction, focusing on DEG high-variance gene modeling"
                 ),
                 "suggested_target": "research",
+                "focus_area": "All",
+                "subtasks_to_update": [],
             }
 
     @staticmethod
