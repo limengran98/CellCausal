@@ -45,6 +45,77 @@ FINAL_REPORT_DIRNAME = "finall_results"  # keep user's requested spelling
 FINAL_REPORT_PROMPT_PATH = os.path.join(project_root(), "prompts", "final_report.yaml")
 
 
+def _safe_rel(path: str) -> str:
+    try:
+        return os.path.relpath(path, project_root())
+    except Exception:
+        return path
+
+
+def _find_latest_file(root: str, target_name: str) -> str:
+    """Find the newest file named *target_name* under *root* (recursive)."""
+    if not root or not os.path.isdir(root):
+        return ""
+    latest = ""
+    latest_m = -1.0
+    try:
+        for p in Path(root).rglob(target_name):
+            if not p.is_file():
+                continue
+            m = p.stat().st_mtime
+            if m > latest_m:
+                latest_m = m
+                latest = str(p)
+    except Exception:
+        return ""
+    return latest
+
+
+def _find_review_history_state(run_root: str) -> str:
+    """Best-effort locate review/modeling history_state.json for agent-mode runs."""
+    if not run_root or not os.path.isdir(run_root):
+        return ""
+    # Prefer modeling subtree if present.
+    cand = _find_latest_file(os.path.join(run_root, "modeling"), "history_state.json")
+    if cand:
+        return cand
+    return _find_latest_file(run_root, "history_state.json")
+
+
+def _fallback_final_report_markdown(dataset_name: str, result: Dict[str, Any], evidence_paths: Dict[str, str]) -> str:
+    """Generate a structured markdown fallback when report LLM is unavailable."""
+    best = result.get("best_accuracy")
+    total = result.get("total_iterations")
+    status = result.get("status")
+    metric = result.get("metric", "PCC")
+    lines = [
+        "# Final Analysis Report",
+        "",
+        "## Summary",
+        f"- Dataset: `{dataset_name}`.",
+        f"- Status: `{status}`.",
+        f"- Best {metric}: `{best}` across `{total}` iterations.",
+        "- Evidence: extracted from `pipeline_summary.json` and runtime logs.",
+        "",
+        "## Pipeline Overview",
+        "- This report used the configured `prompts/final_report.yaml` contract when possible.",
+        "- If LLM report generation is unavailable, this fallback is emitted to preserve reproducible artifacts.",
+        "",
+        "## Critical Paths & File Index",
+    ]
+    for k, v in evidence_paths.items():
+        if v:
+            lines.append(f"- `{k}`: `{v}`")
+    lines += [
+        "",
+        "## Next Actions",
+        "1. Ensure `llm_report` credentials are configured so the full evidence-synthesis template can execute.",
+        "2. Inspect `review_iters_json` + logs for repeated scale-collapse patterns (R2<0) and add explicit calibration constraints.",
+        "3. Compare accepted vs rejected iterations and enforce larger architectural deltas when plateauing.",
+    ]
+    return "\n".join(lines).strip() + "\n"
+
+
 def redact_secrets(obj: Any) -> Any:
     """Best-effort redact API keys / tokens from configs before sending to LLM."""
     try:
@@ -624,141 +695,114 @@ def generate_report_from_orchestrator(
         writing failed.
     """
     try:
-        task_id = result.get("task_id", "unknown")
-        status = result.get("status", "unknown")
-        best_accuracy = result.get("best_accuracy", 0.0)
-        total_iterations = result.get("total_iterations", 0)
-        success_count = result.get("experiment_success_count", 0)
-        max_reached = result.get("max_iterations_reached", False)
-        metric_name = result.get("metric", "PCC")
-        success_rate = (success_count / total_iterations * 100) if total_iterations > 0 else 0.0
-        transitions = result.get("fsm_transitions", [])
-        robustness = result.get("robustness_metrics") or {}
-        cost_metrics = result.get("resource_cost_metrics") or {}
-        interp_metrics = result.get("scientific_interpretability_metrics") or {}
-        downstream_metrics = result.get("downstream_task_performance_metrics") or {}
-        iter_hist = result.get("iteration_history") or []
-        ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+        task_id = str(result.get("task_id") or "unknown")
+        ds_name = str(dataset_name or "unknown")
+        results_root = os.path.join(project_root(), "results", ds_name)
+        run_root = os.path.join(project_root(), "runs", task_id)
 
-        lines = [
-            "# CellCausal Pipeline Report",
-            "",
-            f"**Generated:** {ts}",
-            f"**Dataset:** {dataset_name}",
-            f"**Task ID:** `{task_id}`",
-            "",
-            "## Summary",
-            "",
-            f"| Field | Value |",
-            f"|-------|-------|",
-            f"| Status | `{status}` |",
-            f"| Best Accuracy ({metric_name}) | `{best_accuracy:.4f}` |",
-            f"| Total Iterations | `{total_iterations}` |",
-            f"| Successful Iterations | `{success_count}` |",
-            f"| Success Rate | `{success_rate:.1f}%` |",
-            f"| Max Iterations Reached | `{max_reached}` |",
-            "",
-            "## FSM Transitions",
-            "",
-            f"Total transitions: **{len(transitions)}**",
-            "",
-            "| # | From | To | Timestamp |",
-            "|---|------|----|-----------|",
-        ]
-        for i, t in enumerate(transitions, 1):
-            lines.append(
-                f"| {i} | `{t.get('from', '')}` | `{t.get('to', '')}` | {t.get('timestamp', '')} |"
-            )
+        # Canonical nested report location (single source of truth).
+        canonical_dir = os.path.join(results_root, "reports", task_id, "final")
+        materials_dir = os.path.join(canonical_dir, "materials")
+        os.makedirs(materials_dir, exist_ok=True)
+        if logs_dir:
+            os.makedirs(logs_dir, exist_ok=True)
 
-        lines += [
-            "",
-            "## 下游任务性能指标",
-            "",
-            "| Metric | Value |",
-            "|---|---|",
-            f"| MSE | `{downstream_metrics.get('MSE')}` |",
-            f"| PCC | `{downstream_metrics.get('PCC', best_accuracy)}` |",
-            f"| R2 | `{downstream_metrics.get('R2')}` |",
-            f"| DEG_RMSE_20 | `{downstream_metrics.get('DEG_RMSE_20')}` |",
-            f"| DEG_RMSE_50 | `{downstream_metrics.get('DEG_RMSE_50')}` |",
-            f"| DEG_PCC_20 | `{downstream_metrics.get('DEG_PCC_20')}` |",
-            f"| DEG_PCC_50 | `{downstream_metrics.get('DEG_PCC_50')}` |",
-            f"| MSE_DM | `{downstream_metrics.get('MSE_DM')}` |",
-            f"| PCC_DM | `{downstream_metrics.get('PCC_DM')}` |",
-            f"| R2_DM | `{downstream_metrics.get('R2_DM')}` |",
-            "",
-            "## 模型迭代审查进化线",
-            "",
-            "| Iter | Score(PCC) | Δ vs Prev | Review Signal |",
-            "|---|---:|---:|---|",
-        ]
+        phase_logs = {
+            "pipeline": os.path.join(logs_dir, "pipeline.log") if logs_dir else "",
+            "experiment": os.path.join(logs_dir, "experiment.log") if logs_dir else "",
+            "review": os.path.join(logs_dir, "review.log") if logs_dir else "",
+        }
+        # Fallback for agent-mode where only one consolidated log may exist.
+        if phase_logs["pipeline"] and not os.path.exists(phase_logs["pipeline"]):
+            phase_logs["pipeline"] = phase_logs["experiment"] if os.path.exists(phase_logs["experiment"]) else ""
 
-        prev_score = None
-        for item in iter_hist:
-            score = item.get("score")
+        review_hist_path = _find_review_history_state(run_root)
+        review_iters = review_iters_from_history_state(os.path.dirname(review_hist_path)) if review_hist_path else []
+        exp_iters = list(result.get("iteration_history") or [])
+
+        experiment_report_path = _find_latest_file(run_root, "experiment_report.md")
+        review_opt_hist_path = _find_latest_file(run_root, "optimization_history.md")
+
+        pipe_summary_path = os.path.join(materials_dir, "pipeline_summary.json")
+        with open(pipe_summary_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+        # Render final report prompt contract.
+        system_prompt, user_template = load_final_prompt()
+        log_cap = int((((pipe_cfg or {}).get("report") or {}) if isinstance((pipe_cfg or {}).get("report"), dict) else {}).get("log_excerpt_max_chars", 12000) or 12000)
+        var_map = {
+            "dataset_name": ds_name,
+            "final_output_dir": canonical_dir,
+            "pipeline_summary_json": json.dumps(result, ensure_ascii=False, indent=2),
+            "experiment_config_json": json.dumps(redact_secrets(pipe_cfg or {}), ensure_ascii=False, indent=2),
+            "review_config_json": json.dumps(redact_secrets(pipe_cfg or {}), ensure_ascii=False, indent=2),
+            "experiment_report_md": read_text_limited(experiment_report_path, 200000) if experiment_report_path else "",
+            "review_report_md": "",
+            "review_optim_history_md": read_text_limited(review_opt_hist_path, 200000) if review_opt_hist_path else "",
+            "experiment_iters_json": json.dumps(exp_iters, ensure_ascii=False, indent=2),
+            "review_iters_json": json.dumps(review_iters, ensure_ascii=False, indent=2),
+            "pipeline_log_excerpt": read_head_tail_lines(phase_logs.get("pipeline", ""), max_chars=log_cap),
+            "experiment_log_excerpt": read_head_tail_lines(phase_logs.get("experiment", ""), max_chars=log_cap),
+            "review_log_excerpt": read_head_tail_lines(phase_logs.get("review", ""), max_chars=log_cap),
+        }
+        user_prompt = user_template
+        for k, v in var_map.items():
+            user_prompt = user_prompt.replace("${" + k + "}", str(v))
+
+        with open(os.path.join(materials_dir, "final_prompt_system.txt"), "w", encoding="utf-8") as f:
+            f.write(system_prompt)
+        with open(os.path.join(materials_dir, "final_prompt_user.txt"), "w", encoding="utf-8") as f:
+            f.write(user_prompt)
+
+        llm_cfg = resolve_report_llm_cfg(pipe_cfg)
+        report_md = ""
+        if llm_cfg.get("api_key"):
             try:
-                score_f = float(score) if score is not None else None
-            except (TypeError, ValueError):
-                score_f = None
-            delta = None if (prev_score is None or score_f is None) else (score_f - prev_score)
-            signal = "N/A"
-            if delta is not None:
-                signal = "improved" if delta > 0 else ("degraded" if delta < 0 else "flat")
-            lines.append(
-                f"| {item.get('iteration', '-') } | {'' if score_f is None else f'{score_f:.4f}'} | {'' if delta is None else f'{delta:+.4f}'} | {signal} |"
-            )
-            if score_f is not None:
-                prev_score = score_f
+                report_md = chat_text(
+                    [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    llm_cfg,
+                )
+            except Exception as exc:
+                print(f"[WARN] LLM final report generation failed, using fallback: {exc}")
 
-        lines += [
-            "",
-            "## 系统执行鲁棒性指标",
-            "",
-            "| Metric | Value |",
-            "|---|---|",
-            f"| Notebook 执行成功率 | `{float(robustness.get('notebook_execution_success_rate', 0.0)):.4f}` |",
-            f"| Cell 级修复成功率 | `{float(robustness.get('cell_fix_success_rate', 0.0)):.4f}` |",
-            f"| 平均修复轮次 | `{float(robustness.get('avg_fix_rounds', 0.0)):.4f}` |",
-            f"| 崩溃后可恢复比例 | `{float(robustness.get('crash_recovery_ratio', 0.0)):.4f}` |",
-            f"| 有效 trial 占比 (validity rate) | `{float(robustness.get('validity_rate', 0.0)):.4f}` |",
-            "",
-            "## 资源与成本指标",
-            "",
-            "| Metric | Value |",
-            "|---|---|",
-            f"| prompt tokens | `{int(cost_metrics.get('prompt_tokens', 0) or 0)}` |",
-            f"| completion tokens | `{int(cost_metrics.get('completion_tokens', 0) or 0)}` |",
-            f"| total token cost | `{int(cost_metrics.get('total_tokens', 0) or 0)}` |",
-            f"| LLM latency (sec) | `{float(cost_metrics.get('total_llm_latency_sec', 0.0) or 0.0):.4f}` |",
-            f"| avg prompt tokens | `{float(cost_metrics.get('avg_prompt_tokens', 0.0) or 0.0):.4f}` |",
-            f"| avg completion tokens | `{float(cost_metrics.get('avg_completion_tokens', 0.0) or 0.0):.4f}` |",
-            f"| avg LLM latency (sec) | `{float(cost_metrics.get('avg_llm_latency_sec', 0.0) or 0.0):.4f}` |",
-            f"| cost-to-success ratio | `{cost_metrics.get('cost_to_success_ratio')}` |",
-            "",
-            "## 科学可解释性指标",
-            "",
-            "| Metric | Value |",
-            "|---|---|",
-            f"| 证据链完整度 | `{float(interp_metrics.get('evidence_chain_completeness', 0.0) or 0.0):.4f}` |",
-            f"| 外部知识引用覆盖率 | `{float(interp_metrics.get('external_knowledge_coverage', 0.0) or 0.0):.4f}` |",
-            f"| 生物过程映射一致性 | `{float(interp_metrics.get('bioprocess_mapping_consistency', 0.0) or 0.0):.4f}` |",
-            f"| 机制解释专家评分 | `{interp_metrics.get('expert_mechanism_score')}` |",
-            f"| 任务图演化稳定性 | `{float(interp_metrics.get('task_graph_evolution_stability', 0.0) or 0.0):.4f}` |",
-            "",
-            "## Configuration",
-            "",
-            "```json",
-            json.dumps(
-                {k: v for k, v in pipe_cfg.items() if not k.startswith("_")},
-                indent=2,
-                default=str,
-            ),
-            "```",
-        ]
+        evidence_paths = {
+            "canonical_report_dir": _safe_rel(canonical_dir),
+            "run_root": _safe_rel(run_root),
+            "results_root": _safe_rel(results_root),
+            "pipeline_summary_json": _safe_rel(pipe_summary_path),
+            "experiment_report_md": _safe_rel(experiment_report_path) if experiment_report_path else "",
+            "review_optimization_history_md": _safe_rel(review_opt_hist_path) if review_opt_hist_path else "",
+            "review_history_state": _safe_rel(review_hist_path) if review_hist_path else "",
+        }
 
-        report_path = os.path.join(logs_dir, "pipeline_report.md")
+        if not report_md.strip():
+            report_md = _fallback_final_report_markdown(ds_name, result, evidence_paths)
+
+        report_path = os.path.join(canonical_dir, "final_analysis_report.md")
         with open(report_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
+            f.write(report_md)
+
+        # Path/index manifests for reproducibility and to reduce folder confusion.
+        with open(os.path.join(canonical_dir, "artifact_index.json"), "w", encoding="utf-8") as f:
+            json.dump(evidence_paths, f, ensure_ascii=False, indent=2)
+        with open(os.path.join(canonical_dir, "README_paths.md"), "w", encoding="utf-8") as f:
+            f.write(
+                "# Artifact Path Index\n\n"
+                "This directory is the canonical final report bundle.\n"
+                "- `materials/`: prompt + source snippets used for report generation.\n"
+                "- `final_analysis_report.md`: final synthesis report.\n"
+                "- `artifact_index.json`: machine-readable pointers to run/results roots and key files.\n"
+            )
+
+        # Keep a convenience copy in logs for backward compatibility.
+        legacy_report_path = os.path.join(logs_dir, "pipeline_report.md") if logs_dir else ""
+        if legacy_report_path:
+            with open(legacy_report_path, "w", encoding="utf-8") as f:
+                f.write(report_md)
+
         return report_path
     except Exception as exc:
         print(f"[DETAIL] [Report] Warning: could not generate pipeline report — {exc}", flush=True)

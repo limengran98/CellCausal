@@ -14,6 +14,7 @@ inside those subprocess modules and remains fully intact.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -84,6 +85,36 @@ def _make_logs_dir(dataset_name: str) -> str:
     return out
 
 
+def _write_pipeline_cache_manifest(stage_map: Dict[str, Dict[str, Any]], logs_dir: str, logger) -> str:
+    """Persist merged config paths for reproducibility and path tracing."""
+    cache_manifest = {
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "stages": {},
+    }
+    for stage_name, info in stage_map.items():
+        cache_manifest["stages"][stage_name] = {
+            "merged_config_path": info.get("config"),
+            "module": info.get("module"),
+        }
+    out = os.path.join(logs_dir, "pipeline_cache_manifest.json")
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(cache_manifest, f, ensure_ascii=False, indent=2)
+    logger.full_log(f"Pipeline cache manifest: {out}")
+    return out
+
+
+def _apply_orchestrator_backend_override(config: Dict[str, Any], backend: str | None) -> Dict[str, Any]:
+    """Apply a runtime override for agent-mode orchestrator backend."""
+    if not backend:
+        return config
+    orchestrator_cfg = config.get("orchestrator")
+    if not isinstance(orchestrator_cfg, dict):
+        orchestrator_cfg = {}
+    orchestrator_cfg["backend"] = str(backend).strip().lower()
+    config["orchestrator"] = orchestrator_cfg
+    return config
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -121,7 +152,23 @@ def main() -> None:
             "ModelingAgent, ExecutionAgent, and EvaluationAgent."
         ),
     )
+    parser.add_argument(
+        "--orchestrator-backend",
+        choices=["native", "langgraph"],
+        default=None,
+        help=(
+            "Agent-mode orchestrator backend override. "
+            "If omitted, uses config value (default: native)."
+        ),
+    )
+    parser.add_argument(
+        "--langgraph",
+        action="store_true",
+        help="Shortcut for --orchestrator-backend langgraph.",
+    )
     args = parser.parse_args()
+    if args.langgraph:
+        args.orchestrator_backend = "langgraph"
 
     ensure_project_cwd()
 
@@ -163,6 +210,7 @@ def main() -> None:
         }
     }
     logger = create_tiered_logger(logs_dir, full_config, dataset_name)
+    _write_pipeline_cache_manifest(stage_map, logs_dir, logger)
 
     # Log pipeline initialization
     logger.full_log("=" * 80)
@@ -204,6 +252,7 @@ def main() -> None:
 
         # Preserve the full legacy prompt/config contract in agent-mode.
         merged_cfg["prompts"] = load_yaml_prompts(os.path.join(project_root(), "prompts"))
+        _apply_orchestrator_backend_override(merged_cfg, args.orchestrator_backend)
 
         agent_t0 = time.time()
         try:
@@ -227,7 +276,8 @@ def main() -> None:
         if not args.skip_final_report:
             logger.console_info("")
             logger.console_info("📝 Generating final reports...", level=0)
-            generate_report_from_orchestrator(result, pipe_cfg, dataset_name, logs_dir)
+            # Use merged_cfg so report generation sees fully materialized settings.
+            generate_report_from_orchestrator(result, merged_cfg, dataset_name, logs_dir)
 
         logger.console_info("")
         logger.console_info(f"✅ Pipeline completed (agent-mode). Logs: {logs_dir}", level=0)
@@ -313,7 +363,19 @@ def main() -> None:
             review_t1 = review_t0
         else:
             review_cfg = stage_map["Review"]["config"]
-            cmd3 = stage_map["Review"]["entry"] + ["--config", review_cfg, "--source_path", experiment_out]
+            # Bridge explicit upstream artifact path into review config for stronger traceability.
+            review_cfg_loaded = stage_map["Review"].get("_loaded_cfg") or {}
+            bridged_cfg = dict(review_cfg_loaded)
+            bridged_cfg["paths"] = dict(bridged_cfg.get("paths") or {})
+            bridged_cfg["paths"]["upstream_output_path"] = experiment_out
+            bridged_cfg_path = os.path.join(project_root(), "_pipeline_cache", f"review_config.bridged.{dataset_name}.json")
+            with open(bridged_cfg_path, "w", encoding="utf-8") as f:
+                json.dump(bridged_cfg, f, ensure_ascii=False, indent=2)
+            stage_map["Review"]["_loaded_cfg"] = bridged_cfg
+            logger.full_log(f"Review path bridge injected: paths.upstream_output_path={experiment_out}")
+            logger.full_log(f"Bridged Review config: {bridged_cfg_path}")
+
+            cmd3 = stage_map["Review"]["entry"] + ["--config", bridged_cfg_path, "--source_path", experiment_out]
             logger.console_info("")
             logger.console_info("🔄 REVIEW STAGE", level=0)
             logger.full_log(f"Running Review Stage: {' '.join(cmd3)}")
