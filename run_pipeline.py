@@ -103,6 +103,18 @@ def _write_pipeline_cache_manifest(stage_map: Dict[str, Dict[str, Any]], logs_di
     return out
 
 
+def _apply_orchestrator_backend_override(config: Dict[str, Any], backend: str | None) -> Dict[str, Any]:
+    """Apply a runtime override for agent-mode orchestrator backend."""
+    if not backend:
+        return config
+    orchestrator_cfg = config.get("orchestrator")
+    if not isinstance(orchestrator_cfg, dict):
+        orchestrator_cfg = {}
+    orchestrator_cfg["backend"] = str(backend).strip().lower()
+    config["orchestrator"] = orchestrator_cfg
+    return config
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -140,7 +152,23 @@ def main() -> None:
             "ModelingAgent, ExecutionAgent, and EvaluationAgent."
         ),
     )
+    parser.add_argument(
+        "--orchestrator-backend",
+        choices=["native", "langgraph"],
+        default=None,
+        help=(
+            "Agent-mode orchestrator backend override. "
+            "If omitted, uses config value (default: native)."
+        ),
+    )
+    parser.add_argument(
+        "--langgraph",
+        action="store_true",
+        help="Shortcut for --orchestrator-backend langgraph.",
+    )
     args = parser.parse_args()
+    if args.langgraph:
+        args.orchestrator_backend = "langgraph"
 
     ensure_project_cwd()
 
@@ -224,6 +252,7 @@ def main() -> None:
 
         # Preserve the full legacy prompt/config contract in agent-mode.
         merged_cfg["prompts"] = load_yaml_prompts(os.path.join(project_root(), "prompts"))
+        _apply_orchestrator_backend_override(merged_cfg, args.orchestrator_backend)
 
         agent_t0 = time.time()
         try:

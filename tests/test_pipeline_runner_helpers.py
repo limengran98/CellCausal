@@ -4,7 +4,7 @@ import sys
 import types
 from types import SimpleNamespace
 
-from run_pipeline import _write_pipeline_cache_manifest
+from run_pipeline import _apply_orchestrator_backend_override, _write_pipeline_cache_manifest
 from cellscientist.pipeline.metrics import print_final_scoreboard
 from cellscientist.core.orchestrator import _resolve_orchestrator_backend, run_orchestrator_sync
 from cellscientist.core import orchestrator_langgraph
@@ -62,6 +62,18 @@ def test_print_final_scoreboard_includes_stability_rates(capsys):
 
 def test_orchestrator_backend_defaults_to_native():
     assert _resolve_orchestrator_backend({}) == "native"
+
+
+def test_apply_orchestrator_backend_override():
+    cfg = {"dataset_name": "x"}
+    out = _apply_orchestrator_backend_override(cfg, "langgraph")
+    assert out["orchestrator"]["backend"] == "langgraph"
+
+
+def test_apply_orchestrator_backend_override_none_keeps_config():
+    cfg = {"orchestrator": {"backend": "native"}}
+    out = _apply_orchestrator_backend_override(cfg, None)
+    assert out["orchestrator"]["backend"] == "native"
 
 
 def test_orchestrator_backend_langgraph_requires_dependency():
