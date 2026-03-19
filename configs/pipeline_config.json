@@ -17,18 +17,22 @@
   },
   
   "llm": {
-    "base_url": "https://vip.yi-zhan.top/v1",
-    "api_key": "sk-dVaNuQ4JEDEjA6DtDb964284D72c4e559512D9D481A4563a",
+    "base_url": "https://sub.jia4u.de/v1",
+    "api_key": "sk-705662fe1ac0b6af92a0ef9d7b1a7a4579e2aebf48ab563350c5ad516d9e7990",
     "max_tokens": 40000,
     "timeout": 600,
-    "model": "gemini-3-pro-all",
+    "model": "gpt-5.4",
     "temperature": 0.7
   },
   
+  "orchestrator": {
+    "backend": "langgraph"
+  },
+
   "llm_report": {
-    "model": "gemini-3-pro-preview-thinking",
-    "base_url": "https://vip.yi-zhan.top/v1",
-    "api_key": "sk-dVaNuQ4JEDEjA6DtDb964284D72c4e559512D9D481A4563a",
+    "model": "gpt-5.4",
+    "base_url": "https://sub.jia4u.de/v11",
+    "api_key": "sk-705662fe1ac0b6af92a0ef9d7b1a7a4579e2aebf48ab563350c5ad516d9e7990",
     "max_tokens": 40000,
     "temperature": 0.7,
     "timeout": 600
