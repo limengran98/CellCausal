@@ -25,6 +25,10 @@
     "temperature": 0.7
   },
   
+  "orchestrator": {
+    "backend": "langgraph"
+  },
+
   "llm_report": {
     "model": "gpt-5.4",
     "base_url": "https://sub.jia4u.de/v11",
