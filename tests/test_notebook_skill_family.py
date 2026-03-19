@@ -10,8 +10,10 @@ from cellscientist.runtime.notebook_models import NotebookArtifact
 from cellscientist.runtime.session import create_session
 from cellscientist.runtime.state import ResearchIntent
 from cellscientist.runtime.orchestrator_v2 import OrchestratorV2
+from cellscientist.skills.notebook_autofix import NotebookAutofixSkill
 from cellscientist.skills.notebook_execute import NotebookExecuteSkill
 from cellscientist.skills.legacy_notebook import LegacyNotebookSkill
+from cellscientist.skills.notebook_review import NotebookReviewSkill
 from cellscientist.skills.notebook_workflow import NotebookWorkflowSkill
 
 
@@ -108,7 +110,7 @@ def test_notebook_workflow_routes_execute_requests():
     assert run_artifact.metadata["error_log_path"] == "/tmp/error.txt"
 
 
-def test_notebook_workflow_prefers_latest_notebook_artifact_for_execute_like_requests():
+def test_notebook_workflow_prefers_latest_notebook_artifact_for_execute_requests():
     import cellscientist.skills.notebook_execute as notebook_execute_module
 
     captured = {}
@@ -132,7 +134,7 @@ def test_notebook_workflow_prefers_latest_notebook_artifact_for_execute_like_req
     original = notebook_execute_module.bridge_execute_notebook
     notebook_execute_module.bridge_execute_notebook = _fake_execute
     try:
-        state = create_session("修复这个 notebook")
+        state = create_session("执行这个 notebook")
         state.intent = ResearchIntent(raw_query=state.user_query, task_type="legacy_notebook")
         state.last_notebook_artifact = NotebookArtifact(
             name="draft_notebook.ipynb",
@@ -148,6 +150,125 @@ def test_notebook_workflow_prefers_latest_notebook_artifact_for_execute_like_req
     assert result["action"] == "execute"
     assert captured["preferred_notebook_path"] == "/tmp/draft_notebook.ipynb"
     assert captured["preferred_trial_dir"] == "/tmp/example_trial"
+
+
+def test_notebook_workflow_routes_review_requests_and_emits_review_artifact():
+    import cellscientist.skills.notebook_review as notebook_review_module
+
+    def _fake_review(
+        _query,
+        *,
+        preferred_notebook_path=None,
+        preferred_trial_dir=None,
+        preferred_run_result=None,
+        source_artifact_metadata=None,
+    ):
+        return {
+            "action": "review",
+            "status": "review_summary_only",
+            "message": "ok",
+            "query": _query,
+            "target_notebook_path": preferred_notebook_path or "/tmp/review_target.ipynb",
+            "review_report_path": "/tmp/notebook_review_summary.md",
+            "legacy_entry": "legacy.review",
+            "details": {
+                "target_trial_dir": preferred_trial_dir or "/tmp/example_trial",
+                "used_recent_run_result": bool(preferred_run_result is not None),
+                "source_artifact_metadata": source_artifact_metadata or {},
+            },
+        }
+
+    original = notebook_review_module.bridge_review_notebook
+    notebook_review_module.bridge_review_notebook = _fake_review
+    try:
+        state = create_session("review 一下这个 notebook 的结构和科学性")
+        state.intent = ResearchIntent(raw_query=state.user_query, task_type="legacy_notebook")
+        state.last_notebook_artifact = NotebookArtifact(
+            name="draft_notebook.ipynb",
+            path="/tmp/draft_notebook.ipynb",
+            trial_dir="/tmp/example_trial",
+            source="legacy",
+            metadata={"origin": "test"},
+        )
+        result = NotebookWorkflowSkill().run(state)
+    finally:
+        notebook_review_module.bridge_review_notebook = original
+
+    assert result["action"] == "review"
+    assert state.skill_trace == [
+        "legacy_notebook:notebook-workflow",
+        "legacy_notebook:notebook-review",
+    ]
+    review_artifact = next(artifact for artifact in state.artifacts if artifact.type == "review_report")
+    assert review_artifact.metadata["report_path"] == "/tmp/notebook_review_summary.md"
+    assert review_artifact.metadata["target_notebook_path"] == "/tmp/draft_notebook.ipynb"
+
+
+def test_notebook_workflow_routes_autofix_requests_using_recent_failed_run_context():
+    import cellscientist.skills.notebook_autofix as notebook_autofix_module
+    from cellscientist.runtime.notebook_models import NotebookRunResult
+
+    captured = {}
+
+    def _fake_autofix(
+        _query,
+        *,
+        preferred_notebook_path=None,
+        preferred_trial_dir=None,
+        preferred_run_result=None,
+        source_artifact_metadata=None,
+    ):
+        captured["preferred_notebook_path"] = preferred_notebook_path
+        captured["preferred_trial_dir"] = preferred_trial_dir
+        captured["preferred_run_result"] = preferred_run_result
+        captured["source_artifact_metadata"] = source_artifact_metadata
+        return {
+            "action": "autofix",
+            "status": "autofix_no_change",
+            "message": "ok",
+            "query": _query,
+            "target_notebook_path": preferred_notebook_path,
+            "error_log_path": "/tmp/error_log_round_1.txt",
+            "patched_notebook_path": None,
+            "legacy_entry": "legacy.autofix",
+            "details": {
+                "target_trial_dir": preferred_trial_dir,
+                "used_recent_run_result": bool(preferred_run_result is not None),
+            },
+        }
+
+    original = notebook_autofix_module.bridge_autofix_notebook
+    notebook_autofix_module.bridge_autofix_notebook = _fake_autofix
+    try:
+        state = create_session("这个 notebook 执行报错了，帮我 autofix")
+        state.intent = ResearchIntent(raw_query=state.user_query, task_type="legacy_notebook")
+        state.last_notebook_artifact = NotebookArtifact(
+            name="draft_notebook.ipynb",
+            path="/tmp/draft_notebook.ipynb",
+            trial_dir="/tmp/example_trial",
+            source="legacy",
+            metadata={"origin": "test"},
+        )
+        state.last_notebook_run_result = NotebookRunResult(
+            notebook_path="/tmp/draft_notebook_exec.ipynb",
+            trial_dir="/tmp/example_trial",
+            status="legacy_execution_failed",
+            error_log_path="/tmp/error_log_round_1.txt",
+            run_log_path="/tmp/task_trace.json",
+            metadata={"origin": "test"},
+        )
+        result = NotebookWorkflowSkill().run(state)
+    finally:
+        notebook_autofix_module.bridge_autofix_notebook = original
+
+    assert result["action"] == "autofix"
+    assert state.skill_trace == [
+        "legacy_notebook:notebook-workflow",
+        "legacy_notebook:notebook-autofix",
+    ]
+    assert captured["preferred_notebook_path"] == "/tmp/draft_notebook.ipynb"
+    assert captured["preferred_trial_dir"] == "/tmp/example_trial"
+    assert captured["preferred_run_result"] is not None
 
 
 def test_bridge_llm_resolution_normalizes_primary_and_adds_compat_fallback():
