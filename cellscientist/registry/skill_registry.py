@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple
 
 from ..runtime.state import ResearchIntent
 from ..skills.base import BaseSkill
@@ -29,6 +29,40 @@ class SkillRegistry:
                 f"Registered skills: {registered}"
             )
         return ranked[0][1]
+
+    def suggest_skills(self, intent: Optional[ResearchIntent] = None, *, limit: int = 3) -> List[dict[str, Any]]:
+        """Return lightweight skill suggestions for clarification fallback."""
+
+        query = (intent.raw_query.lower() if intent is not None else "").strip()
+        suggestions: List[Tuple[float, dict[str, Any]]] = []
+        for skill in self._skills:
+            metadata = skill.skill_metadata()
+            if not metadata.get("visible_in_suggestions", True):
+                continue
+
+            score = 0.0
+            if intent is not None and intent.task_type in metadata.get("supported_task_types", []):
+                score += 2.0
+            if query:
+                searchable_terms = [metadata.get("name", ""), metadata.get("description", "")]
+                searchable_terms.extend(metadata.get("aliases", []) or [])
+                searchable_terms.extend(metadata.get("triggers", []) or [])
+                if any(term and str(term).lower() in query for term in searchable_terms):
+                    score += 1.0
+
+            suggestions.append((score, metadata))
+
+        suggestions.sort(key=lambda item: (item[0], item[1].get("name", "")), reverse=True)
+        top = [metadata for _, metadata in suggestions[:limit]]
+        return [
+            {
+                "name": metadata.get("name"),
+                "description": metadata.get("description"),
+                "aliases": metadata.get("aliases", []),
+                "triggers": metadata.get("triggers", []),
+            }
+            for metadata in top
+        ]
 
 
 def build_minimal_skill_registry() -> SkillRegistry:

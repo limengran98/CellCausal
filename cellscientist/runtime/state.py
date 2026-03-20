@@ -15,6 +15,8 @@ class ResearchIntent:
 
     raw_query: str
     task_type: TaskType = "unknown"
+    requested_actions: List[str] = field(default_factory=list)
+    secondary_task_hints: List[str] = field(default_factory=list)
     entities: List[str] = field(default_factory=list)
     constraints: List[str] = field(default_factory=list)
     mode: str = "default"

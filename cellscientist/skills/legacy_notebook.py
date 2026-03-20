@@ -9,6 +9,10 @@ class LegacyNotebookSkill(BaseSkill):
     """Compatibility shim that delegates legacy notebook tasks to the workflow router."""
 
     name = "legacy-notebook"
+    description = "Compatibility shim for legacy notebook requests."
+    aliases = ["legacy-notebook"]
+    triggers = ["legacy notebook"]
+    visible_in_suggestions = False
     supported_task_types = ["legacy_notebook"]
 
     def match(self, intent: ResearchIntent) -> float:

@@ -9,6 +9,9 @@ class DrugInfoSkill(BaseSkill):
     """Minimal structured drug information skill."""
 
     name = "drug-info"
+    description = "Structured drug profile lookup with targets, indications, adverse effects, and evidence."
+    aliases = ["drug", "drug-info", "compound"]
+    triggers = ["靶点", "适应症", "副作用", "drug target", "adverse effects"]
     supported_task_types = ["drug_info"]
 
     def run(self, state: SessionState) -> dict[str, object]:

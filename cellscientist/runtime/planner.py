@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import List
+from typing import List, Sequence
 
 from .state import ResearchIntent, TaskType
 
@@ -22,7 +22,7 @@ _DRUG_KEYWORDS = (
     "\u526f\u4f5c\u7528",
 )
 
-_LEGACY_NOTEBOOK_KEYWORDS = (
+_NOTEBOOK_ANCHOR_KEYWORDS = (
     "notebook",
     "modeling",
     "model",
@@ -31,6 +31,99 @@ _LEGACY_NOTEBOOK_KEYWORDS = (
     "\u5efa\u6a21",
     "\u5b9e\u9a8c\u8bbe\u8ba1",
     "\u6d41\u7a0b",
+)
+
+_NOTEBOOK_CONTEXT_KEYWORDS = (
+    "review",
+    "autofix",
+    "execute",
+    "run notebook",
+    "run this notebook",
+    "execute this notebook",
+    "fix notebook",
+    "repair notebook",
+    "check notebook",
+    "optimize notebook",
+    "\u6267\u884c",
+    "\u8fd0\u884c",
+    "\u5ba1\u67e5",
+    "\u68c0\u67e5",
+    "\u4f18\u5316",
+    "\u91cd\u65b0\u5ba1\u67e5",
+    "\u91cd\u65b0\u68c0\u67e5",
+    "\u4fee\u590d",
+    "\u62a5\u9519",
+    "\u6548\u679c\u4e00\u822c",
+    "\u7ed3\u679c\u4e0d\u597d",
+    "\u6336\u6398\u751f\u7269\u77e5\u8bc6",
+)
+
+_GENERATE_PATTERNS = (
+    "help me generate",
+    "generate notebook",
+    "create notebook",
+    "design notebook",
+    "build notebook",
+    "\u5e2e\u6211\u751f\u6210",
+    "\u751f\u6210\u4e00\u4e2a",
+    "\u751f\u6210 notebook",
+    "\u8bbe\u8ba1 notebook",
+    "\u5b9e\u9a8c\u8bbe\u8ba1",
+)
+
+_REVIEW_PATTERNS = (
+    "review",
+    "re-review",
+    "check notebook",
+    "inspect notebook",
+    "optimize notebook",
+    "\u91cd\u65b0\u5ba1\u67e5",
+    "\u91cd\u65b0\u68c0\u67e5",
+    "\u5ba1\u67e5",
+    "\u68c0\u67e5 notebook",
+    "\u770b\u770b notebook \u8d28\u91cf",
+    "\u6548\u679c\u4e00\u822c",
+    "\u7ed3\u679c\u4e0d\u597d",
+    "\u91cd\u65b0\u5206\u6790",
+    "\u6336\u6398\u751f\u7269\u77e5\u8bc6",
+)
+
+_EXECUTE_PATTERNS = (
+    "then execute",
+    "then run",
+    "execute this notebook",
+    "execute notebook",
+    "run this notebook",
+    "run notebook",
+    "\u7136\u540e\u6267\u884c",
+    "\u518d\u6267\u884c",
+    "\u6267\u884c\u8fd9\u4e2a notebook",
+    "\u8fd0\u884c notebook",
+    "\u8fd0\u884c\u8fd9\u4e2a notebook",
+    "\u6267\u884c",
+)
+
+_AUTOFIX_PATTERNS = (
+    "autofix",
+    "fix notebook",
+    "fix this notebook",
+    "repair notebook",
+    "notebook error",
+    "\u4fee notebook \u62a5\u9519",
+    "\u4fee\u590d\u8fd9\u4e2a notebook",
+    "\u4fee\u590d notebook",
+    "\u6267\u884c\u62a5\u9519",
+    "\u8fd0\u884c\u62a5\u9519",
+    "\u62a5\u9519\u4e86",
+    "\u4fee\u590d",
+)
+
+_FAILURE_CONTEXT_KEYWORDS = (
+    "error",
+    "failed",
+    "failure",
+    "\u62a5\u9519",
+    "\u5931\u8d25",
 )
 
 _ENTITY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{1,}")
@@ -58,33 +151,57 @@ _STOPWORDS = {
     "pipeline",
 }
 
+_ACTION_PATTERNS: tuple[tuple[str, Sequence[str]], ...] = (
+    ("generate", _GENERATE_PATTERNS),
+    ("review", _REVIEW_PATTERNS),
+    ("execute", _EXECUTE_PATTERNS),
+    ("autofix", _AUTOFIX_PATTERNS),
+)
+
 
 class Planner:
-    """A minimal keyword-based planner for the new runtime skeleton."""
+    """Planner-first intent parser for the minimal runtime skeleton.
+
+    This keeps the runtime repo-native and lightweight while moving one step
+    closer to the "understand task -> decompose actions -> execute" discipline
+    used by planner-first skill systems.
+    """
 
     def build_intent(self, query: str) -> ResearchIntent:
         """Classify the query into a coarse task type."""
 
         normalized_query = query.strip()
-        task_type = self._classify_task_type(normalized_query)
+        requested_actions = _extract_requested_actions(normalized_query)
+        task_type, secondary_hints = self._classify_task_type(
+            normalized_query,
+            requested_actions=requested_actions,
+        )
         mode = "legacy" if task_type == "legacy_notebook" else "default"
 
         return ResearchIntent(
             raw_query=normalized_query,
             task_type=task_type,
+            requested_actions=requested_actions,
+            secondary_task_hints=secondary_hints,
             entities=_extract_entities(normalized_query),
             constraints=_extract_constraints(normalized_query),
             mode=mode,
         )
 
     @staticmethod
-    def _classify_task_type(query: str) -> TaskType:
+    def _classify_task_type(query: str, *, requested_actions: Sequence[str]) -> tuple[TaskType, List[str]]:
         lowered = query.lower()
-        if any(keyword in lowered for keyword in _DRUG_KEYWORDS):
-            return "drug_info"
-        if any(keyword in lowered for keyword in _LEGACY_NOTEBOOK_KEYWORDS):
-            return "legacy_notebook"
-        return "unknown"
+        notebook_signal = _looks_like_notebook_query(lowered, requested_actions)
+        drug_signal = any(keyword in lowered for keyword in _DRUG_KEYWORDS)
+
+        secondary_hints: List[str] = []
+        if notebook_signal:
+            if drug_signal:
+                secondary_hints.append("drug_info")
+            return "legacy_notebook", secondary_hints
+        if drug_signal:
+            return "drug_info", secondary_hints
+        return "unknown", secondary_hints
 
 
 def build_intent(query: str) -> ResearchIntent:
@@ -116,3 +233,43 @@ def _extract_constraints(query: str) -> List[str]:
         if any(keyword in lowered for keyword in keywords):
             constraints.append(name)
     return constraints
+
+
+def _extract_requested_actions(query: str) -> List[str]:
+    lowered = query.lower()
+    ordered_matches: List[tuple[int, int, str]] = []
+
+    for priority, (action, patterns) in enumerate(_ACTION_PATTERNS):
+        positions = [lowered.find(pattern) for pattern in patterns if pattern in lowered]
+        positions = [position for position in positions if position >= 0]
+        if positions:
+            ordered_matches.append((min(positions), priority, action))
+
+    ordered_matches.sort()
+    requested_actions: List[str] = []
+    for _, _, action in ordered_matches:
+        if action not in requested_actions:
+            requested_actions.append(action)
+
+    if "autofix" in requested_actions and any(keyword in lowered for keyword in _FAILURE_CONTEXT_KEYWORDS):
+        requested_actions = [action for action in requested_actions if action != "execute"]
+
+    if "review" in requested_actions and any(
+        keyword in lowered for keyword in ("\u6548\u679c\u4e00\u822c", "\u7ed3\u679c\u4e0d\u597d", "\u91cd\u65b0\u5ba1\u67e5", "\u91cd\u65b0\u68c0\u67e5")
+    ):
+        requested_actions = [action for action in requested_actions if action != "generate"]
+
+    if not requested_actions and _looks_like_notebook_query(lowered, requested_actions):
+        return ["generate"]
+
+    return requested_actions
+
+
+def _looks_like_notebook_query(query: str, requested_actions: Sequence[str]) -> bool:
+    if requested_actions:
+        return True
+    if any(keyword in query for keyword in _NOTEBOOK_ANCHOR_KEYWORDS):
+        return True
+    if any(keyword in query for keyword in _NOTEBOOK_CONTEXT_KEYWORDS):
+        return True
+    return False

@@ -23,6 +23,8 @@ def build_payload(state: Any, result: Any) -> dict[str, Any]:
     """Convert runtime objects into a stable JSON payload."""
 
     task_type = state.intent.task_type if state.intent is not None else "unknown"
+    requested_actions = state.intent.requested_actions if state.intent is not None else []
+    secondary_task_hints = state.intent.secondary_task_hints if state.intent is not None else []
     artifacts = [
         {
             "type": artifact.type,
@@ -34,6 +36,8 @@ def build_payload(state: Any, result: Any) -> dict[str, Any]:
     return {
         "session_id": state.session_id,
         "task_type": task_type,
+        "requested_actions": requested_actions,
+        "secondary_task_hints": secondary_task_hints,
         "skill_trace": state.skill_trace,
         "artifacts": artifacts,
         "result": result,

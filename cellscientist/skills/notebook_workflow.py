@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 from ..runtime.notebook_models import NotebookArtifact, NotebookRunResult
+from ..runtime.state import ResearchIntent
 from ..runtime.state import SessionState
 from .base import BaseSkill
 from .notebook_autofix import NotebookAutofixSkill
@@ -45,9 +46,17 @@ _AUTOFIX_KEYWORDS = (
 
 
 class NotebookWorkflowSkill(BaseSkill):
-    """Route legacy notebook requests into the minimal notebook skill family."""
+    """Route notebook-family requests across repo-native subskills.
+
+    This treats notebook work as a small skill tree over shared artifacts and
+    workspace state, rather than forcing every request back into one fixed
+    pipeline stage.
+    """
 
     name = "notebook-workflow"
+    description = "Notebook family router for generation, review, execution, and external autofix."
+    aliases = ["notebook", "notebook-workflow", "experiment-design"]
+    triggers = ["实验设计", "review notebook", "执行 notebook", "autofix notebook"]
     supported_task_types = ["legacy_notebook"]
 
     def __init__(self) -> None:
@@ -58,22 +67,54 @@ class NotebookWorkflowSkill(BaseSkill):
 
     def run(self, state: SessionState) -> dict[str, object]:
         self._ensure_trace(state, self.name)
+        requested_actions = self._resolve_requested_actions(state.intent, state.user_query)
+        if len(requested_actions) > 1:
+            return self._run_multi_step(state, requested_actions)
 
-        action = self._resolve_action(state.user_query)
+        action = requested_actions[0]
         if action in {"execute", "review", "autofix"}:
             self._prime_notebook_context(state)
 
-        if action == "execute":
-            delegated_skill = self._execute_skill
-        elif action == "review":
-            delegated_skill = self._review_skill
-        elif action == "autofix":
-            delegated_skill = self._autofix_skill
-        else:
-            delegated_skill = self._generate_skill
-
+        delegated_skill = self._skill_for_action(action)
         self._ensure_trace(state, delegated_skill.name)
         return delegated_skill.run(state)
+
+    def _run_multi_step(self, state: SessionState, actions: list[str]) -> dict[str, object]:
+        step_results: list[dict[str, object]] = []
+
+        for action in actions:
+            if action in {"execute", "review", "autofix"}:
+                self._prime_notebook_context(state)
+
+            delegated_skill = self._skill_for_action(action)
+            self._ensure_trace(state, delegated_skill.name)
+            try:
+                step_result = delegated_skill.run(state)
+            except Exception as exc:
+                step_result = {
+                    "action": action,
+                    "status": f"{action}_failed",
+                    "message": f"The '{action}' step failed inside notebook-workflow.",
+                    "details": {"error": str(exc)},
+                }
+            step_results.append(step_result)
+
+        return {
+            "action": "multi_step",
+            "requested_actions": actions,
+            "status": self._summarize_multi_step_status(step_results),
+            "message": self._build_multi_step_message(step_results),
+            "step_results": step_results,
+        }
+
+    def _skill_for_action(self, action: str) -> BaseSkill:
+        if action == "execute":
+            return self._execute_skill
+        if action == "review":
+            return self._review_skill
+        if action == "autofix":
+            return self._autofix_skill
+        return self._generate_skill
 
     @staticmethod
     def _resolve_action(query: str) -> str:
@@ -87,6 +128,18 @@ class NotebookWorkflowSkill(BaseSkill):
         if any(keyword in lowered for keyword in _GENERATE_KEYWORDS):
             return "generate"
         return "generate"
+
+    @classmethod
+    def _resolve_requested_actions(
+        cls,
+        intent: Optional[ResearchIntent],
+        query: str,
+    ) -> list[str]:
+        requested_actions = list(intent.requested_actions) if intent is not None else []
+        valid_actions = [action for action in requested_actions if action in {"generate", "review", "execute", "autofix"}]
+        if valid_actions:
+            return valid_actions
+        return [cls._resolve_action(query)]
 
     @staticmethod
     def _ensure_trace(state: SessionState, skill_name: str) -> None:
@@ -169,3 +222,29 @@ class NotebookWorkflowSkill(BaseSkill):
                 source="derived_from_run",
                 metadata={"status": latest_run.status},
             )
+
+    @staticmethod
+    def _summarize_multi_step_status(step_results: list[dict[str, object]]) -> str:
+        statuses = [str(step.get("status") or "unknown") for step in step_results]
+        if statuses and all(
+            not any(token in status for token in ("failed", "missing", "needs", "blocked"))
+            for status in statuses
+        ):
+            return "completed"
+        if any(any(token in status for token in ("failed", "missing", "needs", "blocked")) for status in statuses):
+            return "completed_with_partial_blocks"
+        return "completed"
+
+    @staticmethod
+    def _build_multi_step_message(step_results: list[dict[str, object]]) -> str:
+        blocked = [
+            str(step.get("action") or "unknown")
+            for step in step_results
+            if any(token in str(step.get("status") or "") for token in ("failed", "missing", "needs", "blocked"))
+        ]
+        if blocked:
+            return (
+                "Notebook workflow executed multiple requested actions, but some steps were partially blocked: "
+                + ", ".join(blocked)
+            )
+        return "Notebook workflow executed the requested actions in sequence."
