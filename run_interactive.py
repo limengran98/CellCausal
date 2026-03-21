@@ -6,6 +6,7 @@ from typing import Any
 
 from cellscientist.registry.skill_registry import SkillRegistry
 from cellscientist.runtime.orchestrator_v2 import OrchestratorV2
+from cellscientist.skills.drug_analysis import DrugAnalysisSkill
 from cellscientist.skills.drug_info import DrugInfoSkill
 from cellscientist.skills.legacy_notebook import LegacyNotebookSkill
 from cellscientist.skills.notebook_workflow import NotebookWorkflowSkill
@@ -50,6 +51,7 @@ def main() -> None:
     args = build_parser().parse_args()
 
     skill_registry = SkillRegistry()
+    skill_registry.register(DrugAnalysisSkill())
     skill_registry.register(DrugInfoSkill())
     skill_registry.register(NotebookWorkflowSkill())
     skill_registry.register(LegacyNotebookSkill())

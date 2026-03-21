@@ -29,6 +29,14 @@ def test_planner_extracts_requested_actions_for_basic_notebook_queries():
     assert autofix_intent.requested_actions == ["autofix"]
 
 
+def test_planner_routes_drug_analysis_queries_without_collapsing_to_drug_info():
+    metformin_intent = build_intent("分析一下 metformin 的靶点、机制和安全性")
+    smiles_intent = build_intent("根据这个 SMILES 做药物分析: CN(C)C(=N)NC(=N)N")
+
+    assert metformin_intent.task_type == "drug_analysis"
+    assert smiles_intent.task_type == "drug_analysis"
+
+
 def test_planner_parses_composite_notebook_followup_actions():
     intent = build_intent("生成的效果一般啊，挖掘生物知识重新审查，然后执行")
 

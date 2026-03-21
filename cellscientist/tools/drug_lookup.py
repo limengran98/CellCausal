@@ -3,11 +3,14 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any, Dict
 
+from ..core.bio_kb.smiles_resolver import canonicalize_smiles
+
 from ..evidence.models import EvidenceItem
 from .base import BaseTool
 
 _CANONICAL_ALIASES = {
     "metformin": ("metformin", "glucophage", "二甲双胍"),
+    "imatinib": ("imatinib", "gleevec", "格列卫", "甲磺酸伊马替尼"),
     "aspirin": ("aspirin", "acetylsalicylic acid", "阿司匹林"),
     "ibuprofen": ("ibuprofen", "布洛芬"),
 }
@@ -133,6 +136,57 @@ _LOCAL_DRUG_DB: Dict[str, Dict[str, Any]] = {
             ),
         ],
     },
+    "imatinib": {
+        "summary": (
+            "Imatinib is a targeted tyrosine kinase inhibitor best known for BCR-ABL1 inhibition in chronic myeloid leukemia. "
+            "The local lookup highlights its kinase-target profile, canonical oncology indications, and edema/myelosuppression-focused safety profile."
+        ),
+        "targets": [
+            "BCR-ABL1 fusion kinase",
+            "KIT",
+            "PDGFRA / PDGFRB",
+        ],
+        "indications": [
+            "Chronic myeloid leukemia (BCR-ABL1 positive)",
+            "Philadelphia chromosome-positive acute lymphoblastic leukemia",
+            "Gastrointestinal stromal tumor with sensitive KIT/PDGFRA alterations",
+        ],
+        "adverse_effects": [
+            "Fluid retention or edema",
+            "Nausea and diarrhea",
+            "Myelosuppression",
+            "Hepatotoxicity",
+        ],
+        "evidence": [
+            _evidence(
+                "D-IMA-1",
+                "local-curated-drug-db",
+                "Imatinib is classically described as a BCR-ABL1-directed tyrosine kinase inhibitor with additional KIT and PDGF receptor activity.",
+                "Repo-local curated drug note: imatinib/mechanism/v1.0",
+                0.91,
+                drug_name="imatinib",
+                category="mechanism",
+            ),
+            _evidence(
+                "D-IMA-2",
+                "local-curated-drug-db",
+                "Its canonical structured indications center on BCR-ABL1-positive leukemias and KIT/PDGFRA-driven gastrointestinal stromal tumor.",
+                "Repo-local curated drug note: imatinib/indications/v1.0",
+                0.9,
+                drug_name="imatinib",
+                category="indication",
+            ),
+            _evidence(
+                "D-IMA-3",
+                "local-curated-drug-db",
+                "Common safety summaries emphasize edema, gastrointestinal intolerance, cytopenias, and clinically relevant liver toxicity monitoring.",
+                "Repo-local curated drug note: imatinib/safety/v1.0",
+                0.86,
+                drug_name="imatinib",
+                category="safety",
+            ),
+        ],
+    },
     "ibuprofen": {
         "summary": (
             "Ibuprofen is a nonsteroidal anti-inflammatory drug used for pain, fever, and inflammatory symptoms. "
@@ -175,6 +229,17 @@ _LOCAL_DRUG_DB: Dict[str, Dict[str, Any]] = {
     },
 }
 
+_CANONICAL_SMILES_BY_DRUG = {
+    "metformin": "CN(C)C(=N)NC(=N)N",
+    "aspirin": "CC(=O)Oc1ccccc1C(=O)O",
+    "ibuprofen": "CC(C)Cc1ccc(cc1)[C@@H](C)C(=O)O",
+}
+
+_SMILES_TO_CANONICAL_DRUG = {
+    canonicalize_smiles(smiles)["canonical_smiles"]: drug_name
+    for drug_name, smiles in _CANONICAL_SMILES_BY_DRUG.items()
+}
+
 
 def canonicalize_drug_name(drug_name: str) -> str:
     normalized = drug_name.strip().lower()
@@ -192,6 +257,19 @@ def find_drug_name_in_text(text: str) -> str:
         if alias in lowered:
             return _ALIAS_TO_CANONICAL[alias]
     return "unknown"
+
+
+def lookup_drug_name_by_smiles(smiles: str) -> str:
+    """Return a seeded drug-name match for a canonicalized SMILES string."""
+
+    canonical = canonicalize_smiles(smiles).get("canonical_smiles") or smiles
+    return _SMILES_TO_CANONICAL_DRUG.get(canonical, "unknown")
+
+
+def lookup_seeded_smiles_for_drug(drug_name: str) -> str | None:
+    """Return a seeded canonical SMILES string for a known local drug."""
+
+    return _CANONICAL_SMILES_BY_DRUG.get(canonicalize_drug_name(drug_name))
 
 
 class DrugLookupTool(BaseTool):

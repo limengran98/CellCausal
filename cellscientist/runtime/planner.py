@@ -3,12 +3,21 @@ from __future__ import annotations
 import re
 from typing import List, Sequence
 
+from ..tools.drug_lookup import find_drug_name_in_text
 from .state import ResearchIntent, TaskType
 
 _DRUG_KEYWORDS = (
+    "drug analysis",
+    "analyze drug",
+    "analyze",
+    "analysis",
     "drug",
     "drugs",
     "compound",
+    "smiles",
+    "mechanism",
+    "safety",
+    "risk",
     "target",
     "targets",
     "indication",
@@ -16,10 +25,39 @@ _DRUG_KEYWORDS = (
     "adverse",
     "side effect",
     "toxicity",
+    "\u5206\u6790",
+    "\u836f\u7269\u5206\u6790",
+    "\u673a\u5236",
+    "\u5b89\u5168\u6027",
+    "\u98ce\u9669",
+    "\u67e5\u836f",
+    "\u67e5\u4e00\u4e0b",
+    "\u7ed3\u6784",
     "\u836f\u7269",
     "\u9776\u70b9",
     "\u9002\u5e94\u75c7",
     "\u526f\u4f5c\u7528",
+)
+
+_DRUG_ANALYSIS_KEYWORDS = (
+    "drug analysis",
+    "analyze",
+    "analysis",
+    "analyze drug",
+    "mechanism",
+    "safety",
+    "risk",
+    "smiles",
+    "what drug",
+    "normalize",
+    "根据这个 smiles",
+    "药物分析",
+    "分析一下",
+    "机制",
+    "安全性",
+    "风险",
+    "根据这个",
+    "查一下",
 )
 
 _NOTEBOOK_ANCHOR_KEYWORDS = (
@@ -159,6 +197,7 @@ _FAILURE_CONTEXT_KEYWORDS = (
 )
 
 _ENTITY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{1,}")
+_SMILES_TOKEN_RE = re.compile(r"[A-Za-z0-9@+\-\[\]\(\)=#$\\/%.]{6,}")
 _CONSTRAINT_KEYWORDS = {
     "brief": ("brief", "summary", "\u7b80\u8981", "\u6982\u89c8"),
     "detailed": ("detailed", "detail", "\u6df1\u5165", "\u8be6\u7ec6"),
@@ -232,13 +271,16 @@ class Planner:
     def _classify_task_type(query: str, *, requested_actions: Sequence[str]) -> tuple[TaskType, List[str]]:
         lowered = query.lower()
         notebook_signal = _looks_like_notebook_query(lowered, requested_actions)
-        drug_signal = any(keyword in lowered for keyword in _DRUG_KEYWORDS)
+        drug_signal = _looks_like_drug_query(query, lowered)
+        drug_analysis_signal = _looks_like_drug_analysis_query(query, lowered)
 
         secondary_hints: List[str] = []
         if notebook_signal:
             if drug_signal:
-                secondary_hints.append("drug_info")
+                secondary_hints.append("drug_analysis" if drug_analysis_signal else "drug_info")
             return "legacy_notebook", secondary_hints
+        if drug_analysis_signal:
+            return "drug_analysis", secondary_hints
         if drug_signal:
             return "drug_info", secondary_hints
         return "unknown", secondary_hints
@@ -316,6 +358,36 @@ def _looks_like_notebook_query(query: str, requested_actions: Sequence[str]) -> 
     if any(keyword in query for keyword in _NOTEBOOK_ANCHOR_KEYWORDS):
         return True
     if any(keyword in query for keyword in _NOTEBOOK_CONTEXT_KEYWORDS):
+        return True
+    return False
+
+
+def _looks_like_drug_query(raw_query: str, lowered_query: str) -> bool:
+    if any(keyword in lowered_query for keyword in _DRUG_KEYWORDS):
+        return True
+    if find_drug_name_in_text(raw_query) != "unknown":
+        return True
+    return _contains_smiles_like_token(raw_query)
+
+
+def _looks_like_drug_analysis_query(raw_query: str, lowered_query: str) -> bool:
+    if _contains_smiles_like_token(raw_query):
+        return True
+
+    if any(keyword in lowered_query for keyword in _DRUG_ANALYSIS_KEYWORDS):
+        if find_drug_name_in_text(raw_query) != "unknown":
+            return True
+        if any(keyword in lowered_query for keyword in ("drug", "compound", "smiles", "药物", "靶点", "机制", "安全性", "副作用")):
+            return True
+    return False
+
+
+def _contains_smiles_like_token(text: str) -> bool:
+    for token in _SMILES_TOKEN_RE.findall(text):
+        if not any(ch in token for ch in "=#()[]\\/"):
+            continue
+        if all(ch.isalpha() for ch in token):
+            continue
         return True
     return False
 
