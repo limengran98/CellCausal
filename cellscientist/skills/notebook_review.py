@@ -12,9 +12,21 @@ class NotebookReviewSkill(BaseSkill):
 
     name = "notebook-review"
 
+    @staticmethod
+    def _get_latest_refreshed_evidence(state: SessionState) -> dict[str, object] | None:
+        for artifact in reversed(state.artifacts):
+            if artifact.type != "evidence_refresh":
+                continue
+            if isinstance(artifact.content, dict):
+                return artifact.content
+            if isinstance(artifact.metadata, dict):
+                return {"details": dict(artifact.metadata)}
+        return None
+
     def run(self, state: SessionState) -> dict[str, object]:
         latest_notebook = state.last_notebook_artifact
         latest_run = state.last_notebook_run_result
+        refreshed_evidence_context = self._get_latest_refreshed_evidence(state)
 
         result = bridge_review_notebook(
             state.user_query,
@@ -22,6 +34,7 @@ class NotebookReviewSkill(BaseSkill):
             preferred_trial_dir=latest_notebook.trial_dir if latest_notebook else None,
             preferred_run_result=latest_run,
             source_artifact_metadata=latest_notebook.metadata if latest_notebook else None,
+            refreshed_evidence_context=refreshed_evidence_context,
         )
 
         report_path = result.get("review_report_path")

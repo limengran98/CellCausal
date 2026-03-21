@@ -89,6 +89,7 @@ def _write_review_summary(
     error_log_path: Optional[str],
     run_log_path: Optional[str],
     legacy_report_path: Optional[str],
+    refreshed_evidence_context: Optional[Dict[str, Any]],
 ) -> str:
     os.makedirs(summary_dir, exist_ok=True)
     summary_path = os.path.join(summary_dir, "notebook_review_summary.md")
@@ -125,6 +126,28 @@ def _write_review_summary(
         "```",
     ]
 
+    if refreshed_evidence_context:
+        refreshed_details = refreshed_evidence_context.get("details") or {}
+        lines.extend(
+            [
+                "",
+                "## Refreshed Evidence Context",
+                "",
+                f"- Used refreshed evidence: `True`",
+                f"- Evidence count: `{refreshed_evidence_context.get('evidence_count', 0)}`",
+                f"- Evidence source summary: `{refreshed_details.get('evidence_source_summary') or refreshed_evidence_context.get('evidence_summary') or 'N/A'}`",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "## Refreshed Evidence Context",
+                "",
+                "- Used refreshed evidence: `False`",
+            ]
+        )
+
     with open(summary_path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
 
@@ -138,13 +161,33 @@ def bridge_review_notebook(
     preferred_trial_dir: Optional[str] = None,
     preferred_run_result: Optional[NotebookRunResult] = None,
     source_artifact_metadata: Optional[Dict[str, Any]] = None,
+    refreshed_evidence_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     details: Dict[str, Any] = {
         "query": query,
         "source_artifact_metadata": dict(source_artifact_metadata or {}),
         "used_recent_run_result": bool(preferred_run_result is not None),
+        "used_refreshed_evidence": bool(refreshed_evidence_context),
         "legacy_helpers": [_LEGACY_REVIEW_HELPER],
     }
+    if refreshed_evidence_context:
+        refreshed_details = (
+            refreshed_evidence_context.get("details")
+            if isinstance(refreshed_evidence_context.get("details"), dict)
+            else {}
+        )
+        details["evidence_source_summary"] = (
+            refreshed_details.get("evidence_source_summary")
+            or refreshed_evidence_context.get("evidence_summary")
+            or ""
+        )
+        details["refreshed_evidence_count"] = refreshed_evidence_context.get("evidence_count")
+        details["refreshed_evidence_ids"] = refreshed_details.get("evidence_ids") or []
+        details["refreshed_evidence_context"] = refreshed_evidence_context
+    else:
+        details["evidence_source_summary"] = ""
+        details["refreshed_evidence_count"] = 0
+        details["refreshed_evidence_ids"] = []
 
     try:
         from ..core.prompt_orchestrator import _get_latest_trial, phase_analyze
@@ -210,6 +253,9 @@ def bridge_review_notebook(
         details["target_error_log_path"] = error_log_path
         details["target_run_log_path"] = run_log_path
 
+        if run_log_path:
+            os.makedirs(os.path.dirname(run_log_path), exist_ok=True)
+
         if not target_notebook_path or not os.path.exists(target_notebook_path):
             return {
                 "action": "review",
@@ -242,6 +288,7 @@ def bridge_review_notebook(
             error_log_path=error_log_path,
             run_log_path=run_log_path,
             legacy_report_path=None,
+            refreshed_evidence_context=refreshed_evidence_context,
         )
         details["bridge_summary_path"] = summary_path
 
@@ -262,6 +309,7 @@ def bridge_review_notebook(
                 error_log_path=error_log_path,
                 run_log_path=run_log_path,
                 legacy_report_path=legacy_report_path,
+                refreshed_evidence_context=refreshed_evidence_context,
             )
             details["bridge_summary_path"] = summary_path
 

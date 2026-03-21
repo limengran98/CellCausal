@@ -9,6 +9,7 @@ from .base import BaseSkill
 from .notebook_autofix import NotebookAutofixSkill
 from .notebook_execute import NotebookExecuteSkill
 from .notebook_generate import NotebookGenerateSkill
+from .notebook_retrieval_refresh import NotebookRetrievalRefreshSkill
 from .notebook_review import NotebookReviewSkill
 
 _GENERATE_KEYWORDS = (
@@ -35,6 +36,18 @@ _REVIEW_KEYWORDS = (
     "看看 notebook 质量",
 )
 
+_RETRIEVAL_REFRESH_KEYWORDS = (
+    "retrieval refresh",
+    "refresh evidence",
+    "挖掘生物知识",
+    "补充生物学证据",
+    "补充证据",
+    "检索更多信息",
+    "检索更多药物",
+    "检索更多通路",
+    "检索更多靶点",
+)
+
 _AUTOFIX_KEYWORDS = (
     "autofix",
     "修复",
@@ -54,13 +67,14 @@ class NotebookWorkflowSkill(BaseSkill):
     """
 
     name = "notebook-workflow"
-    description = "Notebook family router for generation, review, execution, and external autofix."
+    description = "Notebook family router for evidence refresh, generation, review, execution, and external autofix."
     aliases = ["notebook", "notebook-workflow", "experiment-design"]
-    triggers = ["实验设计", "review notebook", "执行 notebook", "autofix notebook"]
+    triggers = ["实验设计", "review notebook", "执行 notebook", "autofix notebook", "补充生物学证据"]
     supported_task_types = ["legacy_notebook"]
 
     def __init__(self) -> None:
         self._generate_skill = NotebookGenerateSkill()
+        self._retrieval_refresh_skill = NotebookRetrievalRefreshSkill()
         self._execute_skill = NotebookExecuteSkill()
         self._review_skill = NotebookReviewSkill()
         self._autofix_skill = NotebookAutofixSkill()
@@ -72,7 +86,7 @@ class NotebookWorkflowSkill(BaseSkill):
             return self._run_multi_step(state, requested_actions)
 
         action = requested_actions[0]
-        if action in {"execute", "review", "autofix"}:
+        if action in {"retrieval_refresh", "execute", "review", "autofix"}:
             self._prime_notebook_context(state)
 
         delegated_skill = self._skill_for_action(action)
@@ -83,7 +97,7 @@ class NotebookWorkflowSkill(BaseSkill):
         step_results: list[dict[str, object]] = []
 
         for action in actions:
-            if action in {"execute", "review", "autofix"}:
+            if action in {"retrieval_refresh", "execute", "review", "autofix"}:
                 self._prime_notebook_context(state)
 
             delegated_skill = self._skill_for_action(action)
@@ -108,6 +122,8 @@ class NotebookWorkflowSkill(BaseSkill):
         }
 
     def _skill_for_action(self, action: str) -> BaseSkill:
+        if action == "retrieval_refresh":
+            return self._retrieval_refresh_skill
         if action == "execute":
             return self._execute_skill
         if action == "review":
@@ -121,6 +137,8 @@ class NotebookWorkflowSkill(BaseSkill):
         lowered = query.strip().lower()
         if any(keyword in lowered for keyword in _AUTOFIX_KEYWORDS):
             return "autofix"
+        if any(keyword in lowered for keyword in _RETRIEVAL_REFRESH_KEYWORDS):
+            return "retrieval_refresh"
         if any(keyword in lowered for keyword in _REVIEW_KEYWORDS):
             return "review"
         if any(keyword in lowered for keyword in _EXECUTE_KEYWORDS):
@@ -136,7 +154,11 @@ class NotebookWorkflowSkill(BaseSkill):
         query: str,
     ) -> list[str]:
         requested_actions = list(intent.requested_actions) if intent is not None else []
-        valid_actions = [action for action in requested_actions if action in {"generate", "review", "execute", "autofix"}]
+        valid_actions = [
+            action
+            for action in requested_actions
+            if action in {"generate", "retrieval_refresh", "review", "execute", "autofix"}
+        ]
         if valid_actions:
             return valid_actions
         return [cls._resolve_action(query)]

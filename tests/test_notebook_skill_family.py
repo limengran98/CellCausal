@@ -13,6 +13,7 @@ from cellscientist.runtime.orchestrator_v2 import OrchestratorV2
 from cellscientist.skills.notebook_autofix import NotebookAutofixSkill
 from cellscientist.skills.notebook_execute import NotebookExecuteSkill
 from cellscientist.skills.legacy_notebook import LegacyNotebookSkill
+from cellscientist.skills.notebook_retrieval_refresh import NotebookRetrievalRefreshSkill
 from cellscientist.skills.notebook_review import NotebookReviewSkill
 from cellscientist.skills.notebook_workflow import NotebookWorkflowSkill
 
@@ -162,6 +163,7 @@ def test_notebook_workflow_routes_review_requests_and_emits_review_artifact():
         preferred_trial_dir=None,
         preferred_run_result=None,
         source_artifact_metadata=None,
+        refreshed_evidence_context=None,
     ):
         return {
             "action": "review",
@@ -174,6 +176,7 @@ def test_notebook_workflow_routes_review_requests_and_emits_review_artifact():
             "details": {
                 "target_trial_dir": preferred_trial_dir or "/tmp/example_trial",
                 "used_recent_run_result": bool(preferred_run_result is not None),
+                "used_refreshed_evidence": bool(refreshed_evidence_context),
                 "source_artifact_metadata": source_artifact_metadata or {},
             },
         }
@@ -202,6 +205,64 @@ def test_notebook_workflow_routes_review_requests_and_emits_review_artifact():
     review_artifact = next(artifact for artifact in state.artifacts if artifact.type == "review_report")
     assert review_artifact.metadata["report_path"] == "/tmp/notebook_review_summary.md"
     assert review_artifact.metadata["target_notebook_path"] == "/tmp/draft_notebook.ipynb"
+
+
+def test_notebook_retrieval_refresh_skill_emits_evidence_artifact_and_updates_evidence_ids():
+    import cellscientist.skills.notebook_retrieval_refresh as notebook_refresh_module
+
+    def _fake_refresh(
+        _query,
+        *,
+        preferred_notebook_path=None,
+        preferred_trial_dir=None,
+        preferred_run_result=None,
+        source_artifact_metadata=None,
+    ):
+        return {
+            "action": "retrieval_refresh",
+            "status": "retrieval_refreshed",
+            "message": "ok",
+            "query": _query,
+            "target_notebook_path": preferred_notebook_path or "/tmp/draft_notebook.ipynb",
+            "evidence_summary": "BioKB/PTGS1 evidence refreshed.",
+            "evidence_count": 2,
+            "legacy_entry": "legacy.retrieval",
+            "details": {
+                "target_trial_dir": preferred_trial_dir or "/tmp/example_trial",
+                "evidence_ids": ["B1", "L1"],
+                "external_knowledge_json_path": "/tmp/external_knowledge_review.json",
+                "external_knowledge_md_path": "/tmp/external_knowledge_review.md",
+                "source_artifact_metadata": source_artifact_metadata or {},
+                "used_recent_run_result": bool(preferred_run_result is not None),
+            },
+        }
+
+    original = notebook_refresh_module.bridge_refresh_notebook_retrieval
+    notebook_refresh_module.bridge_refresh_notebook_retrieval = _fake_refresh
+    try:
+        state = create_session("补充生物学证据重新 review，再执行")
+        state.intent = ResearchIntent(
+            raw_query=state.user_query,
+            task_type="legacy_notebook",
+            requested_actions=["retrieval_refresh"],
+        )
+        state.last_notebook_artifact = NotebookArtifact(
+            name="draft_notebook.ipynb",
+            path="/tmp/draft_notebook.ipynb",
+            trial_dir="/tmp/example_trial",
+            source="legacy",
+            metadata={"origin": "test"},
+        )
+        result = NotebookRetrievalRefreshSkill().run(state)
+    finally:
+        notebook_refresh_module.bridge_refresh_notebook_retrieval = original
+
+    assert result["action"] == "retrieval_refresh"
+    assert result["status"] == "retrieval_refreshed"
+    assert state.evidence_ids == ["B1", "L1"]
+    evidence_artifact = next(artifact for artifact in state.artifacts if artifact.type == "evidence_refresh")
+    assert evidence_artifact.metadata["evidence_count"] == 2
+    assert evidence_artifact.metadata["external_knowledge_md_path"] == "/tmp/external_knowledge_review.md"
 
 
 def test_notebook_workflow_routes_autofix_requests_using_recent_failed_run_context():

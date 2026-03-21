@@ -37,6 +37,8 @@ _NOTEBOOK_CONTEXT_KEYWORDS = (
     "review",
     "autofix",
     "execute",
+    "retrieval refresh",
+    "refresh evidence",
     "run notebook",
     "run this notebook",
     "execute this notebook",
@@ -55,7 +57,10 @@ _NOTEBOOK_CONTEXT_KEYWORDS = (
     "\u62a5\u9519",
     "\u6548\u679c\u4e00\u822c",
     "\u7ed3\u679c\u4e0d\u597d",
-    "\u6336\u6398\u751f\u7269\u77e5\u8bc6",
+    "挖掘生物知识",
+    "补充生物学证据",
+    "补充证据",
+    "检索更多信息",
 )
 
 _GENERATE_PATTERNS = (
@@ -85,7 +90,7 @@ _REVIEW_PATTERNS = (
     "\u6548\u679c\u4e00\u822c",
     "\u7ed3\u679c\u4e0d\u597d",
     "\u91cd\u65b0\u5206\u6790",
-    "\u6336\u6398\u751f\u7269\u77e5\u8bc6",
+    "挖掘生物知识",
 )
 
 _EXECUTE_PATTERNS = (
@@ -116,6 +121,33 @@ _AUTOFIX_PATTERNS = (
     "\u8fd0\u884c\u62a5\u9519",
     "\u62a5\u9519\u4e86",
     "\u4fee\u590d",
+)
+
+_RETRIEVAL_REFRESH_PATTERNS = (
+    "retrieval refresh",
+    "refresh evidence",
+    "refresh biology evidence",
+    "refresh biological evidence",
+    "retrieve more evidence",
+    "retrieve more information",
+    "retrieve more pathway",
+    "retrieve more target",
+    "retrieve more drug",
+    "mine more biology knowledge",
+    "supplement evidence",
+    "supplement biological evidence",
+    "挖掘生物知识",
+    "补充生物学证据",
+    "补充生物证据",
+    "补充证据",
+    "检索更多信息",
+    "检索更多生物学信息",
+    "检索更多药物",
+    "检索更多通路",
+    "检索更多靶点",
+    "补充药物",
+    "补充通路",
+    "补充靶点",
 )
 
 _FAILURE_CONTEXT_KEYWORDS = (
@@ -157,6 +189,14 @@ _ACTION_PATTERNS: tuple[tuple[str, Sequence[str]], ...] = (
     ("execute", _EXECUTE_PATTERNS),
     ("autofix", _AUTOFIX_PATTERNS),
 )
+
+_ACTION_ORDER = {
+    "generate": 0,
+    "retrieval_refresh": 1,
+    "review": 2,
+    "execute": 3,
+    "autofix": 4,
+}
 
 
 class Planner:
@@ -251,6 +291,9 @@ def _extract_requested_actions(query: str) -> List[str]:
         if action not in requested_actions:
             requested_actions.append(action)
 
+    if _should_add_retrieval_refresh(lowered, requested_actions) and "retrieval_refresh" not in requested_actions:
+        requested_actions.append("retrieval_refresh")
+
     if "autofix" in requested_actions and any(keyword in lowered for keyword in _FAILURE_CONTEXT_KEYWORDS):
         requested_actions = [action for action in requested_actions if action != "execute"]
 
@@ -258,6 +301,8 @@ def _extract_requested_actions(query: str) -> List[str]:
         keyword in lowered for keyword in ("\u6548\u679c\u4e00\u822c", "\u7ed3\u679c\u4e0d\u597d", "\u91cd\u65b0\u5ba1\u67e5", "\u91cd\u65b0\u68c0\u67e5")
     ):
         requested_actions = [action for action in requested_actions if action != "generate"]
+
+    requested_actions = _normalize_action_sequence(requested_actions)
 
     if not requested_actions and _looks_like_notebook_query(lowered, requested_actions):
         return ["generate"]
@@ -273,3 +318,36 @@ def _looks_like_notebook_query(query: str, requested_actions: Sequence[str]) -> 
     if any(keyword in query for keyword in _NOTEBOOK_CONTEXT_KEYWORDS):
         return True
     return False
+
+
+def _should_add_retrieval_refresh(query: str, requested_actions: Sequence[str]) -> bool:
+    if not any(pattern in query for pattern in _RETRIEVAL_REFRESH_PATTERNS):
+        return False
+
+    notebook_followup_keywords = (
+        "review",
+        "execute",
+        "notebook",
+        "\u5ba1\u67e5",
+        "\u91cd\u65b0\u5ba1\u67e5",
+        "\u91cd\u65b0\u68c0\u67e5",
+        "\u6267\u884c",
+        "\u8fd0\u884c",
+        "\u6548\u679c\u4e00\u822c",
+        "\u7ed3\u679c\u4e0d\u597d",
+    )
+    if any(action in requested_actions for action in ("review", "execute")):
+        return True
+    return any(keyword in query for keyword in notebook_followup_keywords)
+
+
+def _normalize_action_sequence(actions: Sequence[str]) -> List[str]:
+    seen = set()
+    unique_actions = []
+    for action in actions:
+        if action in seen:
+            continue
+        seen.add(action)
+        unique_actions.append(action)
+
+    return sorted(unique_actions, key=lambda action: _ACTION_ORDER.get(action, 99))
