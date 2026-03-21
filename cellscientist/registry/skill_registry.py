@@ -16,6 +16,11 @@ class SkillRegistry:
     def register(self, skill: BaseSkill) -> None:
         self._skills.append(skill)
 
+    def skill_catalog(self) -> List[dict[str, Any]]:
+        """Expose repo-native skill metadata plus optional package mapping."""
+
+        return [skill.skill_metadata() for skill in self._skills]
+
     def resolve(self, intent: ResearchIntent) -> BaseSkill:
         ranked: List[Tuple[float, BaseSkill]] = sorted(
             ((skill.match(intent), skill) for skill in self._skills),
@@ -60,6 +65,7 @@ class SkillRegistry:
                 "description": metadata.get("description"),
                 "aliases": metadata.get("aliases", []),
                 "triggers": metadata.get("triggers", []),
+                "skill_package": metadata.get("skill_package", {}),
             }
             for metadata in top
         ]
