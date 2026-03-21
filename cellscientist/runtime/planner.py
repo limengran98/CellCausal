@@ -60,6 +60,36 @@ _DRUG_ANALYSIS_KEYWORDS = (
     "查一下",
 )
 
+_PRIORITY_DRUG_ANALYSIS_ALIASES = (
+    "aspirin",
+    "acetylsalicylic acid",
+    "阿司匹林",
+)
+
+_PRIORITY_DRUG_ANALYSIS_CONTEXT = (
+    "analyze",
+    "analysis",
+    "mechanism",
+    "safety",
+    "risk",
+    "target",
+    "targets",
+    "indication",
+    "indications",
+    "adverse",
+    "side effect",
+    "smiles",
+    "分析",
+    "分析一下",
+    "机制",
+    "安全性",
+    "风险",
+    "靶点",
+    "适应症",
+    "副作用",
+    "查一下",
+)
+
 _NOTEBOOK_ANCHOR_KEYWORDS = (
     "notebook",
     "modeling",
@@ -374,12 +404,23 @@ def _looks_like_drug_analysis_query(raw_query: str, lowered_query: str) -> bool:
     if _contains_smiles_like_token(raw_query):
         return True
 
+    if _has_priority_drug_analysis_alias(lowered_query) and _has_priority_drug_analysis_context(lowered_query):
+        return True
+
     if any(keyword in lowered_query for keyword in _DRUG_ANALYSIS_KEYWORDS):
         if find_drug_name_in_text(raw_query) != "unknown":
             return True
         if any(keyword in lowered_query for keyword in ("drug", "compound", "smiles", "药物", "靶点", "机制", "安全性", "副作用")):
             return True
     return False
+
+
+def _has_priority_drug_analysis_alias(lowered_query: str) -> bool:
+    return any(alias.lower() in lowered_query for alias in _PRIORITY_DRUG_ANALYSIS_ALIASES)
+
+
+def _has_priority_drug_analysis_context(lowered_query: str) -> bool:
+    return any(keyword.lower() in lowered_query for keyword in _PRIORITY_DRUG_ANALYSIS_CONTEXT)
 
 
 def _contains_smiles_like_token(text: str) -> bool:

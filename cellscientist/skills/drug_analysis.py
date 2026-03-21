@@ -289,8 +289,8 @@ class DrugAnalysisSkill(BaseSkill):
 
     name = "drug-analysis"
     description = "Native drug analysis skill with entity normalization, mechanism/target synthesis, safety framing, and evidence-driven next questions."
-    aliases = ["drug-analysis", "drug analysis", "smiles-analysis"]
-    triggers = ["药物分析", "机制和安全性", "根据这个 SMILES", "靶点和风险"]
+    aliases = ["drug-analysis", "drug analysis", "smiles-analysis", "aspirin-analysis"]
+    triggers = ["药物分析", "机制和安全性", "根据这个 SMILES", "靶点和风险", "阿司匹林", "acetylsalicylic acid"]
     supported_task_types = ["drug_analysis"]
 
     def run(self, state: SessionState) -> dict[str, object]:

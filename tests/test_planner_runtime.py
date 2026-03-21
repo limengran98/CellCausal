@@ -37,6 +37,16 @@ def test_planner_routes_drug_analysis_queries_without_collapsing_to_drug_info():
     assert smiles_intent.task_type == "drug_analysis"
 
 
+def test_planner_routes_aspirin_alias_queries_to_drug_analysis():
+    english_intent = build_intent("查一下 aspirin 的靶点和安全性")
+    chinese_intent = build_intent("阿司匹林的靶点和副作用分析")
+    acid_intent = build_intent("分析一下 acetylsalicylic acid 的机制和适应症")
+
+    assert english_intent.task_type == "drug_analysis"
+    assert chinese_intent.task_type == "drug_analysis"
+    assert acid_intent.task_type == "drug_analysis"
+
+
 def test_planner_parses_composite_notebook_followup_actions():
     intent = build_intent("生成的效果一般啊，挖掘生物知识重新审查，然后执行")
 
