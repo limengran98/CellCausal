@@ -7,6 +7,7 @@ from cellscientist.registry.skill_registry import SkillRegistry
 from cellscientist.runtime.orchestrator_v2 import OrchestratorV2
 from cellscientist.runtime.run_manifest import build_run_manifest, write_manifest_json
 from cellscientist.skills.drug_info import DrugInfoSkill
+from cellscientist.skills.enzyme_mining import EnzymeMiningSkill
 
 
 def test_run_manifest_can_be_built_for_runtime_and_eval_style_records(tmp_path: Path):
@@ -48,3 +49,24 @@ def test_run_manifest_can_be_built_for_runtime_and_eval_style_records(tmp_path: 
     assert eval_payload["final_status"] == "completed"
     assert eval_payload["eval_case_files"] == ["evals/drug_analysis_cases.json"]
     assert eval_payload["extra"]["eval_summary"]["passed_cases"] == 1
+
+
+def test_run_manifest_captures_enzyme_mining_export_paths(tmp_path: Path):
+    registry = SkillRegistry([EnzymeMiningSkill()])
+    state, result = OrchestratorV2(registry).run("根据这个 SMILES 挖可作用的候选酶并排序: C(C(C(=O)O)N)S")
+
+    manifest = build_run_manifest(
+        run_id="smoke-enzyme",
+        context="test_runtime",
+        query=state.user_query,
+        state=state,
+        result=result,
+        skill_catalog=registry.skill_catalog(),
+    )
+    manifest_path = write_manifest_json(manifest, tmp_path / "enzyme_manifest.json")
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert payload["task_type"] == "enzyme_mining"
+    assert "enzyme_mining_export" in payload["extra"]
+    assert payload["extra"]["enzyme_mining_export"]["result_dir"]
+    assert payload["extra"]["enzyme_mining_export"]["files"]["ranking_status_json"]

@@ -304,6 +304,24 @@ def _extract_generic_data_context(state: SessionState | None) -> dict[str, Any]:
     return payload
 
 
+def _extract_enzyme_mining_context(result: Any) -> dict[str, Any]:
+    if not isinstance(result, Mapping):
+        return {}
+    artifact_export = result.get("artifact_export")
+    if not isinstance(artifact_export, Mapping):
+        return {}
+    files = artifact_export.get("files")
+    return {
+        "enzyme_mining_export": {
+            "result_dir": artifact_export.get("result_dir"),
+            "files": dict(files) if isinstance(files, Mapping) else {},
+            "ranking_status": result.get("ranking_status"),
+            "ranking_ready": result.get("ranking_ready"),
+            "substrate_smiles": result.get("substrate_smiles"),
+        }
+    }
+
+
 def _extract_trial_dir(state: SessionState, result: Any) -> str | None:
     candidates: list[Any] = []
     if isinstance(result, Mapping):
@@ -476,6 +494,7 @@ def build_run_manifest(
         extra={
             "workflow_path": _extract_workflow_path(state, result),
             **_extract_generic_data_context(state),
+            **_extract_enzyme_mining_context(result),
             **dict(extra or {}),
         },
     )

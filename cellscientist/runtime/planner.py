@@ -75,9 +75,17 @@ _ENZYME_MINING_KEYWORDS = (
     "fatty acid oxidation",
     "enzyme",
     "enzymes",
+    "substrate",
+    "substrate-aware",
+    "substrate ranking",
+    "rank enzyme",
+    "rank enzymes",
+    "enzyme ranking",
     "酶挖掘",
     "候选酶",
     "找酶",
+    "底物",
+    "排序",
     "脂代谢",
     "脂质代谢",
     "脂肪代谢",
@@ -374,7 +382,7 @@ class Planner:
         generic_data_signal = _looks_like_generic_data_query(query, lowered, requested_actions)
         drug_signal = _looks_like_drug_query(query, lowered)
         drug_analysis_signal = _looks_like_drug_analysis_query(query, lowered)
-        enzyme_mining_signal = _looks_like_enzyme_mining_query(lowered)
+        enzyme_mining_signal = _looks_like_enzyme_mining_query(query, lowered)
 
         secondary_hints: List[str] = []
         if generic_data_signal:
@@ -525,10 +533,14 @@ def _looks_like_drug_analysis_query(raw_query: str, lowered_query: str) -> bool:
     return False
 
 
-def _looks_like_enzyme_mining_query(lowered_query: str) -> bool:
+def _looks_like_enzyme_mining_query(raw_query: str, lowered_query: str) -> bool:
     if any(keyword in lowered_query for keyword in _ENZYME_MINING_KEYWORDS):
         return True
     if "candidate" in lowered_query and "enzyme" in lowered_query:
+        return True
+    if _contains_smiles_like_token(raw_query) and any(
+        keyword in lowered_query for keyword in ("enzyme", "enzymes", "候选酶", "酶", "substrate", "底物", "排序", "rank")
+    ):
         return True
     if "酶" in lowered_query and any(
         keyword in lowered_query for keyword in ("挖", "找", "候选", "代谢", "通路", "依据")

@@ -89,6 +89,12 @@ def test_planner_routes_enzyme_queries_to_native_skill_even_with_notebook_follow
     assert "notebook_ready" in intent.constraints
 
 
+def test_planner_keeps_smiles_driven_enzyme_ranking_queries_on_enzyme_mining():
+    intent = build_intent("根据这个 SMILES 挖可作用的候选酶并排序: C(C(C(=O)O)N)S")
+
+    assert intent.task_type == "enzyme_mining"
+
+
 def test_orchestrator_returns_clarification_fallback_for_unknown_queries():
     state, result = _build_orchestrator().run("这个系统是干什么的")
 
