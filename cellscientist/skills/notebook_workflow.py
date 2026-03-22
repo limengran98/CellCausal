@@ -5,7 +5,9 @@ from typing import Optional
 from ..runtime.notebook_models import NotebookArtifact, NotebookRunResult
 from ..runtime.state import ResearchIntent
 from ..runtime.state import SessionState
+from .analysis_plan import AnalysisPlanSkill
 from .base import BaseSkill
+from .data_profile import DataProfileSkill
 from .notebook_autofix import NotebookAutofixSkill
 from .notebook_execute import NotebookExecuteSkill
 from .notebook_generate import NotebookGenerateSkill
@@ -70,9 +72,11 @@ class NotebookWorkflowSkill(BaseSkill):
     description = "Notebook family router for evidence refresh, generation, review, execution, and external autofix."
     aliases = ["notebook", "notebook-workflow", "experiment-design"]
     triggers = ["实验设计", "review notebook", "执行 notebook", "autofix notebook", "补充生物学证据"]
-    supported_task_types = ["legacy_notebook"]
+    supported_task_types = ["legacy_notebook", "data_analysis"]
 
     def __init__(self) -> None:
+        self._data_profile_skill = DataProfileSkill()
+        self._analysis_plan_skill = AnalysisPlanSkill()
         self._generate_skill = NotebookGenerateSkill()
         self._retrieval_refresh_skill = NotebookRetrievalRefreshSkill()
         self._execute_skill = NotebookExecuteSkill()
@@ -122,6 +126,10 @@ class NotebookWorkflowSkill(BaseSkill):
         }
 
     def _skill_for_action(self, action: str) -> BaseSkill:
+        if action == "data_profile":
+            return self._data_profile_skill
+        if action == "analysis_plan":
+            return self._analysis_plan_skill
         if action == "retrieval_refresh":
             return self._retrieval_refresh_skill
         if action == "execute":
@@ -157,7 +165,7 @@ class NotebookWorkflowSkill(BaseSkill):
         valid_actions = [
             action
             for action in requested_actions
-            if action in {"generate", "retrieval_refresh", "review", "execute", "autofix"}
+            if action in {"data_profile", "analysis_plan", "generate", "retrieval_refresh", "review", "execute", "autofix"}
         ]
         if valid_actions:
             return valid_actions

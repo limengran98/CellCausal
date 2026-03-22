@@ -165,10 +165,13 @@ _REVIEW_PATTERNS = (
 _EXECUTE_PATTERNS = (
     "then execute",
     "then run",
+    "run a notebook",
     "execute this notebook",
     "execute notebook",
     "run this notebook",
     "run notebook",
+    "跑一个 notebook",
+    "跑 notebook",
     "\u7136\u540e\u6267\u884c",
     "\u518d\u6267\u884c",
     "\u6267\u884c\u8fd9\u4e2a notebook",
@@ -284,6 +287,14 @@ _GENERIC_DATA_KEYWORDS = (
     "读取这个数据表",
     "读取数据",
     "做验证",
+)
+
+_GENERIC_PLAN_ONLY_KEYWORDS = (
+    "数据画像",
+    "data profile",
+    "analysis plan",
+    "分析计划",
+    "profile only",
 )
 
 
@@ -404,9 +415,14 @@ def _extract_requested_actions(query: str) -> List[str]:
         if "analysis_plan" not in requested_actions:
             insert_at = 1 if requested_actions else 0
             requested_actions.insert(insert_at, "analysis_plan")
+        plan_only = any(keyword in lowered for keyword in _GENERIC_PLAN_ONLY_KEYWORDS)
+        if "execute" in requested_actions and "generate" not in requested_actions:
+            requested_actions.append("generate")
         if (
+            not plan_only
+            and
             not any(action in requested_actions for action in ("generate", "execute"))
-            and any(keyword in lowered for keyword in ("分析", "analysis", "explore", "探索", "验证", "notebook"))
+            and any(keyword in lowered for keyword in ("分析", "analysis", "explore", "探索", "notebook"))
         ):
             requested_actions.append("generate")
 

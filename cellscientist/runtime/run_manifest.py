@@ -138,6 +138,13 @@ def _artifact_summary(state: SessionState) -> list[dict[str, Any]]:
     ]
 
 
+def _latest_artifact_content(state: SessionState, artifact_type: str) -> dict[str, Any] | None:
+    for artifact in reversed(state.artifacts):
+        if artifact.type == artifact_type and isinstance(artifact.content, Mapping):
+            return dict(artifact.content)
+    return None
+
+
 def _find_nested_key(payload: Any, key: str) -> Any:
     if isinstance(payload, Mapping):
         if key in payload:
@@ -193,6 +200,8 @@ def _matched_skill_versions(
 
 
 def _prompt_template_versions(task_type: str | None, skill_trace: Sequence[str]) -> list[dict[str, Any]]:
+    if task_type == "data_analysis":
+        return []
     if task_type != "legacy_notebook" and not any("notebook" in trace for trace in skill_trace):
         return []
 
@@ -200,7 +209,7 @@ def _prompt_template_versions(task_type: str | None, skill_trace: Sequence[str])
     return [_file_record(root / relative_path) for relative_path in _NOTEBOOK_PROMPT_FILES]
 
 
-def _dataset_versions(task_type: str | None) -> list[dict[str, Any]]:
+def _dataset_versions(task_type: str | None, state: SessionState | None = None) -> list[dict[str, Any]]:
     if task_type == "legacy_notebook":
         try:
             cfg = load_pipeline_config()
@@ -227,7 +236,63 @@ def _dataset_versions(task_type: str | None) -> list[dict[str, Any]]:
             }
         ]
 
+    if task_type == "data_analysis" and state is not None:
+        profile = _latest_artifact_content(state, "data_profile")
+        if profile is None:
+            return []
+        return [
+            {
+                "dataset_name": Path(str(profile.get("input_path") or "user_dataset")).name,
+                "data_path": _relative_path(profile.get("input_path")),
+                "file_type": profile.get("file_type"),
+                "shape": profile.get("shape"),
+                "source": "user_provided_generic_data",
+                "workflow_path": "generic_data",
+            }
+        ]
+
     return []
+
+
+def _extract_workflow_path(state: SessionState | None, result: Any) -> str | None:
+    if isinstance(result, Mapping):
+        details = result.get("details")
+        if isinstance(details, Mapping) and details.get("workflow_path"):
+            return str(details.get("workflow_path"))
+    if state is None:
+        return None
+    for artifact in reversed(state.artifacts):
+        workflow_path = artifact.metadata.get("workflow_path")
+        if workflow_path:
+            return str(workflow_path)
+    for note in reversed(state.notes):
+        if str(note).startswith("workflow_path:"):
+            return str(note).split(":", 1)[1]
+    return None
+
+
+def _extract_generic_data_context(state: SessionState | None) -> dict[str, Any]:
+    if state is None:
+        return {}
+    profile = _latest_artifact_content(state, "data_profile")
+    plan = _latest_artifact_content(state, "analysis_plan")
+    payload: dict[str, Any] = {}
+    if profile is not None:
+        payload["data_profile"] = {
+            "input_path": _relative_path(profile.get("input_path")),
+            "file_type": profile.get("file_type"),
+            "shape": profile.get("shape"),
+            "suggested_analysis_modes": profile.get("suggested_analysis_modes"),
+            "status": profile.get("status"),
+        }
+    if plan is not None:
+        payload["analysis_plan"] = {
+            "problem_type": plan.get("problem_type"),
+            "recommended_steps": plan.get("recommended_steps"),
+            "notebook_needed": plan.get("notebook_needed"),
+            "status": plan.get("status"),
+        }
+    return payload
 
 
 def _extract_trial_dir(state: SessionState, result: Any) -> str | None:
@@ -388,7 +453,7 @@ def build_run_manifest(
         },
         fallback_chain=list(llm_attempts) if isinstance(llm_attempts, list) else [],
         prompt_template_versions=_prompt_template_versions(task_type, skill_trace),
-        dataset_versions=_dataset_versions(task_type),
+        dataset_versions=_dataset_versions(task_type, state),
         case_file=case_file,
         eval_case_files=[str(path) for path in (eval_case_files or [])],
         trial_dir=_relative_path(trial_dir) if trial_dir else None,
@@ -399,7 +464,11 @@ def build_run_manifest(
         data_availability=_default_data_availability(),
         code_availability=_default_code_availability(),
         reporting_summary=_default_reporting_summary(task_type),
-        extra=dict(extra or {}),
+        extra={
+            "workflow_path": _extract_workflow_path(state, result),
+            **_extract_generic_data_context(state),
+            **dict(extra or {}),
+        },
     )
 
 

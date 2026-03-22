@@ -21,6 +21,7 @@ class NotebookExecuteSkill(BaseSkill):
             preferred_notebook_path=latest_notebook.path if latest_notebook else None,
             preferred_trial_dir=latest_notebook.trial_dir if latest_notebook else None,
         )
+        notebook_source = latest_notebook.source if latest_notebook is not None else "legacy"
 
         run_result = NotebookRunResult(
             notebook_path=str(result.get("notebook_path")) if result.get("notebook_path") else None,
@@ -49,7 +50,7 @@ class NotebookExecuteSkill(BaseSkill):
                     "error_log_path": run_result.error_log_path,
                     "run_log_path": run_result.run_log_path,
                     "legacy_entry": result.get("legacy_entry"),
-                    "source": "legacy",
+                    "source": notebook_source,
                 },
             )
         )
@@ -59,7 +60,7 @@ class NotebookExecuteSkill(BaseSkill):
                 name=os.path.basename(run_result.notebook_path),
                 path=run_result.notebook_path,
                 trial_dir=run_result.trial_dir,
-                source="legacy",
+                source=notebook_source,
                 metadata={
                     "status": run_result.status,
                     "legacy_entry": result.get("legacy_entry"),

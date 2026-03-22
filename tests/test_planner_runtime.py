@@ -3,6 +3,7 @@ from __future__ import annotations
 from cellscientist.registry.skill_registry import SkillRegistry
 from cellscientist.runtime.orchestrator_v2 import OrchestratorV2
 from cellscientist.runtime.planner import build_intent
+from cellscientist.skills.drug_analysis import DrugAnalysisSkill
 from cellscientist.skills.drug_info import DrugInfoSkill
 from cellscientist.skills.legacy_notebook import LegacyNotebookSkill
 from cellscientist.skills.notebook_workflow import NotebookWorkflowSkill
@@ -10,6 +11,7 @@ from cellscientist.skills.notebook_workflow import NotebookWorkflowSkill
 
 def _build_orchestrator() -> OrchestratorV2:
     registry = SkillRegistry()
+    registry.register(DrugAnalysisSkill())
     registry.register(DrugInfoSkill())
     registry.register(NotebookWorkflowSkill())
     registry.register(LegacyNotebookSkill())
@@ -59,6 +61,16 @@ def test_planner_parses_retrieval_augmented_review_and_execute_followup():
 
     assert intent.task_type == "legacy_notebook"
     assert intent.requested_actions == ["retrieval_refresh", "review", "execute"]
+
+
+def test_planner_routes_generic_data_queries_to_data_analysis():
+    intent = build_intent("基于 ./evals/fixtures/toy_table.csv 做探索分析并生成 notebook")
+    execute_intent = build_intent("读取 ./evals/fixtures/toy_table.csv，帮我分析并跑一个 notebook")
+
+    assert intent.task_type == "data_analysis"
+    assert intent.requested_actions == ["data_profile", "analysis_plan", "generate"]
+    assert execute_intent.task_type == "data_analysis"
+    assert execute_intent.requested_actions == ["data_profile", "analysis_plan", "generate", "execute"]
 
 
 def test_orchestrator_returns_clarification_fallback_for_unknown_queries():

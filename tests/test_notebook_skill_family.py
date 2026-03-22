@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import types
+from pathlib import Path
 
 from cellscientist.legacy.llm_resilience import resolve_bridge_llm_providers
 from cellscientist.legacy.notebook_bridge import _create_degraded_notebook
@@ -495,3 +496,25 @@ def test_degraded_notebook_helper_writes_stub_and_trace():
         assert os.path.exists(result["notebook_path"])
         assert os.path.exists(result["run_log_path"])
         assert os.path.exists(os.path.join(tmpdir, "final_keep", "notebook_prompt_degraded.ipynb"))
+
+
+def test_notebook_workflow_supports_generic_data_profile_plan_and_generate_path():
+    state, result = _build_orchestrator().run(
+        "用我自己的数据做验证，基于 ./evals/fixtures/toy_table.csv 做探索分析并生成 notebook"
+    )
+
+    assert state.intent is not None
+    assert state.intent.task_type == "data_analysis"
+    assert state.intent.requested_actions == ["data_profile", "analysis_plan", "generate"]
+    assert result["action"] == "multi_step"
+    assert len(result["step_results"]) == 3
+    assert result["step_results"][0]["task"] == "data_profile"
+    assert result["step_results"][1]["task"] == "analysis_plan"
+    assert result["step_results"][2]["action"] == "generate"
+    assert result["step_results"][2]["status"] == "generated_generic_notebook"
+    assert any(artifact.type == "data_profile" for artifact in state.artifacts)
+    assert any(artifact.type == "analysis_plan" for artifact in state.artifacts)
+    notebook_artifact = next(artifact for artifact in state.artifacts if artifact.type == "notebook")
+    assert notebook_artifact.metadata["source"] == "generic_data"
+    assert notebook_artifact.metadata["workflow_path"] == "generic_data"
+    assert Path(str(notebook_artifact.metadata["path"])).exists()
