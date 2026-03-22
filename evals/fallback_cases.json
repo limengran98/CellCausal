@@ -1,0 +1,37 @@
+[
+  {
+    "id": "fallback_system_question",
+    "query": "这个系统是干什么的",
+    "expected_status": "needs_clarification",
+    "expected_task_type": "unknown",
+    "should_not_crash": true
+  },
+  {
+    "id": "fallback_help_question",
+    "query": "你现在能帮我做什么",
+    "expected_status": "needs_clarification",
+    "expected_task_type": "unknown",
+    "should_not_crash": true
+  },
+  {
+    "id": "fallback_weather_question",
+    "query": "今天天气怎么样",
+    "expected_status": "needs_clarification",
+    "expected_task_type": "unknown",
+    "should_not_crash": true
+  },
+  {
+    "id": "fallback_movie_question",
+    "query": "最近有什么好电影推荐",
+    "expected_status": "needs_clarification",
+    "expected_task_type": "unknown",
+    "should_not_crash": true
+  },
+  {
+    "id": "fallback_ambiguous_help",
+    "query": "我不确定该问什么，你能给我一些示例吗",
+    "expected_status": "needs_clarification",
+    "expected_task_type": "unknown",
+    "should_not_crash": true
+  }
+]

@@ -1,138 +1,97 @@
 # CellCausal
 
-**CellCausal** is an autonomous AI agent framework designed for Virtual Cell Modeling (VCM), integrating Design, Execution, and Review loops into a unified pipeline.
+CellCausal is a repo-native life science agent runtime for structured analysis, experiment planning, and notebook-based validation.
 
-## 🚀 Quick Start
+The project has two main layers:
 
-Run the complete pipeline (Design & Execution → Review & Optimization):
+- Native scientific skills for tasks like drug analysis and enzyme mining
+- A notebook execution surface for generation, review, and validation when a notebook is the right artifact
+
+The current direction is skill-first. Notebook support remains available, but it is not the center of the system.
+
+## What This Repo Includes
+
+- A lightweight runtime with planner, registry, session state, artifacts, and manifests
+- Native skills such as `drug-analysis` and `enzyme-mining`
+- A notebook workflow for generation, review, execute, and autofix
+- A small eval harness with golden cases
+- Research record scaffolding for run and eval metadata
+- Repo-local references used to integrate external scientific workflows and model code
+
+## Quick Start
+
+Run an interactive query:
+
+```bash
+python run_interactive.py --query "分析一下 metformin 的靶点、机制和安全性"
+```
+
+Run enzyme mining:
+
+```bash
+python run_interactive.py --query "挖一下和脂代谢相关的候选酶，并生成一个可验证的 notebook 框架"
+```
+
+Run the lightweight eval suite:
+
+```bash
+python evals/run_eval.py
+```
+
+The legacy full pipeline is still available:
 
 ```bash
 python run_pipeline.py
 ```
 
-### Common Options
+## Project Layout
 
-| Argument | Description |
-| :--- | :--- |
-| `--skip-review` | Run only the experiment stage, skipping optimization. |
-| `--pipeline-config` | Support custom pipeline configuration path. |
-| `--experiment-config` | Override Experiment stage configuration. |
-| `--review-config` | Override Review stage configuration. |
-
-## 📂 Project Structure
-
-A complete overview of the **CellCausal** architecture:
-
-```
-CellCausal/                         <-- Project Root
-│
-├── run_pipeline.py                 # 🚀 MAIN ENTRY POINT: Orchestrates the full lifecycle
-│
-├── cellscientist/                  # 📦 CORE PACKAGE: Main logic implementation
-│   │
-│   ├── core/                       # 🧠 INTELLIGENCE LAYER: AI Workflows
-│   │   ├── __init__.py                  # Package init
-│   │   ├── config_loader.py             # Load/merge config + ${VAR} expansion
-│   │   ├── llm_client.py                # LLM client + token metering
-│   │   ├── idea_generator.py            # Idea/hypothesis generation
-│   │   ├── execution_workflow.py        # Experiment stage entry: design & execute
-│   │   ├── review_workflow.py           # Review stage entry: review & optimize
-│   │   ├── prompt_orchestrator.py       # Orchestrate prompts/tasks across stages
-│   │   ├── prompt_generator.py          # Generate notebook/code content
-│   │   ├── prompt_executor.py           # GraphExecutor + prompt execution
-│   │   ├── executor_engine.py           # Execution engine used by review
-│   │   ├── notebook_autofix.py          # Auto-fix loop for failing notebooks
-│   │   ├── experiment_report.py         # Experiment report generator
-│   │   ├── task_graph.py                # Task DAG + dependency handling
-│   │   ├── task_logger.py               # Task-level logging utilities
-│   │   └── external_knowledge_mirothink.py # External knowledge integration
-│   │
-│   └── pipeline/                   # 🔧 INFRASTRUCTURE LAYER: Support systems
-│       ├── config.py                 # Config Manager: Merges JSON configs & CLI args
-│       ├── metrics.py                # Analytics: Calculates Success Rate, PCC, etc.
-│       ├── report.py                 # Reporting: Generates final summaries (PDF/MD)
-│       ├── advanced_metrics.py       # Deep Dive: Advanced statistical analysis
-│       └── utils.py                  # Utils: Logging, paths, and subprocess helpers
-│
-├── configs/                        # ⚙️ CONFIGURATION: 3-Tier Inheritance Architecture
-│   ├── pipeline_config.json        # Tier 1: Global defaults (dataset, LLM, literature, bio_kb)
-│   ├── experiment_config.json      # Tier 2: Experiment overrides (model, timeouts, viz)
-│   └── review_config.json          # Tier 3: Review overrides (model, optimization params)
-│
-├── prompts/                        # 📝 PROMPT TEMPLATES: System instructions (YAML)
-│   ├── pipeline_prompt.yaml        # General agent behaviors and personas
-│   ├── idea.yml                    # Hypothesis generation prompts
-│   ├── autofix.yml                 # Error correction strategies
-│   ├── review_optimize.yaml        # Code critique & optimization guides
-│   └── final_report.yaml           # Report generation templates
-│
-├── data/                           # 💾 DATASETS: Input biological data (H5/CSV)
-│
-└── results/                        # 📊 ARTIFACTS: All generated outputs
-    ├── <dataset_name>/
-        ├── generate_execution/     # Experiment stage outputs (Notebooks, Logs, Figures)
-        ├── review_feedback/        # Review stage outputs (Optimized Code, Reviews)
-        └── run_logs/               # System logs and terminal streams
+```text
+cellscientist/   Core runtime, skills, tools, legacy bridges, and evidence models
+configs/         Runtime and legacy configuration files
+docs/            Design notes and integration plans
+evals/           Golden cases, rubric, fixtures, and eval runner
+prompts/         Prompt templates and reference recipe fragments
+records/         Research record templates and generated manifests
+references/      Repo-local notebooks, model code, and integration references
+skills/          Directory-level skill metadata such as SKILL.md
+tests/           Unit and smoke tests
 ```
 
-## ⚙️ Key Configurations
+## Main Runtime Areas
 
-The framework uses a **3-Tier Inheritance Architecture** for configuration management:
+- `cellscientist/runtime/`
+  Planner, orchestrator, manifests, handoff helpers, and state tracking
+- `cellscientist/registry/`
+  Skill registration and metadata catalog
+- `cellscientist/skills/`
+  User-facing native skills and notebook workflow surfaces
+- `cellscientist/tools/`
+  Reusable task-specific helpers, adapters, and bridges
+- `cellscientist/legacy/`
+  Compatibility wrappers around older notebook and pipeline code
 
-### Configuration Files
+## Current Skill Surface
 
-```
-configs/
-├── pipeline_config.json       # Tier 1: Global defaults (shared by all stages)
-├── experiment_config.json     # Tier 2: Experiment-specific overrides only
-└── review_config.json         # Tier 3: Review-specific overrides only
-```
+- `drug-analysis`
+  Structured drug-centric analysis for drug names and SMILES
+- `enzyme-mining`
+  Candidate mining, filtering, ranking readiness, and notebook-ready scaffold output
+- `notebook-workflow`
+  Notebook generation, review, execute, autofix, and retrieval-augmented loops
 
-### Inheritance Pattern
+## Outputs and Local State
 
-**Stage configs inherit from pipeline config and override specific values:**
+- `results/`
+  Local run artifacts such as notebook outputs, drug-analysis outputs, and enzyme-mining exports
+- `records/`
+  Run manifests, eval manifests, notebook indexes, and paper-oriented record templates
 
-```python
-# Effective config = pipeline_config ⊕ stage_config
-# Where ⊕ means: stage_config overrides pipeline_config
-```
+These directories are local working outputs, not the source of truth for the codebase.
 
-### Key Benefits
+## Notes
 
-*   **Single Source of Truth**: Shared settings (API keys, LLM configs, BioKB, Literature) defined once in `pipeline_config.json`
-*   **Clear Overrides**: Stage configs only contain differences, making customization obvious
-*   **Reduced Redundancy**: 17% total size reduction, eliminating duplicate API keys and settings
-*   **Easy Maintenance**: Update shared settings in one place, apply everywhere
-
-### Configuration Sections
-
-*   **Global Settings** (in `pipeline_config.json`):
-    *   `dataset_name`, `split_name`: Dataset and split configuration
-    *   `llm`, `llm_report`: LLM API endpoints, keys, and model defaults
-    *   `literature`: Literature search API keys (Serper, Jina) and parameters
-    *   `bio_kb`: Biological knowledge base (ChEMBL, Reactome) settings
-    *   `paths`: Data paths and output directories
-    *   `exec`: Execution timeouts and fix rounds
-    
-*   **Experiment Stage** (overrides in `experiment_config.json`):
-    *   LLM model selection for experiment generation
-    *   Experiment-specific paths and parameters
-    *   Hypergraph visualization settings
-    
-*   **Review Stage** (overrides in `review_config.json`):
-    *   LLM model selection for review/optimization
-    *   Review-specific paths and parameters
-    *   Optimization hierarchy and protected sections
-
-### Strategy
-
-*   **LLM Engine**: Gemini 3 Pro (default).
-*   **Experiment Stage**: Parallel hypothesis generation with self-correction.
-*   **Execution Stage**: Long-running context with global timeouts (up to 100h).
-*   **Review Stage**: Iterative optimization based on feedback (e.g., Pearson Correlation).
-
-## 📊 Cost & Efficiency
-
-**CellCausal** implements a **Contextual Memory** mechanism to optimize token usage:
-*   Reduces token load by ~60% in later iterations.
-*   Enables complex, multi-step optimizations at low cost.
+- Native scientific skills are the mainline path
+- Notebook support is an execution and validation surface
+- Legacy BBBC036 and older notebook flows are kept as compatibility paths, not as the long-term architecture center
+- Eval and record subsystems are included so runs can be inspected and compared without external platforms

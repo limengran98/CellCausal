@@ -1,0 +1,112 @@
+[
+  {
+    "id": "drug_metformin_basic",
+    "query": "分析一下 metformin 的靶点、机制和安全性",
+    "expected_task_type": "drug_analysis",
+    "expected_input_type": "drug_name",
+    "expected_entity_contains": "metformin",
+    "required_result_fields": ["task", "input_type", "normalized_entity", "summary", "mechanism", "targets", "indications", "safety", "evidence", "next_questions"],
+    "must_include_any": ["metformin", "AMPK", "complex I"],
+    "must_not_include_any": ["No skill matched", "Traceback"]
+  },
+  {
+    "id": "drug_imatinib_mechanism",
+    "query": "分析一下 imatinib 的机制和适应症",
+    "expected_task_type": "drug_analysis",
+    "expected_input_type": "drug_name",
+    "expected_entity_contains": "imatinib",
+    "required_result_fields": ["task", "normalized_entity", "mechanism", "targets", "indications", "evidence", "next_questions"],
+    "must_include_any": ["imatinib", "BCR-ABL1", "GIST"],
+    "must_not_include_any": ["No skill matched", "Traceback"]
+  },
+  {
+    "id": "drug_aspirin_safety",
+    "query": "查一下 aspirin 的靶点和安全性",
+    "expected_task_type": "drug_analysis",
+    "expected_input_type": "drug_name",
+    "expected_entity_contains": "aspirin",
+    "required_result_fields": ["task", "normalized_entity", "targets", "safety", "evidence"],
+    "must_include_any": ["aspirin", "bleeding", "COX"],
+    "must_not_include_any": ["No skill matched", "Traceback"]
+  },
+  {
+    "id": "drug_metformin_smiles",
+    "query": "根据这个 SMILES 做药物分析: CN(C)C(=N)NC(=N)N",
+    "expected_task_type": "drug_analysis",
+    "expected_input_type": "smiles",
+    "expected_entity_contains": "metformin",
+    "required_result_fields": ["task", "input_type", "normalized_entity", "summary", "mechanism", "targets", "safety", "evidence"],
+    "must_include_any": ["canonical_smiles", "metformin", "CN(C)C(=N)NC(=N)N"],
+    "must_not_include_any": ["No skill matched", "Traceback"]
+  },
+  {
+    "id": "drug_smiles_what_is_this",
+    "query": "这个 SMILES 可能是什么药，有什么靶点和风险: CN(C)C(=N)NC(=N)N",
+    "expected_task_type": "drug_analysis",
+    "expected_input_type": "smiles",
+    "expected_entity_contains": "metformin",
+    "required_result_fields": ["task", "normalized_entity", "targets", "safety", "next_questions"],
+    "must_include_any": ["metformin", "risk", "safety"],
+    "must_not_include_any": ["No skill matched", "Traceback"]
+  },
+  {
+    "id": "drug_gleevec_alias",
+    "query": "格列卫的机制和适应症分析一下",
+    "expected_task_type": "drug_analysis",
+    "expected_input_type": "drug_name",
+    "expected_entity_contains": "imatinib",
+    "required_result_fields": ["task", "normalized_entity", "mechanism", "indications", "evidence"],
+    "must_include_any": ["imatinib", "BCR-ABL1", "leukemia"],
+    "must_not_include_any": ["No skill matched", "Traceback"]
+  },
+  {
+    "id": "drug_glucophage_alias",
+    "query": "药物分析：glucophage 的机制和安全性",
+    "expected_task_type": "drug_analysis",
+    "expected_input_type": "drug_name",
+    "expected_entity_contains": "metformin",
+    "required_result_fields": ["task", "normalized_entity", "mechanism", "safety", "evidence"],
+    "must_include_any": ["metformin", "gastrointestinal", "AMPK"],
+    "must_not_include_any": ["No skill matched", "Traceback"]
+  },
+  {
+    "id": "drug_ibuprofen_safety",
+    "query": "请做一个 drug analysis for ibuprofen safety and targets",
+    "expected_task_type": "drug_analysis",
+    "expected_input_type": "drug_name",
+    "expected_entity_contains": "ibuprofen",
+    "required_result_fields": ["task", "normalized_entity", "targets", "safety", "evidence"],
+    "must_include_any": ["ibuprofen", "COX", "renal"],
+    "must_not_include_any": ["No skill matched", "Traceback"]
+  },
+  {
+    "id": "drug_aspirin_cn_alias",
+    "query": "阿司匹林的靶点和副作用分析",
+    "expected_task_type": "drug_analysis",
+    "expected_input_type": "drug_name",
+    "expected_entity_contains": "aspirin",
+    "required_result_fields": ["task", "normalized_entity", "targets", "safety", "evidence"],
+    "must_include_any": ["aspirin", "bleeding", "gastrointestinal"],
+    "must_not_include_any": ["No skill matched", "Traceback"]
+  },
+  {
+    "id": "drug_vague_unresolved_entity",
+    "query": "分析一下这个药的机制和风险",
+    "expected_task_type": "drug_analysis",
+    "expected_input_type": "drug_name",
+    "expected_entity_contains": "",
+    "required_result_fields": ["task", "normalized_entity", "summary", "mechanism", "targets", "safety", "next_questions"],
+    "must_include_any": ["mechanism", "risk", "safety"],
+    "must_not_include_any": ["No skill matched", "Traceback"]
+  },
+  {
+    "id": "drug_metformin_notebook_ready_followup",
+    "query": "分析一下 metformin 的机制和安全性，并给我一个后续验证 notebook",
+    "expected_task_type": "drug_analysis",
+    "expected_input_type": "drug_name",
+    "expected_entity_contains": "metformin",
+    "required_result_fields": ["task", "normalized_entity", "mechanism", "safety", "evidence", "notebook_ready", "experiment_scaffold"],
+    "must_include_any": ["metformin", "validation_questions", "recommended_notebook_sections", "scaffold_only"],
+    "must_not_include_any": ["legacy_notebook", "No skill matched", "Traceback"]
+  }
+]

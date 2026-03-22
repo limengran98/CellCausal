@@ -1,0 +1,6 @@
+sample_id,group,feature_a,feature_b,response,label
+S1,control,1.2,10,0.11,low
+S2,treated,2.5,13,0.45,high
+S3,treated,2.1,11,0.38,high
+S4,control,1.0,9,0.08,low
+S5,treated,2.8,14,,high

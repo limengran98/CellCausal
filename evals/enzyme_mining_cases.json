@@ -1,0 +1,50 @@
+[
+  {
+    "id": "enzyme_lipid_basic",
+    "query": "挖一下和脂代谢相关的候选酶，并说明依据",
+    "expected_task_type": "enzyme_mining",
+    "required_result_fields": ["task", "query_focus", "candidate_sources", "candidate_sequences_status", "candidate_enzymes", "filtering_steps", "ranking_status", "ranking_model", "ranking_results", "rationale", "pathway_context", "evidence", "next_questions"],
+    "must_include_any": ["FASN", "ACACA", "CPT1A", "lipid metabolism", "CataPro"],
+    "must_not_include_any": ["No skill matched", "Traceback"]
+  },
+  {
+    "id": "enzyme_cholesterol_basic",
+    "query": "找一下和胆固醇代谢有关的候选酶，并说明依据",
+    "expected_task_type": "enzyme_mining",
+    "required_result_fields": ["task", "query_focus", "candidate_sources", "candidate_sequences_status", "candidate_enzymes", "filtering_steps", "ranking_status", "ranking_model", "ranking_results", "pathway_context", "evidence"],
+    "must_include_any": ["HMGCR", "SQLE", "CYP7A1", "cholesterol", "CataPro"],
+    "must_not_include_any": ["No skill matched", "Traceback"]
+  },
+  {
+    "id": "enzyme_lipid_notebook_ready",
+    "query": "挖一下和脂代谢相关的候选酶，并生成一个可验证的 notebook 框架",
+    "expected_task_type": "enzyme_mining",
+    "required_result_fields": ["task", "candidate_sources", "candidate_sequences_status", "candidate_enzymes", "filtering_steps", "ranking_status", "ranking_model", "ranking_results", "evidence", "next_questions", "notebook_ready", "experiment_scaffold"],
+    "must_include_any": ["notebook_ready", "validation_questions", "recommended_notebook_sections", "CataPro"],
+    "must_not_include_any": ["legacy_notebook", "No skill matched", "Traceback"]
+  },
+  {
+    "id": "enzyme_cholesterol_notebook_ready",
+    "query": "找一下和胆固醇代谢有关的候选酶，再给我一个后续验证 notebook",
+    "expected_task_type": "enzyme_mining",
+    "required_result_fields": ["task", "candidate_sources", "candidate_sequences_status", "candidate_enzymes", "filtering_steps", "ranking_status", "ranking_model", "ranking_results", "pathway_context", "evidence", "notebook_ready", "experiment_scaffold"],
+    "must_include_any": ["HMGCR", "notebook_ready", "scaffold_only", "CataPro"],
+    "must_not_include_any": ["legacy_notebook", "No skill matched", "Traceback"]
+  },
+  {
+    "id": "enzyme_substrate_context_basic",
+    "query": "挖一下和脂代谢相关、给定底物信息后可优先验证的候选酶，并生成一个 notebook 框架",
+    "expected_task_type": "enzyme_mining",
+    "required_result_fields": ["task", "substrate_context", "substrate_smiles", "candidate_sources", "filtering_steps", "ranking_status", "ranking_ready", "ranking_model", "ranking_results", "notebook_ready", "experiment_scaffold"],
+    "must_include_any": ["substrate_context_without_explicit_smiles", "CataPro", "scaffold_only"],
+    "must_not_include_any": ["legacy_notebook", "No skill matched", "Traceback"]
+  },
+  {
+    "id": "enzyme_smiles_ranking_followup",
+    "query": "根据这个 SMILES 挖可作用的候选酶并排序: C(C(C(=O)O)N)S",
+    "expected_task_type": "enzyme_mining",
+    "required_result_fields": ["task", "substrate_context", "substrate_smiles", "candidate_sources", "candidate_sequences_status", "filtering_steps", "ranking_status", "ranking_ready", "ranking_model", "ranking_results", "why_not_runnable", "required_assets", "prepared_input_preview", "next_step_instructions"],
+    "must_include_any": ["NC(CS)C(=O)O", "CataPro", "candidate_sequence_mapping"],
+    "must_not_include_any": ["legacy_notebook", "No skill matched", "Traceback"]
+  }
+]

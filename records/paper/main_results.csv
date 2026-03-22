@@ -1,0 +1,2 @@
+result_id,task_family,case_or_experiment,metric_or_claim,value,unit,source_record,notes
+example_001,drug_analysis,metformin_mechanism,pass_rate,1.0,fraction,records/evals/<timestamp>_eval_manifest.json,Replace with actual headline results or figure-linked metrics

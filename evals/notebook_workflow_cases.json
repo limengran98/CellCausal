@@ -1,0 +1,101 @@
+[
+  {
+    "id": "notebook_generate_basic",
+    "query": "帮我生成一个 notebook 实验设计",
+    "expected_task_type": "legacy_notebook",
+    "expected_requested_actions": ["generate"],
+    "acceptable_statuses": ["generated_via_legacy", "generated_via_fallback", "generated_degraded", "legacy_generation_failed"],
+    "required_result_fields": ["action", "message", "legacy_entry"],
+    "require_skill_trace_contains": ["notebook-workflow", "notebook-generate"]
+  },
+  {
+    "id": "notebook_execute_basic",
+    "query": "执行这个 notebook",
+    "expected_task_type": "legacy_notebook",
+    "expected_requested_actions": ["execute"],
+    "acceptable_statuses": ["executed_via_legacy", "legacy_execute_missing_notebook", "legacy_execution_failed"],
+    "required_result_fields": ["action", "legacy_entry"],
+    "require_skill_trace_contains": ["notebook-workflow", "notebook-execute"]
+  },
+  {
+    "id": "notebook_review_basic",
+    "query": "review 一下这个 notebook 的结构和科学性",
+    "expected_task_type": "legacy_notebook",
+    "expected_requested_actions": ["review"],
+    "acceptable_statuses": ["reviewed_via_legacy", "review_summary_only", "review_missing_context", "review_legacy_failed"],
+    "required_result_fields": ["action", "legacy_entry"],
+    "require_skill_trace_contains": ["notebook-workflow", "notebook-review"]
+  },
+  {
+    "id": "notebook_autofix_basic",
+    "query": "这个 notebook 执行报错了，帮我 autofix",
+    "expected_task_type": "legacy_notebook",
+    "expected_requested_actions": ["autofix"],
+    "acceptable_statuses": ["autofix_applied_via_legacy", "autofix_no_change", "autofix_missing_structured_errors", "autofix_missing_context", "autofix_legacy_failed"],
+    "required_result_fields": ["action", "legacy_entry"],
+    "require_skill_trace_contains": ["notebook-workflow", "notebook-autofix"]
+  },
+  {
+    "id": "notebook_retrieval_review_execute_loop",
+    "query": "生成的效果一般啊，挖掘生物知识重新审查，然后执行",
+    "expected_task_type": "legacy_notebook",
+    "expected_requested_actions": ["retrieval_refresh", "review", "execute"],
+    "acceptable_statuses": ["completed", "completed_with_partial_blocks"],
+    "required_result_fields": ["action", "step_results"],
+    "require_skill_trace_contains": ["notebook-workflow", "notebook-retrieval-refresh", "notebook-review", "notebook-execute"]
+  },
+  {
+    "id": "notebook_refresh_review_execute_alt",
+    "query": "补充生物学证据重新 review，再执行",
+    "expected_task_type": "legacy_notebook",
+    "expected_requested_actions": ["retrieval_refresh", "review", "execute"],
+    "acceptable_statuses": ["completed", "completed_with_partial_blocks"],
+    "required_result_fields": ["action", "step_results"],
+    "require_skill_trace_contains": ["notebook-workflow", "notebook-retrieval-refresh", "notebook-review", "notebook-execute"]
+  },
+  {
+    "id": "notebook_review_then_execute",
+    "query": "重新审查并执行这个 notebook",
+    "expected_task_type": "legacy_notebook",
+    "expected_requested_actions": ["review", "execute"],
+    "acceptable_statuses": ["completed", "completed_with_partial_blocks"],
+    "required_result_fields": ["action", "step_results"],
+    "require_skill_trace_contains": ["notebook-workflow", "notebook-review", "notebook-execute"]
+  },
+  {
+    "id": "notebook_generate_then_execute",
+    "query": "帮我生成一个 notebook 实验设计，然后执行",
+    "expected_task_type": "legacy_notebook",
+    "expected_requested_actions": ["generate", "execute"],
+    "acceptable_statuses": ["completed", "completed_with_partial_blocks"],
+    "required_result_fields": ["action", "step_results"],
+    "require_skill_trace_contains": ["notebook-workflow", "notebook-generate", "notebook-execute"]
+  },
+  {
+    "id": "generic_csv_generate_notebook",
+    "query": "基于 ./evals/fixtures/toy_table.csv 做探索分析并生成 notebook",
+    "expected_task_type": "data_analysis",
+    "expected_requested_actions": ["data_profile", "analysis_plan", "generate"],
+    "acceptable_statuses": ["completed", "completed_with_partial_blocks"],
+    "required_result_fields": ["action", "step_results"],
+    "require_skill_trace_contains": ["notebook-workflow", "data-profile", "analysis-plan", "notebook-generate"]
+  },
+  {
+    "id": "generic_csv_plan_then_execute",
+    "query": "读取 ./evals/fixtures/toy_table.csv，帮我分析并跑一个 notebook",
+    "expected_task_type": "data_analysis",
+    "expected_requested_actions": ["data_profile", "analysis_plan", "generate", "execute"],
+    "acceptable_statuses": ["completed", "completed_with_partial_blocks"],
+    "required_result_fields": ["action", "step_results"],
+    "require_skill_trace_contains": ["notebook-workflow", "data-profile", "analysis-plan", "notebook-generate", "notebook-execute"]
+  },
+  {
+    "id": "generic_csv_profile_and_plan_only",
+    "query": "用我自己的数据 ./evals/fixtures/toy_table.csv 做验证，先做数据画像和分析计划",
+    "expected_task_type": "data_analysis",
+    "expected_requested_actions": ["data_profile", "analysis_plan"],
+    "acceptable_statuses": ["completed", "completed_with_partial_blocks"],
+    "required_result_fields": ["action", "step_results"],
+    "require_skill_trace_contains": ["notebook-workflow", "data-profile", "analysis-plan"]
+  }
+]
