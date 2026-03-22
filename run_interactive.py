@@ -6,6 +6,7 @@ from typing import Any
 
 from cellscientist.registry.skill_registry import SkillRegistry
 from cellscientist.runtime.orchestrator_v2 import OrchestratorV2
+from cellscientist.runtime.run_manifest import record_runtime_run
 from cellscientist.skills.drug_analysis import DrugAnalysisSkill
 from cellscientist.skills.drug_info import DrugInfoSkill
 from cellscientist.skills.legacy_notebook import LegacyNotebookSkill
@@ -58,6 +59,17 @@ def main() -> None:
 
     orchestrator = OrchestratorV2(skill_registry)
     state, result = orchestrator.run(args.query)
+
+    try:
+        record_runtime_run(
+            run_id=state.session_id,
+            query=args.query,
+            state=state,
+            result=result,
+            skill_catalog=skill_registry.skill_catalog(),
+        )
+    except Exception as exc:
+        state.notes.append(f"run_manifest_failed:{type(exc).__name__}")
 
     payload = build_payload(state, result)
     print(json.dumps(payload, ensure_ascii=False, indent=2))

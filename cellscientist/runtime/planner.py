@@ -4,6 +4,7 @@ import re
 from typing import List, Sequence
 
 from ..tools.drug_lookup import find_drug_name_in_text
+from ..tools.tabular_data import extract_tabular_path_from_text, looks_like_generic_data_reference
 from .state import ResearchIntent, TaskType
 
 _DRUG_KEYWORDS = (
@@ -260,12 +261,30 @@ _ACTION_PATTERNS: tuple[tuple[str, Sequence[str]], ...] = (
 )
 
 _ACTION_ORDER = {
-    "generate": 0,
-    "retrieval_refresh": 1,
-    "review": 2,
-    "execute": 3,
-    "autofix": 4,
+    "data_profile": 0,
+    "analysis_plan": 1,
+    "generate": 2,
+    "retrieval_refresh": 3,
+    "review": 4,
+    "execute": 5,
+    "autofix": 6,
 }
+
+_GENERIC_DATA_KEYWORDS = (
+    "csv",
+    "tsv",
+    "parquet",
+    "excel",
+    "xlsx",
+    "自己的数据",
+    "我的数据",
+    "数据表",
+    "表格",
+    "探索分析",
+    "读取这个数据表",
+    "读取数据",
+    "做验证",
+)
 
 
 class Planner:
@@ -301,10 +320,15 @@ class Planner:
     def _classify_task_type(query: str, *, requested_actions: Sequence[str]) -> tuple[TaskType, List[str]]:
         lowered = query.lower()
         notebook_signal = _looks_like_notebook_query(lowered, requested_actions)
+        generic_data_signal = _looks_like_generic_data_query(query, lowered, requested_actions)
         drug_signal = _looks_like_drug_query(query, lowered)
         drug_analysis_signal = _looks_like_drug_analysis_query(query, lowered)
 
         secondary_hints: List[str] = []
+        if generic_data_signal:
+            if notebook_signal:
+                secondary_hints.append("notebook-workflow")
+            return "data_analysis", secondary_hints
         if notebook_signal:
             if drug_signal:
                 secondary_hints.append("drug_analysis" if drug_analysis_signal else "drug_info")
@@ -374,6 +398,18 @@ def _extract_requested_actions(query: str) -> List[str]:
     ):
         requested_actions = [action for action in requested_actions if action != "generate"]
 
+    if _looks_like_generic_data_query(query, lowered, requested_actions):
+        if "data_profile" not in requested_actions:
+            requested_actions.insert(0, "data_profile")
+        if "analysis_plan" not in requested_actions:
+            insert_at = 1 if requested_actions else 0
+            requested_actions.insert(insert_at, "analysis_plan")
+        if (
+            not any(action in requested_actions for action in ("generate", "execute"))
+            and any(keyword in lowered for keyword in ("分析", "analysis", "explore", "探索", "验证", "notebook"))
+        ):
+            requested_actions.append("generate")
+
     requested_actions = _normalize_action_sequence(requested_actions)
 
     if not requested_actions and _looks_like_notebook_query(lowered, requested_actions):
@@ -383,12 +419,23 @@ def _extract_requested_actions(query: str) -> List[str]:
 
 
 def _looks_like_notebook_query(query: str, requested_actions: Sequence[str]) -> bool:
-    if requested_actions:
+    if any(action in requested_actions for action in ("generate", "retrieval_refresh", "review", "execute", "autofix")):
         return True
     if any(keyword in query for keyword in _NOTEBOOK_ANCHOR_KEYWORDS):
         return True
     if any(keyword in query for keyword in _NOTEBOOK_CONTEXT_KEYWORDS):
         return True
+    return False
+
+
+def _looks_like_generic_data_query(raw_query: str, lowered_query: str, requested_actions: Sequence[str]) -> bool:
+    if extract_tabular_path_from_text(raw_query):
+        return True
+    if looks_like_generic_data_reference(raw_query):
+        if any(keyword in lowered_query for keyword in _GENERIC_DATA_KEYWORDS):
+            return True
+        if any(action in requested_actions for action in ("generate", "execute")):
+            return True
     return False
 
 

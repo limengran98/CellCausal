@@ -22,5 +22,7 @@ def test_eval_runner_can_load_case_files_and_run_small_fallback_subset(tmp_path:
     assert summary["total_cases"] == 2
     assert len(details) == 2
     assert result_dir.exists()
+    assert "eval_manifest_path" in summary
+    assert Path(summary["eval_manifest_path"]).exists()
     assert (result_dir / "summary.json").exists()
     assert (result_dir / "details.jsonl").exists()

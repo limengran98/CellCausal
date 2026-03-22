@@ -7,6 +7,13 @@ from .drug_lookup import (
     lookup_drug_profile,
     lookup_seeded_smiles_for_drug,
 )
+from .tabular_data import (
+    extract_tabular_path_from_text,
+    is_supported_tabular_path,
+    looks_like_generic_data_reference,
+    profile_tabular_file,
+    resolve_tabular_path,
+)
 
 __all__ = [
     "DrugLookupTool",
@@ -14,4 +21,9 @@ __all__ = [
     "lookup_drug_name_by_smiles",
     "lookup_drug_profile",
     "lookup_seeded_smiles_for_drug",
+    "extract_tabular_path_from_text",
+    "is_supported_tabular_path",
+    "looks_like_generic_data_reference",
+    "profile_tabular_file",
+    "resolve_tabular_path",
 ]
