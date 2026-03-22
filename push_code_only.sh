@@ -21,9 +21,16 @@ CODE_PATHS=(
   "prompts"
   "records/README.md"
   "records/paper"
-  "references"
   "skills"
   "tests"
+  "references/enzyme_mining/README.md"
+  "references/enzyme_mining/EBI.ipynb"
+  "references/enzyme_mining/JGI.ipynb"
+  "references/enzyme_mining/挖酶.ipynb"
+  "references/enzyme_mining/CataPro-master/CataPro-master/LICENSE"
+  "references/enzyme_mining/CataPro-master/CataPro-master/README.md"
+  "references/enzyme_mining/CataPro-master/CataPro-master/inference"
+  "references/enzyme_mining/CataPro-master/CataPro-master/training"
 )
 
 UNWANTED_PATHS=(
