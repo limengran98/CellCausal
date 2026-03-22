@@ -236,6 +236,15 @@ def _dataset_versions(task_type: str | None, state: SessionState | None = None) 
             }
         ]
 
+    if task_type == "enzyme_mining":
+        return [
+            {
+                "dataset_name": "enzyme_mining_local_seeded_context",
+                "data_path": None,
+                "source": "repo_local_enzyme_lookup",
+            }
+        ]
+
     if task_type == "data_analysis" and state is not None:
         profile = _latest_artifact_content(state, "data_profile")
         if profile is None:

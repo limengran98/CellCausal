@@ -15,6 +15,12 @@ from ..core.bio_kb.smiles_resolver import canonicalize_smiles
 from ..evidence.models import EvidenceItem
 from ..pipeline.config import load_pipeline_config
 from ..pipeline.utils import project_root
+from ..runtime.notebook_handoff import (
+    append_experiment_scaffold_artifact,
+    build_notebook_handoff_payload,
+    unique_nonempty,
+    wants_notebook_handoff,
+)
 from ..runtime.state import Artifact, SessionState
 from ..tools.drug_lookup import (
     canonicalize_drug_name,
@@ -284,6 +290,59 @@ def _build_next_questions(
     return questions[:3]
 
 
+def _build_experiment_scaffold(
+    *,
+    normalized_name: Optional[str],
+    normalized_entity: Dict[str, Any],
+    targets: List[str],
+    safety: List[str],
+    next_questions: List[str],
+) -> Dict[str, Any]:
+    label = normalized_name or str(normalized_entity.get("name") or normalized_entity.get("raw_input") or "this entity")
+    canonical_smiles = normalized_entity.get("canonical_smiles")
+    required_inputs = [
+        "user-provided validation dataset or assay readout",
+        f"normalized entity: {label}",
+    ]
+    if canonical_smiles:
+        required_inputs.append(f"canonical structure: {canonical_smiles}")
+    required_inputs.extend(
+        [
+            "target/pathway evidence table",
+            "safety context or monitoring assumptions",
+        ]
+    )
+    return build_notebook_handoff_payload(
+        focus=f"Validate mechanism and safety claims for {label}",
+        validation_questions=unique_nonempty(
+            list(next_questions)
+            + [
+                f"Can the notebook test whether the leading targets ({', '.join(targets[:3]) if targets else 'unresolved targets'}) remain consistent with the chosen validation data?",
+                f"Which safety-relevant assumptions should be stress-tested first for {label}?",
+            ],
+            limit=5,
+        ),
+        recommended_notebook_sections=[
+            "Entity normalization and scope",
+            "Mechanism and target evidence recap",
+            "Safety framing and uncertainty",
+            "Validation dataset assumptions",
+            "Next-step analysis and decision log",
+        ],
+        required_inputs=required_inputs,
+        suggested_analysis_modes=[
+            "target_pathway_evidence_review",
+            "safety_signal_summary",
+            "structure_annotation_check",
+            "validation_dataset_overlay",
+        ],
+        notes=[
+            "This scaffold is handoff metadata only.",
+            "Do not auto-trigger notebook generation or execution from drug-analysis.",
+        ],
+    )
+
+
 class DrugAnalysisSkill(BaseSkill):
     """Native drug-analysis skill: normalize entity, gather evidence, and synthesize a structured conclusion."""
 
@@ -353,6 +412,31 @@ class DrugAnalysisSkill(BaseSkill):
             ),
         }
 
+        should_handoff = wants_notebook_handoff(
+            state.user_query,
+            state.intent.constraints if state.intent is not None else [],
+        )
+        if should_handoff:
+            scaffold = _build_experiment_scaffold(
+                normalized_name=normalized_name,
+                normalized_entity=normalized_entity,
+                targets=targets,
+                safety=safety,
+                next_questions=list(result["next_questions"]),
+            )
+            result["notebook_ready"] = True
+            result["experiment_scaffold"] = scaffold
+            append_experiment_scaffold_artifact(
+                state,
+                name=f"{_slugify(normalized_name or normalized_entity.get('raw_input') or 'drug')}_validation_scaffold",
+                content=scaffold,
+                source_skill=self.name,
+                focus=str(normalized_name or normalized_entity.get("raw_input") or "drug"),
+                extra_metadata={"task": "drug_analysis"},
+            )
+        else:
+            result["notebook_ready"] = False
+
         state.artifacts.append(
             Artifact(
                 type="drug_analysis",
@@ -365,6 +449,7 @@ class DrugAnalysisSkill(BaseSkill):
                     "workspace_dir": workspace_dir,
                     "evidence_count": len(evidence),
                     "biokb_status": biokb_context.get("status"),
+                    "notebook_ready": result["notebook_ready"],
                 },
             )
         )

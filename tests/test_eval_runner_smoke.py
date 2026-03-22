@@ -10,6 +10,7 @@ def test_eval_runner_can_load_case_files_and_run_small_fallback_subset(tmp_path:
 
     assert set(CASE_FILES) <= set(suites)
     assert len(suites["drug_analysis"]) >= 10
+    assert len(suites["enzyme_mining"]) >= 4
     assert len(suites["notebook_workflow"]) >= 8
     assert len(suites["fallback"]) >= 5
 

@@ -9,6 +9,7 @@ from cellscientist.runtime.orchestrator_v2 import OrchestratorV2
 from cellscientist.runtime.run_manifest import record_runtime_run
 from cellscientist.skills.drug_analysis import DrugAnalysisSkill
 from cellscientist.skills.drug_info import DrugInfoSkill
+from cellscientist.skills.enzyme_mining import EnzymeMiningSkill
 from cellscientist.skills.legacy_notebook import LegacyNotebookSkill
 from cellscientist.skills.notebook_workflow import NotebookWorkflowSkill
 
@@ -54,6 +55,7 @@ def main() -> None:
     skill_registry = SkillRegistry()
     skill_registry.register(DrugAnalysisSkill())
     skill_registry.register(DrugInfoSkill())
+    skill_registry.register(EnzymeMiningSkill())
     skill_registry.register(NotebookWorkflowSkill())
     skill_registry.register(LegacyNotebookSkill())
 

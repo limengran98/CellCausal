@@ -61,6 +61,30 @@ _DRUG_ANALYSIS_KEYWORDS = (
     "查一下",
 )
 
+_ENZYME_MINING_KEYWORDS = (
+    "enzyme mining",
+    "mine enzyme",
+    "candidate enzyme",
+    "candidate enzymes",
+    "enzyme candidate",
+    "enzyme candidates",
+    "metabolic enzyme",
+    "metabolism enzyme",
+    "cholesterol metabolism",
+    "lipid metabolism",
+    "fatty acid oxidation",
+    "enzyme",
+    "enzymes",
+    "酶挖掘",
+    "候选酶",
+    "找酶",
+    "脂代谢",
+    "脂质代谢",
+    "脂肪代谢",
+    "胆固醇代谢",
+    "脂肪酸氧化",
+)
+
 _PRIORITY_DRUG_ANALYSIS_ALIASES = (
     "aspirin",
     "acetylsalicylic acid",
@@ -235,6 +259,19 @@ _SMILES_TOKEN_RE = re.compile(r"[A-Za-z0-9@+\-\[\]\(\)=#$\\/%.]{6,}")
 _CONSTRAINT_KEYWORDS = {
     "brief": ("brief", "summary", "\u7b80\u8981", "\u6982\u89c8"),
     "detailed": ("detailed", "detail", "\u6df1\u5165", "\u8be6\u7ec6"),
+    "notebook_ready": (
+        "验证",
+        "做实验",
+        "实验验证",
+        "后续验证",
+        "进一步验证",
+        "生成 notebook",
+        "notebook 框架",
+        "可验证",
+        "validation notebook",
+        "validate",
+        "experiment scaffold",
+    ),
 }
 _STOPWORDS = {
     "drug",
@@ -311,10 +348,13 @@ class Planner:
 
         normalized_query = query.strip()
         requested_actions = _extract_requested_actions(normalized_query)
+        constraints = _extract_constraints(normalized_query)
         task_type, secondary_hints = self._classify_task_type(
             normalized_query,
             requested_actions=requested_actions,
         )
+        if task_type in {"drug_analysis", "enzyme_mining"}:
+            requested_actions = []
         mode = "legacy" if task_type == "legacy_notebook" else "default"
 
         return ResearchIntent(
@@ -323,7 +363,7 @@ class Planner:
             requested_actions=requested_actions,
             secondary_task_hints=secondary_hints,
             entities=_extract_entities(normalized_query),
-            constraints=_extract_constraints(normalized_query),
+            constraints=constraints,
             mode=mode,
         )
 
@@ -334,18 +374,25 @@ class Planner:
         generic_data_signal = _looks_like_generic_data_query(query, lowered, requested_actions)
         drug_signal = _looks_like_drug_query(query, lowered)
         drug_analysis_signal = _looks_like_drug_analysis_query(query, lowered)
+        enzyme_mining_signal = _looks_like_enzyme_mining_query(lowered)
 
         secondary_hints: List[str] = []
         if generic_data_signal:
             if notebook_signal:
                 secondary_hints.append("notebook-workflow")
             return "data_analysis", secondary_hints
+        if enzyme_mining_signal:
+            if notebook_signal:
+                secondary_hints.append("notebook-workflow")
+            return "enzyme_mining", secondary_hints
+        if drug_analysis_signal:
+            if notebook_signal:
+                secondary_hints.append("notebook-workflow")
+            return "drug_analysis", secondary_hints
         if notebook_signal:
             if drug_signal:
                 secondary_hints.append("drug_analysis" if drug_analysis_signal else "drug_info")
             return "legacy_notebook", secondary_hints
-        if drug_analysis_signal:
-            return "drug_analysis", secondary_hints
         if drug_signal:
             return "drug_info", secondary_hints
         return "unknown", secondary_hints
@@ -475,6 +522,18 @@ def _looks_like_drug_analysis_query(raw_query: str, lowered_query: str) -> bool:
             return True
         if any(keyword in lowered_query for keyword in ("drug", "compound", "smiles", "药物", "靶点", "机制", "安全性", "副作用")):
             return True
+    return False
+
+
+def _looks_like_enzyme_mining_query(lowered_query: str) -> bool:
+    if any(keyword in lowered_query for keyword in _ENZYME_MINING_KEYWORDS):
+        return True
+    if "candidate" in lowered_query and "enzyme" in lowered_query:
+        return True
+    if "酶" in lowered_query and any(
+        keyword in lowered_query for keyword in ("挖", "找", "候选", "代谢", "通路", "依据")
+    ):
+        return True
     return False
 
 

@@ -83,3 +83,34 @@ def test_drug_analysis_skill_normalizes_smiles_query_without_crashing():
     assert "mechanism" in result
     assert "targets" in result
     assert "safety" in result
+
+
+def test_drug_analysis_can_emit_notebook_ready_scaffold_without_routing_to_notebook():
+    import cellscientist.skills.drug_analysis as drug_analysis_module
+
+    original = drug_analysis_module._run_biokb_analysis
+    drug_analysis_module._run_biokb_analysis = lambda _smiles, workspace_dir: {
+        "semantic_table": {"summary": {"total_targets": 1}},
+        "evidence": [],
+        "targets": ["AMPK signaling axis"],
+        "pathways": ["AMPK activation"],
+        "processes": ["energy homeostasis"],
+        "workspace_dir": workspace_dir,
+        "status": "biokb_ready",
+    }
+    try:
+        state, result = _build_orchestrator().run(
+            "分析一下 metformin 的机制和安全性，并给我一个后续验证 notebook"
+        )
+    finally:
+        drug_analysis_module._run_biokb_analysis = original
+
+    assert state.intent is not None
+    assert state.intent.task_type == "drug_analysis"
+    assert state.skill_trace == ["drug_analysis:drug-analysis"]
+    assert result["notebook_ready"] is True
+    assert "experiment_scaffold" in result
+    scaffold = result["experiment_scaffold"]
+    assert scaffold["handoff"]["auto_execute"] is False
+    assert scaffold["handoff"]["mode"] == "scaffold_only"
+    assert any(artifact.type == "experiment_scaffold" for artifact in state.artifacts)

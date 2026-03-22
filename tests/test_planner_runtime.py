@@ -5,6 +5,7 @@ from cellscientist.runtime.orchestrator_v2 import OrchestratorV2
 from cellscientist.runtime.planner import build_intent
 from cellscientist.skills.drug_analysis import DrugAnalysisSkill
 from cellscientist.skills.drug_info import DrugInfoSkill
+from cellscientist.skills.enzyme_mining import EnzymeMiningSkill
 from cellscientist.skills.legacy_notebook import LegacyNotebookSkill
 from cellscientist.skills.notebook_workflow import NotebookWorkflowSkill
 
@@ -13,6 +14,7 @@ def _build_orchestrator() -> OrchestratorV2:
     registry = SkillRegistry()
     registry.register(DrugAnalysisSkill())
     registry.register(DrugInfoSkill())
+    registry.register(EnzymeMiningSkill())
     registry.register(NotebookWorkflowSkill())
     registry.register(LegacyNotebookSkill())
     return OrchestratorV2(registry)
@@ -71,6 +73,20 @@ def test_planner_routes_generic_data_queries_to_data_analysis():
     assert intent.requested_actions == ["data_profile", "analysis_plan", "generate"]
     assert execute_intent.task_type == "data_analysis"
     assert execute_intent.requested_actions == ["data_profile", "analysis_plan", "generate", "execute"]
+
+
+def test_planner_keeps_drug_analysis_as_primary_when_query_requests_notebook_followup():
+    intent = build_intent("分析一下 metformin 的机制和安全性，并给我一个后续验证 notebook")
+
+    assert intent.task_type == "drug_analysis"
+    assert "notebook_ready" in intent.constraints
+
+
+def test_planner_routes_enzyme_queries_to_native_skill_even_with_notebook_followup():
+    intent = build_intent("挖一下和脂代谢相关的候选酶，并生成一个可验证的 notebook 框架")
+
+    assert intent.task_type == "enzyme_mining"
+    assert "notebook_ready" in intent.constraints
 
 
 def test_orchestrator_returns_clarification_fallback_for_unknown_queries():

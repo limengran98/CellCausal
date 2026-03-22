@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Literal, Optional
 from .notebook_models import NotebookArtifact, NotebookRunResult
 
 
-TaskType = Literal["drug_info", "drug_analysis", "legacy_notebook", "data_analysis", "unknown"]
+TaskType = Literal["drug_info", "drug_analysis", "enzyme_mining", "legacy_notebook", "data_analysis", "unknown"]
 
 
 @dataclass

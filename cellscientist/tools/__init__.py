@@ -7,6 +7,7 @@ from .drug_lookup import (
     lookup_drug_profile,
     lookup_seeded_smiles_for_drug,
 )
+from .enzyme_lookup import EnzymeLookupTool, lookup_enzyme_candidates, normalize_enzyme_focus
 from .tabular_data import (
     extract_tabular_path_from_text,
     is_supported_tabular_path,
@@ -21,6 +22,9 @@ __all__ = [
     "lookup_drug_name_by_smiles",
     "lookup_drug_profile",
     "lookup_seeded_smiles_for_drug",
+    "EnzymeLookupTool",
+    "lookup_enzyme_candidates",
+    "normalize_enzyme_focus",
     "extract_tabular_path_from_text",
     "is_supported_tabular_path",
     "looks_like_generic_data_reference",
