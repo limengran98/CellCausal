@@ -12,6 +12,7 @@ from ..runtime.notebook_handoff import (
 )
 from ..runtime.state import Artifact, SessionState
 from ..tools.enzyme_export import export_enzyme_mining_artifacts
+from ..tools.enzyme_processing.candidate_sequence_mapping import build_candidate_sequence_rows
 from ..tools.enzyme_processing.dedupe_sequences import summarize_exact_dedupe_from_zip
 from ..tools.enzyme_processing.domain_filter import build_domain_filtering_steps
 from ..tools.enzyme_processing.fasta_merge import summarize_local_sequence_bundle
@@ -216,14 +217,20 @@ class EnzymeMiningSkill(BaseSkill):
             query_focus=str(payload.get("query_focus") or normalized_focus["query_focus"]),
             bundle_summary=bundle_summary,
         )
+        candidate_sequence_rows_status, candidate_sequence_rows = build_candidate_sequence_rows(
+            candidate_enzymes=candidate_enzymes,
+            query_focus=str(payload.get("query_focus") or normalized_focus["query_focus"]),
+            zip_path=str(bundle_path),
+        )
         filtering_steps = build_domain_filtering_steps(
             raw_sequence_count=int(candidate_sequences_status["raw_sequence_count"]),
             unique_sequence_count=int(candidate_sequences_status["unique_sequence_count"]),
         )
         ranking_bridge = build_catapro_ranking_bridge(
             query=state.user_query,
-            candidate_enzymes=candidate_enzymes,
+            candidate_sequence_rows=candidate_sequence_rows,
             candidate_sequences_status=candidate_sequences_status,
+            candidate_sequence_rows_status=candidate_sequence_rows_status,
         )
         next_questions = _build_next_questions(
             query_focus=str(payload.get("query_focus") or normalized_focus["query_focus"]),
@@ -244,13 +251,20 @@ class EnzymeMiningSkill(BaseSkill):
             "substrate_smiles": ranking_bridge["substrate_smiles"],
             "candidate_sources": candidate_sources,
             "candidate_sequences_status": candidate_sequences_status,
+            "candidate_sequence_rows_status": candidate_sequence_rows_status,
+            "candidate_sequence_row_count": len(candidate_sequence_rows),
+            "candidate_sequence_rows": candidate_sequence_rows,
             "candidate_enzymes": candidate_enzymes,
             "filtering_steps": filtering_steps,
             "ranking_status": ranking_bridge["ranking_status"],
             "ranking_ready": ranking_bridge["ranking_ready"],
             "ranking_model": ranking_bridge["ranking_model"],
             "ranking_results": ranking_bridge["ranking_results"],
+            "resolved_model_paths": ranking_bridge["resolved_model_paths"],
+            "asset_check_details": ranking_bridge["asset_check_details"],
             "why_not_runnable": ranking_bridge["why_not_runnable"],
+            "input_not_ready": ranking_bridge["input_not_ready"],
+            "runtime_not_ready": ranking_bridge["runtime_not_ready"],
             "required_assets": ranking_bridge["required_assets"],
             "prepared_input_preview": ranking_bridge["prepared_input_preview"],
             "next_step_instructions": ranking_bridge["next_step_instructions"],
@@ -337,12 +351,31 @@ class EnzymeMiningSkill(BaseSkill):
         )
         state.artifacts.append(
             Artifact(
+                type="enzyme_candidate_sequence_rows",
+                name=f"{str(normalized_focus['focus_key'])}_candidate_sequence_rows",
+                content={
+                    "status_path": files.get("candidate_sequence_mapping_status_json"),
+                    "rows_path": files.get("candidate_sequence_rows_csv"),
+                },
+                metadata={
+                    "skill": self.name,
+                    "result_dir": result_dir,
+                    "artifact_path": files.get("candidate_sequence_rows_csv"),
+                    "status_path": files.get("candidate_sequence_mapping_status_json"),
+                    "candidate_sequence_row_count": len(candidate_sequence_rows),
+                    "mapping_mode": candidate_sequence_rows_status.get("mapping_mode"),
+                },
+            )
+        )
+        state.artifacts.append(
+            Artifact(
                 type="enzyme_ranking_result",
                 name=f"{str(normalized_focus['focus_key'])}_ranking_status",
                 content={
                     "status_path": files.get("ranking_status_json"),
                     "result_path": files.get("ranking_results_csv"),
                     "preview_path": files.get("ranking_input_preview_csv"),
+                    "run_details_path": files.get("ranking_run_details_json"),
                 },
                 metadata={
                     "skill": self.name,
@@ -352,6 +385,7 @@ class EnzymeMiningSkill(BaseSkill):
                     "status_path": files.get("ranking_status_json"),
                     "result_path": files.get("ranking_results_csv"),
                     "preview_path": files.get("ranking_input_preview_csv"),
+                    "run_details_path": files.get("ranking_run_details_json"),
                 },
             )
         )
@@ -369,6 +403,7 @@ class EnzymeMiningSkill(BaseSkill):
                     "candidate_source_count": len(candidate_sources),
                     "raw_sequence_count": candidate_sequences_status["raw_sequence_count"],
                     "unique_sequence_count": candidate_sequences_status["unique_sequence_count"],
+                    "candidate_sequence_row_count": len(candidate_sequence_rows),
                     "evidence_count": len(evidence),
                     "substrate_smiles": result["substrate_smiles"],
                     "ranking_status": result["ranking_status"],

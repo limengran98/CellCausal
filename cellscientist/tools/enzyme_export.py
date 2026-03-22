@@ -60,6 +60,10 @@ def _ranking_result_rows(ranking_results: Sequence[Mapping[str, Any]]) -> list[d
     return [dict(item) for item in ranking_results if isinstance(item, Mapping)]
 
 
+def _candidate_sequence_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(item) for item in rows if isinstance(item, Mapping)]
+
+
 def export_enzyme_mining_artifacts(
     *,
     session_id: str,
@@ -78,8 +82,11 @@ def export_enzyme_mining_artifacts(
     candidate_sources_path = result_dir / "candidate_sources.json"
     candidate_sequences_status_path = result_dir / "candidate_sequences_status.json"
     candidate_table_path = result_dir / "candidate_table.csv"
+    candidate_sequence_rows_path = result_dir / "candidate_sequence_rows.csv"
+    candidate_sequence_mapping_status_path = result_dir / "candidate_sequence_mapping_status.json"
     filtering_steps_path = result_dir / "filtering_steps.json"
     ranking_status_path = result_dir / "ranking_status.json"
+    ranking_run_details_path = result_dir / "ranking_run_details.json"
     ranking_input_preview_path = result_dir / "ranking_input_preview.csv"
     ranking_results_path = result_dir / "ranking_results.csv"
     enzyme_result_path = result_dir / "enzyme_mining_result.json"
@@ -95,6 +102,24 @@ def export_enzyme_mining_artifacts(
         candidate_rows,
         ["enzyme_id", "enzyme", "role", "confidence", "source", "rationale"],
     )
+
+    sequence_rows = _candidate_sequence_rows(result.get("candidate_sequence_rows") or [])
+    _write_csv(
+        candidate_sequence_rows_path,
+        sequence_rows,
+        [
+            "enzyme_id",
+            "matched_candidate",
+            "matched_focus",
+            "mapping_quality",
+            "role",
+            "confidence",
+            "source",
+            "header",
+            "sequence",
+        ],
+    )
+    _write_json(candidate_sequence_mapping_status_path, result.get("candidate_sequence_rows_status") or {})
 
     preview_rows = _ranking_preview_rows(result.get("prepared_input_preview"))
     _write_csv(
@@ -124,6 +149,10 @@ def export_enzyme_mining_artifacts(
         "ranking_ready": result.get("ranking_ready"),
         "substrate_context": result.get("substrate_context"),
         "substrate_smiles": result.get("substrate_smiles"),
+        "resolved_model_paths": result.get("resolved_model_paths") or {},
+        "asset_check_details": result.get("asset_check_details") or {},
+        "input_not_ready": result.get("input_not_ready") or [],
+        "runtime_not_ready": result.get("runtime_not_ready") or [],
         "why_not_runnable": result.get("why_not_runnable") or [],
         "required_assets": result.get("required_assets") or [],
         "prepared_input_preview": result.get("prepared_input_preview") or {},
@@ -131,6 +160,7 @@ def export_enzyme_mining_artifacts(
         "ranking_run_details": result.get("ranking_run_details") or {},
     }
     _write_json(ranking_status_path, ranking_status_payload)
+    _write_json(ranking_run_details_path, result.get("ranking_run_details") or {})
 
     scaffold_written = False
     if result.get("notebook_ready") and isinstance(result.get("experiment_scaffold"), Mapping):
@@ -141,8 +171,11 @@ def export_enzyme_mining_artifacts(
         "candidate_sources_json": _relative_path(candidate_sources_path),
         "candidate_sequences_status_json": _relative_path(candidate_sequences_status_path),
         "candidate_table_csv": _relative_path(candidate_table_path),
+        "candidate_sequence_rows_csv": _relative_path(candidate_sequence_rows_path),
+        "candidate_sequence_mapping_status_json": _relative_path(candidate_sequence_mapping_status_path),
         "filtering_steps_json": _relative_path(filtering_steps_path),
         "ranking_status_json": _relative_path(ranking_status_path),
+        "ranking_run_details_json": _relative_path(ranking_run_details_path),
         "ranking_input_preview_csv": _relative_path(ranking_input_preview_path),
         "ranking_results_csv": _relative_path(ranking_results_path),
         "enzyme_mining_result_json": _relative_path(enzyme_result_path),
